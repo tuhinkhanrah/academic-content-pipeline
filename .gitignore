@@ -1,0 +1,21 @@
+# API Keys & Secrets
+.env
+*.env
+
+# Python Virtual Environments & Caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Temp Files
+*.xml
+*.log
+
+# IDE/Editor Configs
+.vscode/
+.idea/
+.DS_Store

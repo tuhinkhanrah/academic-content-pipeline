@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2moodle-qbank"
+version = "0.1.0"
+description = "Convert PDF past papers and textbook chapters into Moodle XML Question Banks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "google-genai",
+    "PyMuPDF",
+]
+
+[tool.setuptools]
+packages = []
