@@ -1,0 +1,15 @@
+{
+  "input_dir": "./pdfs",
+  "output_dir": "./output",
+  "prompt": "./prompts/prompt_neet_bilingual.md",
+  "instruction_page": 1,
+  "page_range": [2, 10],
+  "standards": "NEET",
+  "agent": "antigravity-preview-05-2026",
+  "padding_cm": 0.25,
+  "rate_limit_delay": 45.0,
+  "retry_base_delay": 4.0,
+  "context_reset_interval": 6,
+  "dpi": 150,
+  "verbose": true
+}

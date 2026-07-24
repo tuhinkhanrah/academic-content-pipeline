@@ -88,6 +88,21 @@ To render mathematical symbols, matrices, and variables correctly on Moodle, you
 * **Display/Standalone Equations:** Wrap using `\[ ... \]` on an isolated line.
 * **Matrices:** Render matrices properly using `\(\begin{matrix} 1 & 2 \\ 1 & \alpha \end{matrix}\)`.
 
+### 👁️ Visual & Diagram Reasoning Protocol (STRICT)
+When generating or solving questions involving diagrams, circuits, graphs, or visual figures:
+
+1. **Mandatory Visual Inventory (Step 0):** Before writing equations or picking options, perform a structured visual transcription inside `<generalfeedback>`:
+   - **For Circuits:** List every node, component value, current direction arrow, and voltage source polarity. Explicitly state which components are in series vs. parallel based *only* on wire connections.
+   - **For Physics Diagrams:** Identify all masses, vectors, angles, coordinate axes, and string/pulley connections.
+   - **For Graphs:** Read precise coordinates, axis labels, units, slope trends, and intercepts directly from the axes.
+
+2. **No Visual Assumptions:** Do NOT assume standard default values or components if they are not explicitly labeled in the diagram.
+
+3. **Physics/Circuit Verification:**
+   - For circuits, perform a Kirchhoff's Current Law (KCL) / Kirchhoff's Voltage Law (KVL) sanity check on your visual inventory before declaring the correct option.
+   - Ensure units (e.g., $\mu\text{F}$ vs. $\text{F}$, $\text{k}\Omega$ vs. $\Omega$) are accurately transcribed from the diagram labels.
+4. ACCURATE CALCULATIONS: Use Python Code Execution to programmatically calculate and double-check any math, circuit reductions, or physics formulas before writing out the XML solutions.
+
 ### 2. Diagram / Image Cropping
 If a question references an essential diagram or circuit on the page, use the bounding box cropping token exactly where the visual should appear:
 `[CROP_BOX:ymin,xmin,ymax,xmax]`

@@ -4,6 +4,7 @@ Chapter to Moodle XML Question Generator CLI (Context-Aware Chat Edition)
 
 Generates new, original Moodle XML questions from textbook chapters using 
 Google GenAI SDK Chat Sessions to maintain cross-page continuity.
+Supports system prompt caching & Python code execution.
 """
 
 import argparse
@@ -22,6 +23,8 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 import xml.etree.ElementTree as ET
+
+from prompt_cache_manager import get_or_create_prompt_cache
 
 logger = logging.getLogger("chapter2moodle")
 
@@ -51,18 +54,45 @@ def load_prompt(prompt_path: Path) -> str:
         sys.exit(1)
 
 
+def log_cli_args(args: argparse.Namespace) -> None:
+    logger.info("CLI arguments:")
+    for key in sorted(vars(args)):
+        value = getattr(args, key)
+        if key == "api_key" and value:
+            value = "***MASKED***"
+        logger.info("  %s=%s", key, value)
+
+
 def crop_diagram_from_page(
-    page: fitz.Page, ymin: int, xmin: int, ymax: int, xmax: int, dpi: int = 150
+    page: fitz.Page, ymin: int, xmin: int, ymax: int, xmax: int, dpi: int = 200
 ) -> bytes:
     rect = page.rect
     page_width, page_height = rect.width, rect.height
 
+    # Convert 1000-scale coordinates to PyMuPDF points
     x0 = (xmin / 1000.0) * page_width
     y0 = (ymin / 1000.0) * page_height
     x1 = (xmax / 1000.0) * page_width
     y1 = (ymax / 1000.0) * page_height
 
+    # 1. Catch inverted coordinates (which cause negative width/height)
+    if x0 >= x1 or y0 >= y1:
+        logging.warning(
+            f"Invalid bounding box ignored: x0={x0:.1f}, x1={x1:.1f}, y0={y0:.1f}, y1={y1:.1f}"
+        )
+        return b"" # Return empty bytes to prevent crashing
+
     crop_rect = fitz.Rect(x0, y0, x1, y1)
+
+    # 2. Intersect with the page boundary so PyMuPDF doesn't try to draw outside the page
+    crop_rect = crop_rect.intersect(rect)
+
+    # 3. Check if the intersection resulted in an empty rectangle (e.g., box was off-page)
+    if crop_rect.is_empty:
+        logging.warning("Cropping rectangle is completely outside page boundaries.")
+        return b""
+
+    # Generate the image safely
     pix = page.get_pixmap(clip=crop_rect, dpi=dpi)
     return pix.tobytes("png")
 
@@ -81,9 +111,15 @@ class StatefulChapterGenerator:
         negative_fraction: int,
         tags: List[str],
         memory_span: int = 3,
-        model_name: str = "gemini-2.5-pro",
-        dpi: int = 150,
+        model_name: str = "gemini-2.0-flash-thinking-exp",
+        dpi: int = 200,
         rate_limit_delay: float = 4.0,
+        temperature: float = 0.1,
+        thinking_level: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        include_thoughts: bool = False,
+        enable_code_execution: bool = False,
+        cached_prompt_name: Optional[str] = None,
     ):
         self.client = client
         self.prompt_text = prompt_text
@@ -97,6 +133,55 @@ class StatefulChapterGenerator:
         self.model_name = model_name
         self.dpi = dpi
         self.rate_limit_delay = rate_limit_delay
+        self.temperature = temperature
+        self.thinking_level = thinking_level
+        self.thinking_budget = thinking_budget
+        self.include_thoughts = include_thoughts
+        self.enable_code_execution = enable_code_execution
+        self.cached_prompt_name = cached_prompt_name
+
+    def _build_chat_config(self) -> types.GenerateContentConfig:
+        thinking_config = None
+        if "thinking" in self.model_name.lower() or (
+            self.thinking_level is not None
+            or self.thinking_budget is not None
+            or self.include_thoughts
+        ):
+            level_map = {
+                "minimal": types.ThinkingLevel.MINIMAL,
+                "low": types.ThinkingLevel.LOW,
+                "medium": types.ThinkingLevel.MEDIUM,
+                "high": types.ThinkingLevel.HIGH,
+            }
+            thinking_kwargs = {}
+            if self.thinking_level is not None:
+                thinking_kwargs["thinking_level"] = level_map[self.thinking_level]
+            if self.thinking_budget is not None:
+                thinking_kwargs["thinking_budget"] = self.thinking_budget
+            elif "thinking" in self.model_name.lower() and self.thinking_level is None:
+                thinking_kwargs["thinking_budget"] = 2048
+            if self.include_thoughts:
+                thinking_kwargs["include_thoughts"] = True
+            thinking_config = types.ThinkingConfig(**thinking_kwargs)
+
+        # STRICT API RULE: Do NOT pass tools or system_instruction when cached_content is present!
+        if self.cached_prompt_name:
+            return types.GenerateContentConfig(
+                cached_content=self.cached_prompt_name,
+                temperature=self.temperature,
+                thinking_config=thinking_config,
+            )
+
+        tools = None
+        if self.enable_code_execution:
+            tools = [types.Tool(code_execution=types.ToolCodeExecution())]
+
+        return types.GenerateContentConfig(
+            system_instruction=self.prompt_text,
+            temperature=self.temperature,
+            thinking_config=thinking_config,
+            tools=tools,
+        )
 
     def process_pdf(self, pdf_path: Path, output_dir: Path) -> bool:
         pdf_stem = pdf_path.stem
@@ -119,10 +204,7 @@ class StatefulChapterGenerator:
         logger.info(f"[{pdf_stem}] Initializing chat session with memory span: {self.memory_span} pages.")
         chat = self.client.chats.create(
             model=self.model_name,
-            config=types.GenerateContentConfig(
-                system_instruction=self.prompt_text,
-                temperature=0.4,
-            ),
+            config=self._build_chat_config(),
         )
 
         for page_num in range(total_pages):
@@ -190,10 +272,7 @@ class StatefulChapterGenerator:
         if self.memory_span <= 0:
             return self.client.chats.create(
                 model=self.model_name,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.prompt_text,
-                    temperature=0.4,
-                ),
+                config=self._build_chat_config(),
             )
 
         history = chat.get_history()
@@ -207,16 +286,12 @@ class StatefulChapterGenerator:
             return self.client.chats.create(
                 model=self.model_name,
                 history=trimmed_history,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.prompt_text,
-                    temperature=0.4,
-                ),
+                config=self._build_chat_config(),
             )
         return chat
 
     def _build_turn_prompt(self, current_page_num: int) -> str:
         formatted_standards = ", ".join(self.standards) if self.standards else "General"
-        
         tag_xml_nodes = [f"      <tag><text>{t}</text></tag>" for t in self.tags]
         for std in self.standards:
             tag_xml_nodes.append(f"      <tag><text>standard:{std}</text></tag>")
@@ -268,71 +343,77 @@ class StatefulChapterGenerator:
     def _extract_clean_question_nodes(raw_text: str) -> List[str]:
         if not raw_text:
             return []
-            
-        # 1. Clean up common LLM markdown artifacts
         raw_text = raw_text.replace("```xml", "").replace("```", "").strip()
-        
-        # 2. Extract the question nodes
         pattern = re.compile(r"(<question\b[^>]*>.*?</question>)", re.DOTALL | re.IGNORECASE)
         matches = pattern.findall(raw_text)
         
         valid_nodes = []
         for node in matches:
             node = node.strip()
-            # 3. Validate the XML node
             try:
-                # If ElementTree can parse it, it is structurally valid XML
                 ET.fromstring(node)
                 valid_nodes.append(node)
             except ET.ParseError as e:
                 logger.error(f"❌ Dropping malformed XML question due to Parse Error: {e}")
-                # Optional: You can print a snippet of the broken node for debugging
-                # print(f"Broken snippet: {node[:100]}...") 
                 continue
-                
         return valid_nodes
 
     def _process_diagram_tokens_in_question(
         self, page: fitz.Page, question_xml: str, image_dir: Path
     ) -> str:
-        crop_tokens = re.findall(r"\[CROP_BOX:(\d+),(\d+),(\d+),(\d+)\]", question_xml)
-        if not crop_tokens:
-            return question_xml
+        # Define the block types that can contain text/images in Moodle XML
+        block_tags = "questiontext|generalfeedback|correctfeedback|partiallycorrectfeedback|incorrectfeedback|answer"
+        block_pattern = rf"(<({block_tags})\b[^>]*>.*?)(</\2>)"
 
-        file_nodes_to_inject = []
-        for token in crop_tokens:
-            ymin, xmin, ymax, xmax = map(int, token)
-            cropped_bytes = crop_diagram_from_page(page, ymin, xmin, ymax, xmax, dpi=self.dpi)
+        def block_replacer(match):
+            prefix = match.group(1)  # Everything from opening tag up to just before closing tag
+            tag_name = match.group(2)
+            suffix = match.group(3)  # The closing tag itself, e.g., </answer>
 
-            asset_uuid = str(uuid.uuid4())
-            filename = f"diagram_{asset_uuid}.png"
-            file_path = image_dir / filename
+            # Find all crop tokens inside this specific block
+            crop_tokens = re.findall(r"\[CROP_BOX:(\d+),(\d+),(\d+),(\d+)\]", prefix)
+            if not crop_tokens:
+                return match.group(0)
 
-            try:
-                file_path.write_bytes(cropped_bytes)
-            except Exception as e:
-                logger.error(f"Failed to save image {filename}: {e}")
-                continue
+            file_nodes_to_inject = []
 
-            b64_str = encode_bytes_to_base64(cropped_bytes)
-            file_node = f'    <file name="{filename}" path="/" encoding="base64">{b64_str}</file>'
-            file_nodes_to_inject.append(file_node)
+            # Use a set to process each unique token in this block only once
+            unique_tokens = list(set(crop_tokens))
 
-            raw_token_str = f"[CROP_BOX:{ymin},{xmin},{ymax},{xmax}]"
-            moodle_img_tag = (
-                f'<p><img src="@@PLUGINFILE@@/{filename}" alt="Question Diagram" '
-                f'class="img-responsive" style="max-width: 100%; height: auto;" /></p>'
-            )
-            question_xml = question_xml.replace(raw_token_str, moodle_img_tag)
+            for token in unique_tokens:
+                ymin, xmin, ymax, xmax = map(int, token)
+                cropped_bytes = crop_diagram_from_page(page, ymin, xmin, ymax, xmax, dpi=self.dpi)
 
-        if file_nodes_to_inject:
-            files_block = "\n" + "\n".join(file_nodes_to_inject)
-            question_xml = re.sub(
-                r"(</questiontext>)",
-                f"{files_block}\n\\1",
-                question_xml,
-                flags=re.IGNORECASE
-            )
+                asset_uuid = str(uuid.uuid4())
+                filename = f"diagram_{asset_uuid}.png"
+                file_path = image_dir / filename
+
+                try:
+                    file_path.write_bytes(cropped_bytes)
+                except Exception as e:
+                    logger.error(f"Failed to save image {filename}: {e}")
+                    continue
+
+                b64_str = encode_bytes_to_base64(cropped_bytes)
+                file_node = f'    <file name="{filename}" path="/" encoding="base64">{b64_str}</file>'
+                file_nodes_to_inject.append(file_node)
+
+                raw_token_str = f"[CROP_BOX:{ymin},{xmin},{ymax},{xmax}]"
+                moodle_img_tag = (
+                    f'<p><img src="@@PLUGINFILE@@/{filename}" alt="Question Diagram" '
+                    f'class="img-responsive" style="max-width: 100%; height: auto;" /></p>'
+                )
+                prefix = prefix.replace(raw_token_str, moodle_img_tag)
+
+            # Inject the <file> tags right before the closing tag of the block they belong to
+            if file_nodes_to_inject:
+                files_block = "\n" + "\n".join(file_nodes_to_inject) + "\n"
+                return prefix + files_block + suffix
+
+            return prefix + suffix
+
+        # Process each relevant Moodle XML block individually
+        question_xml = re.sub(block_pattern, block_replacer, question_xml, flags=re.IGNORECASE | re.DOTALL)
 
         return question_xml
 
@@ -343,24 +424,35 @@ def main() -> None:
     parser.add_argument("-o", "--output-dir", type=Path, required=True, help="Output directory.")
     parser.add_argument("-p", "--prompt", type=Path, required=True, help="Path to system instruction prompt markdown file.")
     
-    # NEW DYNAMIC PLACEHOLDER ARGUMENTS
-    parser.add_argument("--exam", type=str, required=True, choices=["NEET", "JEE Main", "JEE Advanced", "WBJEE", "CBSE"], help="Target exam standard (e.g. NEET, JEE Main).")
-    parser.add_argument("--difficulty", type=str, required=True, choices=["Easy", "Medium", "Hard"], help="Target difficulty level (Easy, Medium, Hard).")
+    parser.add_argument("--exam", type=str, required=True, choices=["NEET", "JEE Main", "JEE Advanced", "WBJEE", "CBSE"], help="Target exam standard.")
+    parser.add_argument("--difficulty", type=str, required=True, choices=["Easy", "Medium", "Hard"], help="Target difficulty level.")
 
     parser.add_argument("-n", "--num-questions", type=int, default=2, help="Number of questions per page (default: 2).")
-    parser.add_argument("-s", "--standards", type=str, default="JEE-Main", help="Comma-separated standards (default: JEE-Main).")
-    parser.add_argument("--memory-span", type=int, default=3, help="Pages to remember (default: 3).")
-    parser.add_argument("--default-grade", type=float, default=4.0, help="Default grade (default: 4.0).")
-    parser.add_argument("--penalty", type=float, default=0.25, help="Penalty (default: 0.25).")
-    parser.add_argument("--negative-fraction", type=int, default=-25, help="Negative fraction (default: -25).")
+    parser.add_argument("-s", "--standards", type=str, default="JEE-Main", help="Comma-separated standards.")
+    parser.add_argument("--memory-span", type=int, default=3, help="Pages memory (default: 3).")
+    parser.add_argument("--default-grade", type=float, default=4.0, help="Default grade.")
+    parser.add_argument("--penalty", type=float, default=0.25, help="Penalty.")
+    parser.add_argument("--negative-fraction", type=int, default=-25, help="Negative fraction.")
     parser.add_argument("-t", "--tags", type=str, default="", help="Global tags.")
-    parser.add_argument("-m", "--model", type=str, default="gemini-3.5-flash", help="Gemini model.")
+    parser.add_argument("-m", "--model", type=str, default="gemini-2.0-flash-thinking-exp", help="Gemini model.")
+    parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature (default: 0.1).")
+
+    # SYSTEM PROMPT CACHING OPTIONS
+    parser.add_argument("--cache-prompt", action="store_true", help="Cache system prompt file to reduce token upload overhead.")
+    parser.add_argument("--refresh-prompt-cache", action="store_true", help="Force recreate prompt cache even if local hash matches.")
+    parser.add_argument("--prompt-ttl", type=int, default=86400, help="Prompt Cache TTL in seconds (default: 86400 = 24 hrs).")
+
+    parser.add_argument("--thinking-level", type=str, choices=["minimal", "low", "medium", "high"], default=None, help="Thinking level.")
+    parser.add_argument("--thinking-budget", type=int, default=None, help="Thinking budget in tokens.")
+    parser.add_argument("--include-thoughts", action="store_true", help="Include thought traces.")
+    parser.add_argument("--code-execution", action="store_true", help="Enable Python Code Execution tool.")
     parser.add_argument("--api-key", type=str, default=os.getenv("GEMINI_API_KEY"), help="API Key.")
-    parser.add_argument("--dpi", type=int, default=150, help="Cropping DPI.")
+    parser.add_argument("--dpi", type=int, default=200, help="Cropping DPI (default: 200).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug logs.")
 
     args = parser.parse_args()
     setup_logger(args.verbose)
+    log_cli_args(args)
 
     if not args.api_key:
         logger.critical("No API key provided.")
@@ -368,10 +460,21 @@ def main() -> None:
 
     client = genai.Client(api_key=args.api_key)
     
-    # INJECT DYNAMIC EXAM & DIFFICULTY PLACEHOLDERS HERE
     prompt_text = load_prompt(args.prompt)
     prompt_text = prompt_text.replace("{{TARGET_EXAM}}", args.exam)
     prompt_text = prompt_text.replace("{{TARGET_DIFFICULTY}}", args.difficulty)
+
+    cached_prompt_name = None
+    if args.cache_prompt:
+        cached_prompt_name = get_or_create_prompt_cache(
+            client=client,
+            prompt_path=args.prompt,
+            prompt_text=prompt_text,
+            model_name=args.model,
+            ttl_seconds=args.prompt_ttl,
+            force_refresh=args.refresh_prompt_cache,
+            enable_code_execution=args.code_execution,
+        )
 
     generator = StatefulChapterGenerator(
         client=client,
@@ -385,6 +488,12 @@ def main() -> None:
         memory_span=args.memory_span,
         model_name=args.model,
         dpi=args.dpi,
+        temperature=args.temperature,
+        thinking_level=args.thinking_level,
+        thinking_budget=args.thinking_budget,
+        include_thoughts=args.include_thoughts,
+        enable_code_execution=args.code_execution,
+        cached_prompt_name=cached_prompt_name,
     )
 
     pdf_files = sorted([f for f in args.input_dir.iterdir() if f.suffix.lower() == ".pdf"])

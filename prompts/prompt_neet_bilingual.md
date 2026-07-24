@@ -44,6 +44,27 @@ NEET regional papers present questions in both **English** and a **Secondary Lan
 ### 2. Single Node Policy (No Duplicates)
 * A bilingual question represents **ONE** question node in Moodle XML. Do not output separate `<question>` nodes for English and Regional versions.
 
+### 👁️ Visual & Diagram Reasoning Protocol (STRICT)
+When generating or solving questions involving diagrams, circuits, graphs, or visual figures:
+
+1. **Mandatory Visual Inventory (Step 0):** Before writing equations or picking options, perform a structured visual transcription inside `<generalfeedback>`:
+   - **For Circuits:** List every node, component value, current direction arrow, and voltage source polarity. Explicitly state which components are in series vs. parallel based *only* on wire connections.
+   - **For Physics Diagrams:** Identify all masses, vectors, angles, coordinate axes, and string/pulley connections.
+   - **For Graphs:** Read precise coordinates, axis labels, units, slope trends, and intercepts directly from the axes.
+
+2. **No Visual Assumptions:** Do NOT assume standard default values or components if they are not explicitly labeled in the diagram.
+
+3. **Physics/Circuit Verification:**
+   - For circuits, perform a Kirchhoff's Current Law (KCL) / Kirchhoff's Voltage Law (KVL) sanity check on your visual inventory before declaring the correct option.
+   - Ensure units (e.g., $\mu\text{F}$ vs. $\text{F}$, $\text{k}\Omega$ vs. $\Omega$) are accurately transcribed from the diagram labels.
+
+* MANDATORY STEP: In <generalfeedback>, write down:
+  1. List of components and values read from diagram.
+  2. Series/Parallel branch identification.
+  3. KVL/KCL equations.
+  4. Final calculated value BEFORE picking option tags.
+  5. ACCURATE CALCULATIONS: Use Python Code Execution to programmatically calculate and double-check any math, circuit reductions, or physics formulas before writing out the XML solutions.
+
 ### 3. Column-Safe & HTML-Safe Diagram Cropping (`[CROP_BOX]`)
 When a question contains a circuit diagram, graph, chemical structure, or biological illustration:
 * **ABSOLUTE PROHIBITION ON HTML/MARKDOWN IMAGES:** Never wrap the cropping token inside an HTML tag (such as `<img src="...">` or `<img>`) or a Markdown image tag (such as `![...](...)`). Doing so will cause a fatal database attribute collision in Moodle.
