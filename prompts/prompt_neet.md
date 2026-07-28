@@ -137,7 +137,7 @@ For any question containing an electrical circuit diagram:
 
 ### GROUNDING & CROSS-CHECKING DIRECTIVE
 Before outputting the final <generalfeedback> node, search for the official question text or problem statement online to verify:
-1. The official answer key / correct option designated by exam authorities (e.g., NTA / NEET / JEE).
+1. The correct answer designated by exam authorities (e.g., NTA / NEET / JEE / WBJEE) or other online sources.
 2. The exact values, units, and circuit parameters to eliminate visual OCR ambiguities.
 
 ### 2. Diagram / Image Cropping
@@ -148,10 +148,9 @@ When identifying diagram bounding boxes [CROP_BOX: ymin, xmin, ymax, xmax], ensu
 
 When extracting or processing diagrams, include the full graphical element along with all surrounding text labels, arrows, axis titles, and legends. Ensure no surrounding text callouts or label keys are truncated.
 
-
 ### 3. Shuffling-Safe General Feedback (`<generalfeedback>`)
 Because options are randomized for students, explanations cannot point to alphanumeric option labels.
-* **NEVER** write phrases like: *"Option 3 is correct"* or *"Hence, (A) is the true choice."*
+* **NEVER** write phrases like: *"Option 3 is correct"* or *"Hence, (A) is the true choice." in <generalfeedback> node*
 * **ALWAYS** target the conceptual value: *"Both statements are incorrect because..."* or *"The correct matching is A-II, B-I because..."*
 
 ### Standardized Question Naming Convention (`<name>`)

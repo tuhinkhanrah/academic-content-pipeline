@@ -65,11 +65,31 @@ When generating or solving questions involving diagrams, circuits, graphs, or vi
   4. Final calculated value BEFORE picking option tags.
   5. ACCURATE CALCULATIONS: Use Python Code Execution to programmatically calculate and double-check any math, circuit reductions, or physics formulas before writing out the XML solutions.
 
+### ELECTRICAL CIRCUIT PROTOCOL
+For any question containing an electrical circuit diagram:
+1. **Node Mapping:** Explicitly list every circuit component, value, and node connection in text first.
+2. **Python Code Execution:** Write and execute a Python script (using Kirchhoff's laws or SymPy equations) inside your environment to solve for unknown currents, voltages, or equivalent resistance.
+3. **Final Answer Verification:** Verify that your calculated answer matches one of the multiple-choice options before writing the final Moodle XML node.
+
+### GROUNDING & CROSS-CHECKING DIRECTIVE
+Before outputting the final <generalfeedback> node, search for the official question text or problem statement online to verify:
+1. The correct answer designated by exam authorities (e.g., NTA / NEET / JEE / WBJEE) or other online sources.
+2. The exact values, units, and circuit parameters to eliminate visual OCR ambiguities.
+
+### Shuffling-Safe General Feedback (`<generalfeedback>`)
+Because options are randomized for students, explanations cannot point to alphanumeric option labels.
+* **NEVER** write phrases like: *"Option 3 is correct"* or *"Hence, (A) is the true choice." in <generalfeedback> node*
+* **ALWAYS** target the conceptual value: *"Both statements are incorrect because..."* or *"The correct matching is A-II, B-I because..."*
+
 ### 3. Column-Safe & HTML-Safe Diagram Cropping (`[CROP_BOX]`)
 When a question contains a circuit diagram, graph, chemical structure, or biological illustration:
 * **ABSOLUTE PROHIBITION ON HTML/MARKDOWN IMAGES:** Never wrap the cropping token inside an HTML tag (such as `<img src="...">` or `<img>`) or a Markdown image tag (such as `![...](...)`). Doing so will cause a fatal database attribute collision in Moodle.
 * **RAW TOKEN ONLY:** You must output **ONLY** the exact, raw text string `[CROP_BOX:ymin,xmin,ymax,xmax]` inside a standard paragraph tag. The external backend will automatically build the image tags later.
 * **Bilingual Placement Order:** In dual-column or bilingual layouts, always position the standalone crop token **after** both the English and Regional text blocks inside its own centered paragraph.
+
+When identifying diagram bounding boxes [CROP_BOX: ymin, xmin, ymax, xmax], ensure the box generously encompasses all diagram labels, text callouts, axis titles, and legends with a 10–20 pixel margin. Do not crop tightly against diagram borders.
+
+When extracting or processing diagrams, include the full graphical element along with all surrounding text labels, arrows, axis titles, and legends. Ensure no surrounding text callouts or label keys are truncated.
 
 #### 🟢 CORRECT FORMAT (Always Do This):
 ```html
@@ -172,6 +192,16 @@ You must deeply analyze the question and generate a rich set of taxonomy tags.
 * **Well-Formed XML ONLY:** Every opening tag MUST have a corresponding closing tag (e.g., `<text>` must end with `</text>`).
 * **CDATAs:** All HTML content inside `<text>` nodes must be perfectly wrapped in `<![CDATA[ ... ]]>`. Do not leave CDATA blocks unclosed.
 * **No Markdown Wrappers:** Do NOT wrap your output in ```xml ... ``` code blocks. Output the raw `<question>` nodes directly.
+
+### Handling Ordered Options & Position-Dependent Choices
+* **Positional Rule:** 
+  * If an extracted/generated question contains options that explicitly rely on vertical position (e.g., *"All of the above"*, *"None of the above"*, *"Both (1) and (2)"*), you **MUST** set `<shuffleanswers>false</shuffleanswers>`.
+
+* **Shuffling-Safe Transformation (Preferred):**
+  Whenever possible, rewrite position-dependent options into position-independent statements so that `<shuffleanswers>true</shuffleanswers>` can safely remain enabled:
+  * Convert *"All of the above"* ➔ `<p>All of the given options are correct</p>`
+  * Convert *"None of the above"* ➔ `<p>None of the given options are correct</p>`
+  * Convert *"Both (1) and (2)"* ➔ `<p>Both option (1) and option (2)</p>`
 
 ---
 
