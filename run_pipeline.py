@@ -3,8 +3,10 @@
 run_pipeline.py - Master Dynamic Orchestrator Pipeline.
 
 Routing Logic:
-  - Top-level folders containing 'books', 'chapters', 'chapter', or 'modules' -> scripts/chapter2moodle_agent.py
-  - All other folders (question papers, PYQs, exams) -> scripts/pdf2moodle_agent.py
+    - route-mode=paper: all discovered PDF folders -> scripts/paper2moodle_agent.py
+    - route-mode=book: all discovered PDF folders -> scripts/book2moodle_agent.py
+    - route-mode=mock: blueprint-driven generation -> scripts/mock2moodle_agent.py
+    - route-mode=auto: legacy heuristic based on folder names
 """
 
 import argparse
@@ -19,24 +21,25 @@ from typing import Dict, List
 # Locate script paths dynamically relative to run_pipeline.py
 BASE_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = BASE_DIR / "scripts"
-PDF_AGENT_SCRIPT = SCRIPTS_DIR / "pdf2moodle_agent.py"
-CHAPTER_AGENT_SCRIPT = SCRIPTS_DIR / "chapter2moodle_agent.py"
+PDF_AGENT_SCRIPT = SCRIPTS_DIR / "paper2moodle_agent.py"
+CHAPTER_AGENT_SCRIPT = SCRIPTS_DIR / "book2moodle_agent.py"
+MOCK_AGENT_SCRIPT = SCRIPTS_DIR / "mock2moodle_agent.py"
 
 PROMPT_MAP = {
     "jee_advanced": {
-        "prompt": BASE_DIR / "prompts" / "prompt_jee_advanced.md",
+        "prompt": BASE_DIR / "prompts" / "extractor" / "jee_advanced.md",
         "standards": "JEE-Advanced",
     },
     "wbjee": {
-        "prompt": BASE_DIR / "prompts" / "prompt_wbjee.md",
+        "prompt": BASE_DIR / "prompts" / "extractor" / "wbjee.md",
         "standards": "WBJEE",
     },
     "jee_main": {
-        "prompt": BASE_DIR / "prompts" / "prompt_jee_main.md",
+        "prompt": BASE_DIR / "prompts" / "extractor" / "jee_main.md",
         "standards": "JEE-Main",
     },
     "neet": {
-        "prompt": BASE_DIR / "prompts" / "prompt_neet.md",
+        "prompt": BASE_DIR / "prompts" / "extractor" / "neet.md",
         "standards": "NEET",
     },
 }
@@ -92,13 +95,13 @@ def resolve_prompt_file(exam_key: str, args: argparse.Namespace) -> Path:
     # Last-resort defaults preserve existing behavior for missing files.
     if exam_key == "neet":
         candidates.extend([
-            BASE_DIR / "prompts" / "prompt_neet.md",
-            BASE_DIR / "prompts" / "prompt_jee_main.md",
+            BASE_DIR / "prompts" / "extractor" / "neet.md",
+            BASE_DIR / "prompts" / "extractor" / "jee_main.md",
         ])
     else:
         candidates.extend([
-            BASE_DIR / "prompts" / "prompt_jee_main.md",
-            BASE_DIR / "prompts" / "prompt_neet.md",
+            BASE_DIR / "prompts" / "extractor" / "jee_main.md",
+            BASE_DIR / "prompts" / "extractor" / "neet.md",
         ])
 
     for candidate in candidates:
@@ -200,6 +203,57 @@ def generate_pdf_configs(paper_dir: Path, args: argparse.Namespace) -> List[Path
 
 
 def run_batch_processing(args: argparse.Namespace):
+    if args.route_mode == "mock":
+        if not args.blueprint:
+            print("❌ --blueprint is required when --route-mode mock is selected.")
+            sys.exit(1)
+        if not args.blueprint.exists():
+            print(f"❌ Blueprint file '{args.blueprint}' does not exist.")
+            sys.exit(1)
+
+        cmd = [sys.executable, str(MOCK_AGENT_SCRIPT), "-b", str(args.blueprint.resolve())]
+
+        if args.prompt:
+            cmd.extend(["-p", str(args.prompt.resolve())])
+        if args.languages:
+            cmd.extend(["-l", args.languages])
+        if args.standards:
+            cmd.extend(["-s", args.standards])
+        if args.tags:
+            cmd.extend(["-t", args.tags])
+        if args.instruction_file:
+            cmd.extend(["--instruction-file", str(args.instruction_file.resolve())])
+        if args.sample_pdf:
+            cmd.extend(["--sample-pdf", str(args.sample_pdf.resolve())])
+        if args.difficulty_mix:
+            cmd.extend(["--difficulty-mix", args.difficulty_mix])
+        if args.agent_name:
+            cmd.extend(["-a", args.agent_name])
+        if args.agent_type:
+            cmd.extend(["--agent-type", args.agent_type])
+        if args.model_name:
+            cmd.extend(["-m", args.model_name])
+        if args.rate_limit_delay is not None:
+            cmd.extend(["--rate-limit-delay", str(args.rate_limit_delay)])
+        if args.retry_base_delay is not None:
+            cmd.extend(["--retry-base-delay", str(args.retry_base_delay)])
+        if args.attempt_limit is not None:
+            cmd.extend(["--attempt-limit", str(args.attempt_limit)])
+        if args.dpi is not None:
+            cmd.extend(["--dpi", str(args.dpi)])
+        if args.padding_cm is not None:
+            cmd.extend(["--padding-cm", str(args.padding_cm)])
+        if args.verbose:
+            cmd.append("-v")
+
+        print(f"🧪 Branch [MOCK]: Blueprint generation using [{args.blueprint.name}]")
+        try:
+            subprocess.run(cmd, check=True)
+            print("✅ Successfully generated mock exam bank.\n")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Mock generation failed (Exit status {e.returncode})\n")
+        return
+
     papers_root = args.papers_dir
     if not papers_root.exists():
         print(f"❌ Root directory '{papers_root}' does not exist.")
@@ -215,13 +269,18 @@ def run_batch_processing(args: argparse.Namespace):
     for folder in pdf_directories:
         folder_path_lower = str(folder).lower()
 
-        # ROUTING RULE: Top-level folder containing 'books', 'chapters', 'chapter', or 'modules' -> chapter2moodle_agent.py
-        if any(keyword in folder_path_lower for keyword in ["books", "chapters", "chapter", "modules"]):
-            chapter_prompt = BASE_DIR / "prompts" / "prompt_chapter_generation.md"
+        force_book_mode = args.route_mode == "book"
+        force_paper_mode = args.route_mode == "paper"
+        auto_book_mode = any(keyword in folder_path_lower for keyword in ["books", "chapters", "chapter", "modules"])
+        use_book_mode = force_book_mode or (args.route_mode == "auto" and auto_book_mode)
+
+        # ROUTING RULE: book mode routes to book2moodle_agent.py
+        if use_book_mode and not force_paper_mode:
+            question_prompt = BASE_DIR / "prompts" / "generator" / "question_generator.md"
             exam_key = detect_exam_type(folder)
             standard = PROMPT_MAP[exam_key]["standards"]
 
-            config_payload = create_chapter_config_payload(folder, chapter_prompt, standard, args)
+            config_payload = create_chapter_config_payload(folder, question_prompt, standard, args)
             config_path = folder / "generated_chapter_config.json"
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config_payload, f, indent=2)
@@ -236,7 +295,7 @@ def run_batch_processing(args: argparse.Namespace):
             except subprocess.CalledProcessError as e:
                 print(f"❌ Question generation failed in {folder} (Exit status {e.returncode})\n")
 
-        # ROUTING RULE: Default (papers, pyq, exams) -> pdf2moodle_agent.py
+        # ROUTING RULE: paper mode routes to paper2moodle_agent.py
         else:
             config_paths = generate_pdf_configs(folder, args)
             for config_path in config_paths:
@@ -257,7 +316,15 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # Core Pipeline Inputs
+    parser.add_argument(
+        "--route-mode",
+        type=str,
+        choices=["auto", "paper", "book", "mock"],
+        default="auto",
+        help="Routing mode: auto (legacy path heuristic), paper, book, or mock.",
+    )
     parser.add_argument("-i", "--papers-dir", type=Path, default=Path("papers"), help="Root directory containing question paper PDFs or Book PDFs.")
+    parser.add_argument("-b", "--blueprint", type=Path, help="Blueprint JSON file used when --route-mode mock.")
     parser.add_argument("-p", "--prompt", type=Path, help="Override system prompt markdown file for all folders.")
     parser.add_argument("-l", "--languages", type=str, default="english", help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil', 'english,hindi').")
     parser.add_argument("-s", "--standards", type=str, help="Override standards (e.g. NEET, WBJEE, JEE-Main, JEE-Advanced).")
@@ -276,6 +343,7 @@ def parse_args() -> argparse.Namespace:
 
     # PDF Paper Agent Specific Options
     parser.add_argument("--instruction-file", type=Path, help="Standalone instruction/chapter markdown file.")
+    parser.add_argument("--sample-pdf", type=Path, help="Sample reference exam paper PDF (used in mock mode).")
     parser.add_argument("--instruction-page", type=int, help="PDF page containing instructions (default: 1). Set to 0 if no instruction page exists.")
     parser.add_argument("--no-instruction-page", action="store_true", help="Explicitly specify that this paper does not have an instruction cover page.")
     parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Process specific PDF page range.")
@@ -284,6 +352,7 @@ def parse_args() -> argparse.Namespace:
 
     # Chapter Generator Specific Options
     parser.add_argument("--difficulty", type=str, choices=["Easy", "Medium", "Hard"], help="Target difficulty level for chapter generation.")
+    parser.add_argument("--difficulty-mix", type=str, help="Difficulty mix ratios for mock mode (e.g. 'easy:0.2,medium:0.5,hard:0.3').")
     parser.add_argument("-n", "--num-questions", type=int, help="Maximum questions allowed per section/file; model decides actual count dynamically.")
     parser.add_argument("--default-grade", type=float, help="Default grade per question (default: 4.0).")
     parser.add_argument("--penalty", type=float, help="Penalty fraction for multiple attempts (default: 0.25).")
