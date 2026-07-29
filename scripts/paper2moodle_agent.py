@@ -464,7 +464,7 @@ def parse_args_and_config() -> argparse.Namespace:
     # PRECEDENCE RESOLUTION RULE: Explicit CLI Flag -> JSON Config File -> Default Fallback
     resolved.input_dir = args.input_dir or Path(config_data.get("input_dir", "./pdfs"))
     resolved.output_dir = args.output_dir or Path(config_data.get("output_dir", "./output"))
-    resolved.prompt = args.prompt or Path(config_data.get("prompt", "./prompts/prompt_neet.md"))
+    resolved.prompt = args.prompt or Path(config_data.get("prompt", "./prompts/extractor/neet.md"))
 
     langs_val = args.languages or config_data.get("languages", "english")
     if isinstance(langs_val, str):

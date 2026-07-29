@@ -1,0 +1,30 @@
+{
+  "exam_name": "NEET-UG",
+  "batch_size": 15,
+  "subjects": [
+    {
+      "name": "Physics",
+      "total_questions": 10,
+      "default_grade": 4.0,
+      "penalty": 0.25,
+      "negative_fraction": -25,
+      "syllabus_file": "prompts/generator/syllabus/neet/physics.md"
+    },
+    {
+      "name": "Chemistry",
+      "total_questions": 10,
+      "default_grade": 4.0,
+      "penalty": 0.25,
+      "negative_fraction": -25,
+      "syllabus_file": "prompts/generator/syllabus/neet/chemistry.md"
+    },
+    {
+      "name": "Biology",
+      "total_questions": 10,
+      "default_grade": 4.0,
+      "penalty": 0.25,
+      "negative_fraction": -25,
+      "syllabus_file": "prompts/generator/syllabus/neet/biology.md"
+    }
+  ]
+}
