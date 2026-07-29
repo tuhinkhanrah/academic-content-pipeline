@@ -3,7 +3,7 @@
 run_pipeline.py - Master Dynamic Orchestrator Pipeline.
 
 Routing Logic:
-  - Top-level folders containing 'books', 'chapters', or 'modules' -> scripts/chapter2moodle_agent.py
+  - Top-level folders containing 'books', 'chapters', 'chapter', or 'modules' -> scripts/chapter2moodle_agent.py
   - All other folders (question papers, PYQs, exams) -> scripts/pdf2moodle_agent.py
 """
 
@@ -24,23 +24,19 @@ CHAPTER_AGENT_SCRIPT = SCRIPTS_DIR / "chapter2moodle_agent.py"
 
 PROMPT_MAP = {
     "jee_advanced": {
-        "english": BASE_DIR / "prompts" / "prompt_jee_advanced.md",
-        "bilingual": BASE_DIR / "prompts" / "prompt_jee_advanced.md",
+        "prompt": BASE_DIR / "prompts" / "prompt_jee_advanced.md",
         "standards": "JEE-Advanced",
     },
     "wbjee": {
-        "english": BASE_DIR / "prompts" / "prompt_wbjee_english.md",
-        "bilingual": BASE_DIR / "prompts" / "prompt_wbjee_bilingual.md",
+        "prompt": BASE_DIR / "prompts" / "prompt_wbjee.md",
         "standards": "WBJEE",
     },
     "jee_main": {
-        "english": BASE_DIR / "prompts" / "prompt_jee_main.md",
-        "bilingual": BASE_DIR / "prompts" / "prompt_jee_main_bilingual.md",
+        "prompt": BASE_DIR / "prompts" / "prompt_jee_main.md",
         "standards": "JEE-Main",
     },
     "neet": {
-        "english": BASE_DIR / "prompts" / "prompt_neet.md",
-        "bilingual": BASE_DIR / "prompts" / "prompt_neet_bilingual.md",
+        "prompt": BASE_DIR / "prompts" / "prompt_neet.md",
         "standards": "NEET",
     },
 }
@@ -79,6 +75,40 @@ def detect_exam_type(paper_dir: Path) -> str:
         return "neet"
 
 
+def normalize_languages(languages_arg: str) -> List[str]:
+    langs = [l.strip().lower() for l in languages_arg.split(",") if l.strip()]
+    return langs if langs else ["english"]
+
+
+def resolve_prompt_file(exam_key: str, args: argparse.Namespace) -> Path:
+    if args.prompt:
+        return args.prompt
+
+    exam_info = PROMPT_MAP[exam_key]
+    candidates = [
+        exam_info.get("prompt"),
+    ]
+
+    # Last-resort defaults preserve existing behavior for missing files.
+    if exam_key == "neet":
+        candidates.extend([
+            BASE_DIR / "prompts" / "prompt_neet.md",
+            BASE_DIR / "prompts" / "prompt_jee_main.md",
+        ])
+    else:
+        candidates.extend([
+            BASE_DIR / "prompts" / "prompt_jee_main.md",
+            BASE_DIR / "prompts" / "prompt_neet.md",
+        ])
+
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return candidate
+
+    # Return mapped prompt even if missing so downstream logs clearly reveal the problem.
+    return exam_info["prompt"]
+
+
 def create_pdf_config_payload(
     paper_dir: Path, prompt_file: Path, standard: str, args: argparse.Namespace
 ) -> Dict:
@@ -86,12 +116,14 @@ def create_pdf_config_payload(
     merged_tags = f"{args.tags},{path_tags}".strip(",") if args.tags else path_tags
 
     inst_page = 0 if args.no_instruction_page else (args.instruction_page if args.instruction_page is not None else 1)
+    languages = normalize_languages(args.languages) if args.languages else ["english"]
 
     config = {
         "input_dir": str(paper_dir.resolve()),
         "output_dir": str(paper_dir.resolve()),
         "prompt": str(args.prompt.resolve()) if args.prompt else str(prompt_file.resolve()),
         "standards": args.standards or standard,
+        "languages": languages,
         "tags": merged_tags,
         "instruction_page": inst_page,
         "agent_name": args.agent_name or "antigravity-preview-05-2026",
@@ -121,12 +153,14 @@ def create_chapter_config_payload(
 ) -> Dict:
     path_tags = extract_path_tags(paper_dir)
     merged_tags = f"{args.tags},{path_tags}".strip(",") if args.tags else path_tags
+    languages = normalize_languages(args.languages) if args.languages else ["english"]
 
     config = {
         "input_dir": str(paper_dir.resolve()),
         "output_dir": str(paper_dir.resolve()),
         "prompt": str(args.prompt.resolve()) if args.prompt else str(prompt_file.resolve()),
         "standards": args.standards or standard,
+        "languages": languages,
         "difficulty": args.difficulty or "Medium",
         "num_questions": args.num_questions if args.num_questions is not None else 2,
         "default_grade": args.default_grade if args.default_grade is not None else 4.0,
@@ -157,33 +191,12 @@ def generate_pdf_configs(paper_dir: Path, args: argparse.Namespace) -> List[Path
     exam_key = detect_exam_type(paper_dir)
     exam_info = PROMPT_MAP[exam_key]
     standard = exam_info["standards"]
-    path_str_lower = str(paper_dir).lower()
-    config_paths = []
-
-    if exam_key == "wbjee":
-        for lang in ["english", "bilingual"]:
-            prompt_file = exam_info[lang]
-            if not prompt_file.exists():
-                continue
-            config_payload = create_pdf_config_payload(paper_dir, prompt_file, standard, args)
-            config_path = paper_dir / f"generated_config_{lang}.json"
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(config_payload, f, indent=2)
-            config_paths.append(config_path)
-    else:
-        lang = "bilingual" if "bengali" in path_str_lower else "english"
-        prompt_file = exam_info[lang]
-        if not prompt_file.exists():
-            fallback = BASE_DIR / "prompts" / "prompt_neet.md" if exam_key == "neet" else BASE_DIR / "prompts" / "prompt_jee_main.md"
-            prompt_file = fallback
-
-        config_payload = create_pdf_config_payload(paper_dir, prompt_file, standard, args)
-        config_path = paper_dir / "generated_config.json"
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config_payload, f, indent=2)
-        config_paths.append(config_path)
-
-    return config_paths
+    prompt_file = resolve_prompt_file(exam_key, args)
+    config_payload = create_pdf_config_payload(paper_dir, prompt_file, standard, args)
+    config_path = paper_dir / "generated_config.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config_payload, f, indent=2)
+    return [config_path]
 
 
 def run_batch_processing(args: argparse.Namespace):
@@ -246,6 +259,7 @@ def parse_args() -> argparse.Namespace:
     # Core Pipeline Inputs
     parser.add_argument("-i", "--papers-dir", type=Path, default=Path("papers"), help="Root directory containing question paper PDFs or Book PDFs.")
     parser.add_argument("-p", "--prompt", type=Path, help="Override system prompt markdown file for all folders.")
+    parser.add_argument("-l", "--languages", type=str, default="english", help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil', 'english,hindi').")
     parser.add_argument("-s", "--standards", type=str, help="Override standards (e.g. NEET, WBJEE, JEE-Main, JEE-Advanced).")
     parser.add_argument("-t", "--tags", type=str, help="Comma-separated global tags to append.")
 
@@ -270,7 +284,7 @@ def parse_args() -> argparse.Namespace:
 
     # Chapter Generator Specific Options
     parser.add_argument("--difficulty", type=str, choices=["Easy", "Medium", "Hard"], help="Target difficulty level for chapter generation.")
-    parser.add_argument("-n", "--num-questions", type=int, help="Number of questions to generate per section/file.")
+    parser.add_argument("-n", "--num-questions", type=int, help="Maximum questions allowed per section/file; model decides actual count dynamically.")
     parser.add_argument("--default-grade", type=float, help="Default grade per question (default: 4.0).")
     parser.add_argument("--penalty", type=float, help="Penalty fraction for multiple attempts (default: 0.25).")
     parser.add_argument("--negative-fraction", type=int, help="Negative score percentage for incorrect choices (default: -25).")

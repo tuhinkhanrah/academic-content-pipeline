@@ -21,6 +21,7 @@ import fitz  # PyMuPDF
 from google import genai
 
 from moodle_utils import (
+    build_language_instructions,
     encode_bytes_to_base64,
     extract_clean_question_nodes_with_status,
     load_file_content,
@@ -71,6 +72,7 @@ class ManagedAgentChapterGenerator:
         prompt_text: str,
         standards: List[str],
         tags: List[str],
+        languages: List[str],
         difficulty: str = "Medium",
         num_questions: int = 2,
         default_grade: float = 4.0,
@@ -92,6 +94,7 @@ class ManagedAgentChapterGenerator:
         self.prompt_text = prompt_text
         self.standards = standards
         self.tags = tags
+        self.languages = languages
         self.difficulty = difficulty
         self.num_questions = num_questions
         self.default_grade = default_grade
@@ -258,27 +261,31 @@ class ManagedAgentChapterGenerator:
 
     def _build_turn_prompt(self, content_text: str, current_page_num: Optional[int] = None) -> str:
         formatted_standards = ", ".join(self.standards) if self.standards else "General"
+        lang_instruction, lang_tags = build_language_instructions(self.languages)
+
         all_tags = set(self.tags)
         all_tags.add(f"difficulty:{self.difficulty.lower()}")
-        tags_block = "\n".join([f"      <tag><text>{t}</text></tag>" for t in all_tags])
+        all_tags.update(lang_tags)
 
+        tags_block = "\n".join([f"      <tag><text>{t}</text></tag>" for t in all_tags])
         page_marker = f"=== PAGE {current_page_num} ===\n" if current_page_num else ""
 
         return (
             f"{page_marker}"
             f"=== CHAPTER SYLLABUS CONTENT ===\n"
             f"{content_text}\n\n"
+            f"{lang_instruction}\n"
             f"=== GENERATION CONSTRAINTS ===\n"
             f"- Target Exam: {formatted_standards}\n"
             f"- Target Difficulty Level: {self.difficulty}\n"
-            f"- Number of Questions to Generate: {self.num_questions}\n"
-            f"- Question Volume Strategy: Dynamically generate between 1 and {self.num_questions} high-quality questions based on the depth of concepts present on this page.\n"
+            f"- Maximum Questions Allowed: {self.num_questions}\n"
+            f"- Question Volume Strategy: Dynamically generate between 0 and {self.num_questions} high-quality questions based on the depth, uniqueness, and solvability of concepts present on this page/content block.\n"
+            f"- Quality Gate: Prefer fewer high-quality questions over filler; if no good question is possible, generate 0 for this page/content block.\n"
             f"- Default Grade (<defaultgrade>): {self.default_grade}\n"
             f"- Question Penalty (<penalty>): {self.penalty}\n"
             f"- Incorrect Choice Fraction: {self.negative_fraction}%\n"
-            f"- Standards: {formatted_standards}\n"
             f"- Global Tags:\n<tags>\n{tags_block}\n</tags>\n\n"
-            f'- Generate questions covering key topics above in valid Moodle XML format. Output ONLY valid <question> nodes.'
+            f"- Generate questions covering key topics above in valid Moodle XML format. Output ONLY valid <question> nodes."
         )
 
     def _log_interaction_steps(self, interaction, page_num: Optional[int] = None) -> None:
@@ -309,13 +316,6 @@ class ManagedAgentChapterGenerator:
         environment_id: Optional[str] = None,
         previous_interaction_id: Optional[str] = None,
     ) -> Tuple[Optional[object], Optional[List[str]]]:
-        formatted_standards = ", ".join(self.standards) if self.standards else "General"
-        formatted_system_instruction = (
-            self.prompt_text
-            .replace("{{TARGET_EXAM}}", formatted_standards)
-            .replace("{{TARGET_DIFFICULTY}}", self.difficulty)
-        )
-
         agent_config_payload = {
             "type": self.agent_type,
             "model": self.model_name,
@@ -328,7 +328,7 @@ class ManagedAgentChapterGenerator:
                     "agent": self.agent_name,
                     "agent_config": agent_config_payload,
                     "environment": env_param,
-                    "system_instruction": formatted_system_instruction,
+                    "system_instruction": self.prompt_text,
                     "input": multimodal_input,
                 }
                 if previous_interaction_id:
@@ -359,9 +359,20 @@ class ManagedAgentChapterGenerator:
                     suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_base_delay * (2 ** (attempt - 1)), 35.0)
                     logger.warning(f"⚠️ Rate/Quota Limit Hit. Retrying in {suggested_delay:.1f}s...")
                     time.sleep(suggested_delay)
-                else:
-                    logger.error(f"❌ API Error on [{label}]: {e}")
+                elif any(code in err_str for code in ["401", "404"]):
+                    logger.error(
+                        f"❌ API Error on [{label}] (Attempt {attempt}/{self.attempt_limit}): {e}. "
+                        "Non-retriable auth/resource error."
+                    )
                     break
+                else:
+                    retry_delay = max(self.retry_base_delay * (2 ** (attempt - 1)), self.retry_base_delay)
+                    logger.warning(
+                        f"⚠️ API Error on [{label}] (Attempt {attempt}/{self.attempt_limit}): {e}. "
+                        f"Retrying same page/content in {retry_delay:.1f}s..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
 
         return None, None
 
@@ -422,13 +433,14 @@ def parse_args_and_config() -> argparse.Namespace:
     parser.add_argument("-i", "--input-dir", type=Path, help="Input directory containing chapter markdown/pdf files.")
     parser.add_argument("-o", "--output-dir", type=Path, help="Output directory for generated Moodle XML.")
     parser.add_argument("-p", "--prompt", type=Path, help="Path to system prompt markdown file.")
+    parser.add_argument("-l", "--languages", type=str, help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil').")
     parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Process specific page range (e.g. 10 15).")
     parser.add_argument("-s", "--standards", type=str, help="Comma-separated standards (e.g. NEET, JEE-Main, WBJEE).")
     parser.add_argument("-t", "--tags", type=str, help="Comma-separated global tags.")
 
     # Question Synthesis Constraints
     parser.add_argument("--difficulty", type=str, choices=["Easy", "Medium", "Hard"], help="Target difficulty level.")
-    parser.add_argument("-n", "--num-questions", type=int, help="Number of questions to generate per page/section.")
+    parser.add_argument("-n", "--num-questions", type=int, help="Maximum questions allowed per page/section; model chooses actual count dynamically.")
     parser.add_argument("--default-grade", type=float, help="Default grade for generated questions.")
     parser.add_argument("--penalty", type=float, help="Penalty fraction for multiple attempts.")
     parser.add_argument("--negative-fraction", type=int, help="Negative percentage for wrong answers (e.g., -25).")
@@ -470,6 +482,12 @@ def parse_args_and_config() -> argparse.Namespace:
     resolved.output_dir = args.output_dir or Path(config_data.get("output_dir", "./output"))
     resolved.prompt = args.prompt or Path(config_data.get("prompt", "./prompts/prompt_chapter_generation.md"))
 
+    langs_val = args.languages or config_data.get("languages", "english")
+    if isinstance(langs_val, str):
+        resolved.languages = [l.strip() for l in langs_val.split(",") if l.strip()]
+    else:
+        resolved.languages = langs_val
+
     page_range_val = args.page_range or config_data.get("page_range")
     resolved.page_range = tuple(page_range_val) if page_range_val else None
 
@@ -477,7 +495,7 @@ def parse_args_and_config() -> argparse.Namespace:
     resolved.tags = args.tags or config_data.get("tags", "")
 
     resolved.difficulty = args.difficulty or config_data.get("difficulty", "Medium")
-    resolved.num_questions = args.num_questions if args.num_questions is not None else config_data.get("num_questions", 2)
+    resolved.num_questions = args.num_questions if args.num_questions is not None else config_data.get("num_questions", config_data.get("max_questions", 2))
     resolved.default_grade = args.default_grade if args.default_grade is not None else config_data.get("default_grade", 4.0)
     resolved.penalty = args.penalty if args.penalty is not None else config_data.get("penalty", 0.25)
     resolved.negative_fraction = args.negative_fraction if args.negative_fraction is not None else config_data.get("negative_fraction", -25)
@@ -518,6 +536,7 @@ def main() -> None:
         prompt_text=prompt_text,
         standards=[s.strip() for s in args.standards.split(",") if s.strip()],
         tags=[t.strip() for t in args.tags.split(",") if t.strip()],
+        languages=args.languages,
         difficulty=args.difficulty,
         num_questions=args.num_questions,
         default_grade=args.default_grade,
@@ -551,7 +570,6 @@ def main() -> None:
         if not success:
             overall_success = False
 
-    # Exit with code 1 if any chapter file failed to generate questions
     if not overall_success:
         logger.error("❌ One or more files failed during question generation.")
         sys.exit(1)

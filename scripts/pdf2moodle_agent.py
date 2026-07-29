@@ -21,6 +21,7 @@ import fitz  # PyMuPDF
 from google import genai
 
 from moodle_utils import (
+    build_language_instructions,
     encode_bytes_to_base64,
     extract_clean_question_nodes_with_status,
     load_file_content,
@@ -71,6 +72,7 @@ class ManagedAgentPaperExtractor:
         prompt_text: str,
         standards: List[str],
         tags: List[str],
+        languages: List[str],
         agent_name: str = "antigravity-preview-05-2026",
         agent_type: str = "antigravity",
         model_name: str = "gemini-3.6-flash",
@@ -89,6 +91,7 @@ class ManagedAgentPaperExtractor:
         self.prompt_text = prompt_text
         self.standards = standards
         self.tags = tags
+        self.languages = languages
         self.agent_name = agent_name
         self.agent_type = agent_type
         self.model_name = model_name
@@ -119,12 +122,28 @@ class ManagedAgentPaperExtractor:
             return False
 
         total_pdf_pages = len(doc)
+
+        if self.instruction_page <= 0 or self.instruction_page > total_pdf_pages:
+            logger.error(
+                f"[{pdf_stem}] Invalid instruction_page={self.instruction_page}. "
+                f"Valid range is 1 to {total_pdf_pages}."
+            )
+            doc.close()
+            return False
+
         start_page = 1
         end_page = total_pdf_pages
 
         if self.page_range:
             start_page = max(1, self.page_range[0])
             end_page = min(total_pdf_pages, self.page_range[1])
+
+        if start_page > end_page:
+            logger.error(
+                f"[{pdf_stem}] Invalid target page range after bounds check: {start_page} to {end_page}."
+            )
+            doc.close()
+            return False
 
         logger.info(f"[{pdf_stem}] Target page range: {start_page} to {end_page}")
 
@@ -224,7 +243,12 @@ class ManagedAgentPaperExtractor:
         out_of_bounds_instruction_text: str = "",
     ) -> str:
         formatted_standards = ", ".join(self.standards) if self.standards else "General"
-        tags_block = "\n".join([f"      <tag><text>{t}</text></tag>" for t in self.tags])
+        lang_instruction, lang_tags = build_language_instructions(self.languages)
+
+        all_tags = set(self.tags)
+        all_tags.update(lang_tags)
+
+        tags_block = "\n".join([f"      <tag><text>{t}</text></tag>" for t in all_tags])
 
         instruction_block = ""
         if self.instruction_text:
@@ -240,6 +264,7 @@ class ManagedAgentPaperExtractor:
             f"=== PAGE {current_page_num} EXTRACTION ===\n"
             f"{instruction_block}"
             f"{page_instruction_marker}"
+            f"{lang_instruction}\n"
             f"Extract all completed questions ending on Page {current_page_num}.\n"
             f"Standards: {formatted_standards}\n"
             f"Global Tags:\n<tags>\n{tags_block}\n</tags>\n\n"
@@ -323,9 +348,20 @@ class ManagedAgentPaperExtractor:
                     suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_base_delay * (2 ** (attempt - 1)), 35.0)
                     logger.warning(f"⚠️ Rate/Quota Limit Hit. Retrying in {suggested_delay:.1f}s...")
                     time.sleep(suggested_delay)
-                else:
-                    logger.error(f"❌ API Error on Page {page_num}: {e}")
+                elif any(code in err_str for code in ["401", "404"]):
+                    logger.error(
+                        f"❌ API Error on Page {page_num} (Attempt {attempt}/{self.attempt_limit}): {e}. "
+                        "Non-retriable auth/resource error."
+                    )
                     break
+                else:
+                    retry_delay = max(self.retry_base_delay * (2 ** (attempt - 1)), self.retry_base_delay)
+                    logger.warning(
+                        f"⚠️ API Error on Page {page_num} (Attempt {attempt}/{self.attempt_limit}): {e}. "
+                        f"Retrying same page in {retry_delay:.1f}s..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
 
         return None, None
 
@@ -386,17 +422,18 @@ def parse_args_and_config() -> argparse.Namespace:
     parser.add_argument("-i", "--input-dir", type=Path, help="Input directory containing PDF files.")
     parser.add_argument("-o", "--output-dir", type=Path, help="Output directory for generated XML and images.")
     parser.add_argument("-p", "--prompt", type=Path, help="Path to system prompt markdown file.")
+    parser.add_argument("-l", "--languages", type=str, help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil').")
     parser.add_argument("--instruction-file", type=Path, help="Standalone instruction/chapter markdown file.")
     parser.add_argument("--instruction-page", type=int, help="PDF page containing instructions (default: 1).")
     parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Process specific page range (e.g. 10 15).")
     parser.add_argument("-s", "--standards", type=str, help="Comma-separated standards (e.g. NEET, JEE-Main, WBJEE).")
     parser.add_argument("-t", "--tags", type=str, help="Comma-separated global tags.")
-    
+
     # Engine & Agent Configuration CLI Arguments
     parser.add_argument("-a", "--agent-name", type=str, help="Managed agent resource name.")
     parser.add_argument("--agent-type", type=str, help="Agent configuration type.")
     parser.add_argument("-m", "--model-name", type=str, help="Underlying LLM model name.")
-    
+
     # Timing & Performance CLI Arguments
     parser.add_argument("--padding-cm", type=float, help="Diagram crop padding in centimeters.")
     parser.add_argument("--rate-limit-delay", type=float, help="Inter-request delay in seconds between pages.")
@@ -404,7 +441,7 @@ def parse_args_and_config() -> argparse.Namespace:
     parser.add_argument("--attempt-limit", type=int, help="Maximum retry attempts per page.")
     parser.add_argument("--context-reset-interval", type=int, help="Number of pages before resetting history.")
     parser.add_argument("--dpi", type=int, help="Page rendering DPI for vision processing.")
-    
+
     # Logging & Auth
     parser.add_argument("--log-file", type=Path, help="Path to write rotated log file.")
     parser.add_argument("--api-key", type=str, default=os.getenv("GEMINI_API_KEY"))
@@ -429,6 +466,12 @@ def parse_args_and_config() -> argparse.Namespace:
     resolved.output_dir = args.output_dir or Path(config_data.get("output_dir", "./output"))
     resolved.prompt = args.prompt or Path(config_data.get("prompt", "./prompts/prompt_neet.md"))
 
+    langs_val = args.languages or config_data.get("languages", "english")
+    if isinstance(langs_val, str):
+        resolved.languages = [l.strip() for l in langs_val.split(",") if l.strip()]
+    else:
+        resolved.languages = langs_val
+
     inst_file_val = args.instruction_file or config_data.get("instruction_file")
     resolved.instruction_file = Path(inst_file_val) if inst_file_val else None
 
@@ -444,7 +487,7 @@ def parse_args_and_config() -> argparse.Namespace:
 
     resolved.agent_name = args.agent_name or config_data.get("agent_name", "antigravity-preview-05-2026")
     resolved.agent_type = args.agent_type or agent_cfg.get("type", "antigravity")
-    resolved.model_name = args.model_name or agent_cfg.get("model", "gemini-3.6-flash")
+    resolved.model_name = args.model_name or config_data.get("model_name", agent_cfg.get("model", "gemini-3.6-flash"))
 
     resolved.padding_cm = args.padding_cm if args.padding_cm is not None else config_data.get("padding_cm", 0.5)
     resolved.rate_limit_delay = args.rate_limit_delay if args.rate_limit_delay is not None else config_data.get("rate_limit_delay", 45.0)
@@ -480,6 +523,7 @@ def main() -> None:
         prompt_text=prompt_text,
         standards=[s.strip() for s in args.standards.split(",") if s.strip()],
         tags=[t.strip() for t in args.tags.split(",") if t.strip()],
+        languages=args.languages,
         agent_name=args.agent_name,
         agent_type=args.agent_type,
         model_name=args.model_name,
@@ -496,8 +540,20 @@ def main() -> None:
     )
 
     pdf_files = sorted([f for f in args.input_dir.iterdir() if f.suffix.lower() == ".pdf"])
+    
+    if not pdf_files:
+        logger.warning(f"No .pdf files found in {args.input_dir}")
+        sys.exit(1)
+
+    overall_success = True
     for pdf_path in pdf_files:
-        extractor.process_pdf(pdf_path, args.output_dir)
+        success = extractor.process_pdf(pdf_path, args.output_dir)
+        if not success:
+            overall_success = False
+
+    if not overall_success:
+        logger.error("❌ One or more PDF extractions failed.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
