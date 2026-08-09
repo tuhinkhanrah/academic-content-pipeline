@@ -26,7 +26,7 @@ Construct the question name dynamically using **ONLY** the available metadata to
 # Tag Schema Rules
 - Embed taxonomy tags inside a single `<tags>` block placed directly before `</question>`.
 - Emit tags strictly in this fixed key order:
-  - standard
+  - standard (MANDATORY)
   - year
   - shift
   - lang
@@ -41,6 +41,10 @@ Construct the question name dynamically using **ONLY** the available metadata to
   - calculation
   - media
   - multiconcept
+
+## Mandatory Standard Tag (`standard`)
+- Every question MUST include a `standard` tag representing the target exams.
+- NEVER omit the `standard` tag from the `<tags>` container.
 
 ## Mandatory Tag Formatting Laws
 - Tag keys must be lowercase.
