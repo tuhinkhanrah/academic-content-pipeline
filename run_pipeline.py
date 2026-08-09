@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 
-# Locate script paths dynamically relative to run_pipeline.py
 BASE_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = BASE_DIR / "scripts"
 PDF_AGENT_SCRIPT = SCRIPTS_DIR / "paper2moodle_agent.py"
@@ -92,7 +91,6 @@ def resolve_prompt_file(exam_key: str, args: argparse.Namespace) -> Path:
         exam_info.get("prompt"),
     ]
 
-    # Last-resort defaults preserve existing behavior for missing files.
     if exam_key == "neet":
         candidates.extend([
             BASE_DIR / "prompts" / "extractor" / "neet.md",
@@ -108,7 +106,6 @@ def resolve_prompt_file(exam_key: str, args: argparse.Namespace) -> Path:
         if candidate and candidate.exists():
             return candidate
 
-    # Return mapped prompt even if missing so downstream logs clearly reveal the problem.
     return exam_info["prompt"]
 
 
@@ -121,10 +118,15 @@ def create_pdf_config_payload(
     inst_page = 0 if args.no_instruction_page else (args.instruction_page if args.instruction_page is not None else 1)
     languages = normalize_languages(args.languages) if args.languages else ["english"]
 
+    core_dir = BASE_DIR / "prompts" / "core"
+
     config = {
         "input_dir": str(paper_dir.resolve()),
         "output_dir": str(paper_dir.resolve()),
         "prompt": str(args.prompt.resolve()) if args.prompt else str(prompt_file.resolve()),
+        "xml_rules": str(args.xml_rules.resolve()) if args.xml_rules else str((core_dir / "moodle_xml_rules.md").resolve()),
+        "tags_rules": str(args.tags_rules.resolve()) if args.tags_rules else str((core_dir / "naming_and_tags_rules.md").resolve()),
+        "templates": str(args.templates.resolve()) if args.templates else str((core_dir / "moodle_xml_templates.md").resolve()),
         "standards": args.standards or standard,
         "languages": languages,
         "tags": merged_tags,
@@ -158,10 +160,15 @@ def create_chapter_config_payload(
     merged_tags = f"{args.tags},{path_tags}".strip(",") if args.tags else path_tags
     languages = normalize_languages(args.languages) if args.languages else ["english"]
 
+    core_dir = BASE_DIR / "prompts" / "core"
+
     config = {
         "input_dir": str(paper_dir.resolve()),
         "output_dir": str(paper_dir.resolve()),
         "prompt": str(args.prompt.resolve()) if args.prompt else str(prompt_file.resolve()),
+        "xml_rules": str(args.xml_rules.resolve()) if args.xml_rules else str((core_dir / "moodle_xml_rules.md").resolve()),
+        "tags_rules": str(args.tags_rules.resolve()) if args.tags_rules else str((core_dir / "naming_and_tags_rules.md").resolve()),
+        "templates": str(args.templates.resolve()) if args.templates else str((core_dir / "moodle_xml_templates.md").resolve()),
         "standards": args.standards or standard,
         "languages": languages,
         "difficulty": args.difficulty or "Medium",
@@ -215,6 +222,12 @@ def run_batch_processing(args: argparse.Namespace):
 
         if args.prompt:
             cmd.extend(["-p", str(args.prompt.resolve())])
+        if args.xml_rules:
+            cmd.extend(["--xml-rules", str(args.xml_rules.resolve())])
+        if args.tags_rules:
+            cmd.extend(["--tags-rules", str(args.tags_rules.resolve())])
+        if args.templates:
+            cmd.extend(["--templates", str(args.templates.resolve())])
         if args.languages:
             cmd.extend(["-l", args.languages])
         if args.standards:
@@ -274,7 +287,6 @@ def run_batch_processing(args: argparse.Namespace):
         auto_book_mode = any(keyword in folder_path_lower for keyword in ["books", "chapters", "chapter", "modules"])
         use_book_mode = force_book_mode or (args.route_mode == "auto" and auto_book_mode)
 
-        # ROUTING RULE: book mode routes to book2moodle_agent.py
         if use_book_mode and not force_paper_mode:
             question_prompt = BASE_DIR / "prompts" / "generator" / "question_generator.md"
             exam_key = detect_exam_type(folder)
@@ -295,7 +307,6 @@ def run_batch_processing(args: argparse.Namespace):
             except subprocess.CalledProcessError as e:
                 print(f"❌ Question generation failed in {folder} (Exit status {e.returncode})\n")
 
-        # ROUTING RULE: paper mode routes to paper2moodle_agent.py
         else:
             config_paths = generate_pdf_configs(folder, args)
             for config_path in config_paths:
@@ -325,8 +336,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("-i", "--papers-dir", type=Path, default=Path("papers"), help="Root directory containing question paper PDFs or Book PDFs.")
     parser.add_argument("-b", "--blueprint", type=Path, help="Blueprint JSON file used when --route-mode mock.")
-    parser.add_argument("-p", "--prompt", type=Path, help="Override system prompt markdown file for all folders.")
-    parser.add_argument("-l", "--languages", type=str, default="english", help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil', 'english,hindi').")
+    parser.add_argument("-p", "--prompt", type=Path, help="Override main system prompt markdown file for all folders.")
+
+    # Core Prompt Rules Paths
+    parser.add_argument("--xml-rules", type=Path, help="Override moodle_xml_rules.md path.")
+    parser.add_argument("--tags-rules", type=Path, help="Override naming_and_tags_rules.md path.")
+    parser.add_argument("--templates", type=Path, help="Override moodle_xml_templates.md path.")
+
+    parser.add_argument("-l", "--languages", type=str, default="english", help="Comma-separated target languages.")
     parser.add_argument("-s", "--standards", type=str, help="Override standards (e.g. NEET, WBJEE, JEE-Main, JEE-Advanced).")
     parser.add_argument("-t", "--tags", type=str, help="Comma-separated global tags to append.")
 
@@ -352,8 +369,8 @@ def parse_args() -> argparse.Namespace:
 
     # Chapter Generator Specific Options
     parser.add_argument("--difficulty", type=str, choices=["Easy", "Medium", "Hard"], help="Target difficulty level for chapter generation.")
-    parser.add_argument("--difficulty-mix", type=str, help="Difficulty mix ratios for mock mode (e.g. 'easy:0.2,medium:0.5,hard:0.3').")
-    parser.add_argument("-n", "--num-questions", type=int, help="Maximum questions allowed per section/file; model decides actual count dynamically.")
+    parser.add_argument("--difficulty-mix", type=str, help="Difficulty mix ratios for mock mode.")
+    parser.add_argument("-n", "--num-questions", type=int, help="Maximum questions allowed per section/file.")
     parser.add_argument("--default-grade", type=float, help="Default grade per question (default: 4.0).")
     parser.add_argument("--penalty", type=float, help="Penalty fraction for multiple attempts (default: 0.25).")
     parser.add_argument("--negative-fraction", type=int, help="Negative score percentage for incorrect choices (default: -25).")

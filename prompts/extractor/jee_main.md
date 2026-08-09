@@ -21,16 +21,16 @@ From the current exam page image/text context, extract complete questions that c
   - incorrect options fraction -25
   - <penalty>0.25</penalty>
 
-- Section B: numerical (+4 / 0)
+- Section B: numerical (+4 / -1)
   - type: numerical
   - <defaultgrade>4</defaultgrade>
-  - <penalty>0</penalty>
+  - <penalty>0.25</penalty>
   - exactly one answer with suitable tolerance
   - omit single/shuffleanswers/answernumbering
 
 Fallback when section metadata is absent:
 - MCQ: defaultgrade 4, distractors -25, penalty 0.25
-- Numerical: defaultgrade 4, penalty 0
+- Numerical: defaultgrade 4, penalty 0.25
 
 # Formatting Rules
 - Math only with \(...\) and \[...\].

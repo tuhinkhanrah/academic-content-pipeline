@@ -60,6 +60,47 @@ You must adhere to the following SME standards when synthesizing questions at th
 | **MEDIUM** | Comprehensive Application & Two-Step Reasoning | Requires combining two concepts or two distinct formulas. Multi-step calculations. Interpretation of standard graphs or complex circuit layouts. Traps based on common sign errors or misconceptions. Standard problem types found in past papers. |
 | **HARD** | Critical Synthesis & Innovative Problem Solving | Requires integration of concepts across different syllabus chapters. Unfamiliar or novel application scenarios. Advanced mathematical manipulation required. Highly complex visual schematics with subtle details. Traps are sophisticated, requiring deep conceptual clarity to avoid. |
 
+### 6. Naming and Tagging
+- Use this exact name format (no variation):
+  EXAM_SUBJECT_YEAR_SECTION_CHAPTER_TYPOLOGY_QNUM - snippet
+- Name token rules:
+  - EXAM/SUBJECT/YEAR/SECTION/CHAPTER/TYPOLOGY/QNUM must be UPPERCASE tokens joined by underscore.
+  - Use plain-text snippet only (5-8 words, no HTML, no LaTeX).
+  - If a specific token metadata (such as YEAR, CHAPTER, or SECTION) is not avaiable, omit that token and its adjacent trailing underscore (`_`).
+- Tag schema is strict and fixed. Emit only these keys in this exact order:
+  1. standard
+  2. year
+  3. shift
+  4. source
+  5. lang
+  6. subject
+  7. section
+  8. class
+  9. topic
+  10. chapter
+  11. typology
+  12. difficulty
+  13. blooms
+  14. calculation
+  15. media
+  16. multiconcept
+- Tag formatting laws:
+  - keys must be lowercase.
+  - values must be lowercase snake_case (except numeric year).
+  - do not emit duplicate keys.
+  - do not emit keys outside the fixed schema.
+  - emit only tags whose values are available/inferable from the source; if unavailable, omit that key.
+- Enum normalization:
+  - difficulty: easy | medium | hard
+  - blooms: remember | understand | apply | analyze
+  - calculation: light | moderate | heavy
+  - media: text | diagram | graph | table | circuit | equation
+  - multiconcept: true | false
+
+### 7. Shuffling-Safe Feedback
+- Do not reference option letters/numbers in <generalfeedback>.
+- Explain by concept/value, not by option position.
+
 ---
 
 ## II. MOODLE XML OUTPUT FORMAT
@@ -114,6 +155,6 @@ Do NOT output extra markdown explanations, introductory text, or conversational 
 ---
 
 ### Benefits of Inline SVG Generation:
-1. **Zero Image Crop Dependencies:** `mock2moodle_agent.py` does not need to crop or embed PNG files for synthetic questions.
+1. **Zero Image Crop Dependencies:** Does not need to crop or embed PNG files for synthetic questions.
 2. **Infinite Scalability:** SVG diagrams render perfectly sharp on all screen resolutions and mobile devices in Moodle.
 3. **100% Native Moodle Support:** Moodle renders `<svg>` tags natively inside CDATA blocks without needing any external plugins or server storage.

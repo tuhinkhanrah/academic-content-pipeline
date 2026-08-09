@@ -1,10 +1,10 @@
 {
   "exam_name": "NEET-UG",
-  "batch_size": 15,
+  "batch_size": 45,
   "subjects": [
     {
       "name": "Physics",
-      "total_questions": 10,
+      "total_questions": 5,
       "default_grade": 4.0,
       "penalty": 0.25,
       "negative_fraction": -25,
@@ -12,7 +12,7 @@
     },
     {
       "name": "Chemistry",
-      "total_questions": 10,
+      "total_questions": 5,
       "default_grade": 4.0,
       "penalty": 0.25,
       "negative_fraction": -25,

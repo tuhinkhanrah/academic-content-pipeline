@@ -81,7 +81,7 @@ Given textbook/chapter content, generate high-quality practice questions in vali
 - Name token rules:
   - EXAM/SUBJECT/YEAR/SECTION/CHAPTER/TYPOLOGY/QNUM must be UPPERCASE tokens joined by underscore.
   - Use plain-text snippet only (5-8 words, no HTML, no LaTeX).
-  - If unknown, use placeholders: YEAR=PYQ, SECTION=SECUNK, CHAPTER=GENERAL, QNUM=Q00.
+  - If a specific token metadata (such as YEAR, CHAPTER, or SECTION) is not avaiable, omit that token and its adjacent trailing underscore (`_`).
 - Tag schema is strict and fixed. Emit only these keys in this exact order:
   1. standard
   2. year

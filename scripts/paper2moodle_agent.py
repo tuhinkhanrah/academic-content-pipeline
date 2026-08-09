@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pdf2moodle_agent.py - Flexible Question Extractor for PDF Question Papers.
+paper2moodle_agent.py - Flexible Question Extractor for PDF Question Papers.
 
 Settings Precedence:
   Explicit CLI Argument  -->  JSON Config File  -->  Built-in Default
@@ -24,6 +24,7 @@ from moodle_utils import (
     build_language_instructions,
     encode_bytes_to_base64,
     extract_clean_question_nodes_with_status,
+    load_combined_prompt,
     load_file_content,
     setup_logger,
 )
@@ -123,10 +124,10 @@ class ManagedAgentPaperExtractor:
 
         total_pdf_pages = len(doc)
 
-        if self.instruction_page <= 0 or self.instruction_page > total_pdf_pages:
+        if self.instruction_page < 0 or self.instruction_page > total_pdf_pages:
             logger.error(
                 f"[{pdf_stem}] Invalid instruction_page={self.instruction_page}. "
-                f"Valid range is 1 to {total_pdf_pages}."
+                f"Valid range is 0 to {total_pdf_pages}."
             )
             doc.close()
             return False
@@ -199,8 +200,8 @@ class ManagedAgentPaperExtractor:
             if self.verbose:
                 self._log_interaction_steps(interaction, page_idx)
 
-            environment_id = interaction.environment_id
-            last_interaction_id = interaction.id
+            environment_id = getattr(interaction, "environment_id", None)
+            last_interaction_id = getattr(interaction, "id", None)
 
             if not extracted_questions:
                 logger.info(f"[{pdf_stem}] Page {page_idx}: No completed questions found.")
@@ -414,7 +415,7 @@ class ManagedAgentPaperExtractor:
 
 def parse_args_and_config() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="pdf2moodle_agent.py - PDF Question Paper Extractor",
+        description="paper2moodle_agent.py - PDF Question Paper Extractor",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # File & Directory CLI Arguments
@@ -422,11 +423,17 @@ def parse_args_and_config() -> argparse.Namespace:
     parser.add_argument("-i", "--input-dir", type=Path, help="Input directory containing PDF files.")
     parser.add_argument("-o", "--output-dir", type=Path, help="Output directory for generated XML and images.")
     parser.add_argument("-p", "--prompt", type=Path, help="Path to system prompt markdown file.")
-    parser.add_argument("-l", "--languages", type=str, help="Comma-separated target languages (e.g. 'english', 'english,bengali', 'english,tamil').")
+
+    # Core Prompt Rules CLI Arguments
+    parser.add_argument("--xml-rules", type=Path, help="Path to moodle_xml_rules.md.")
+    parser.add_argument("--tags-rules", type=Path, help="Path to naming_and_tags_rules.md.")
+    parser.add_argument("--templates", type=Path, help="Path to moodle_xml_templates.md.")
+
+    parser.add_argument("-l", "--languages", type=str, help="Comma-separated target languages.")
     parser.add_argument("--instruction-file", type=Path, help="Standalone instruction/chapter markdown file.")
     parser.add_argument("--instruction-page", type=int, help="PDF page containing instructions (default: 1).")
-    parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Process specific page range (e.g. 10 15).")
-    parser.add_argument("-s", "--standards", type=str, help="Comma-separated standards (e.g. NEET, JEE-Main, WBJEE).")
+    parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Process specific page range.")
+    parser.add_argument("-s", "--standards", type=str, help="Comma-separated standards.")
     parser.add_argument("-t", "--tags", type=str, help="Comma-separated global tags.")
 
     # Engine & Agent Configuration CLI Arguments
@@ -449,7 +456,6 @@ def parse_args_and_config() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    # Load Config JSON if provided
     config_data = {}
     if args.config_file and args.config_file.exists():
         try:
@@ -461,10 +467,20 @@ def parse_args_and_config() -> argparse.Namespace:
     agent_cfg = config_data.get("agent_config", {})
     resolved = argparse.Namespace()
 
-    # PRECEDENCE RESOLUTION RULE: Explicit CLI Flag -> JSON Config File -> Default Fallback
+    base_dir = Path(__file__).resolve().parent.parent
+
     resolved.input_dir = args.input_dir or Path(config_data.get("input_dir", "./pdfs"))
     resolved.output_dir = args.output_dir or Path(config_data.get("output_dir", "./output"))
-    resolved.prompt = args.prompt or Path(config_data.get("prompt", "./prompts/extractor/neet.md"))
+    resolved.prompt = args.prompt or Path(config_data.get("prompt", base_dir / "prompts/extractor/neet.md"))
+
+    xml_rules_val = args.xml_rules or config_data.get("xml_rules")
+    resolved.xml_rules = Path(xml_rules_val) if xml_rules_val else (base_dir / "prompts/core/moodle_xml_rules.md")
+
+    tags_rules_val = args.tags_rules or config_data.get("tags_rules")
+    resolved.tags_rules = Path(tags_rules_val) if tags_rules_val else (base_dir / "prompts/core/naming_and_tags_rules.md")
+
+    templates_val = args.templates or config_data.get("templates")
+    resolved.templates = Path(templates_val) if templates_val else (base_dir / "prompts/core/moodle_xml_templates.md")
 
     langs_val = args.languages or config_data.get("languages", "english")
     if isinstance(langs_val, str):
@@ -497,7 +513,7 @@ def parse_args_and_config() -> argparse.Namespace:
     resolved.dpi = args.dpi if args.dpi is not None else config_data.get("dpi", 150)
 
     log_file_val = args.log_file or config_data.get("log_file")
-    resolved.log_file = Path(log_file_val) if log_file_val else (resolved.output_dir / "pdf2moodle.log")
+    resolved.log_file = Path(log_file_val) if log_file_val else (resolved.output_dir / "paper2moodle.log")
 
     resolved.api_key = args.api_key or config_data.get("api_key")
     resolved.verbose = args.verbose or config_data.get("verbose", True)
@@ -514,7 +530,14 @@ def main() -> None:
         sys.exit(1)
 
     client = genai.Client(api_key=args.api_key)
-    prompt_text = load_file_content(args.prompt)
+
+    # Combine main prompt with core Moodle rules and reference templates
+    prompt_text = load_combined_prompt(
+        main_prompt_path=args.prompt,
+        xml_rules_path=args.xml_rules,
+        tags_rules_path=args.tags_rules,
+        templates_path=args.templates,
+    )
 
     instruction_text = load_file_content(args.instruction_file)
 
