@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import pymupdf
 from google import genai
 
 from moodle_utils import (
@@ -40,7 +40,7 @@ def extract_text_from_file_or_pdf(file_path: Optional[Path]) -> str:
 
     if file_path.suffix.lower() == ".pdf":
         try:
-            doc = fitz.open(file_path)
+            doc = pymupdf.open(file_path)
             extracted_text = "\n".join([page.get_text("text") for page in doc]).strip()
             doc.close()
             return extracted_text
@@ -124,8 +124,8 @@ class ManagedAgentMockGenerator:
         sample_doc = None
         if self.sample_pdf_path and self.sample_pdf_path.exists():
             try:
-                sample_doc = fitz.open(self.sample_pdf_path)
-                logger.info(f"📄 Attached sample reference PDF: {self.sample_pdf_path.name} ({len(sample_doc)} pages)")
+                sample_doc = pymupdf.open(self.sample_pdf_path)
+                logger.info(f"📄 Attached sample reference PDF: {self.sample_pdf_path.name} ({len(sample_doc)} pages)"))
                 for i in range(min(4, len(sample_doc))):
                     pix = sample_doc[i].get_pixmap(dpi=self.dpi)
                     b64_img = encode_bytes_to_base64(pix.tobytes("png"))

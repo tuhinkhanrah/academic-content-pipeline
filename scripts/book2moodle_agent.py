@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import pymupdf
 from google import genai
 
 from moodle_utils import (
@@ -32,7 +32,7 @@ logger = logging.getLogger("moodle_system")
 
 
 def crop_diagram_from_page(
-    page: fitz.Page,
+    page: pymupdf.Page,
     ymin: int,
     xmin: int,
     ymax: int,
@@ -57,7 +57,7 @@ def crop_diagram_from_page(
     if x0 >= x1 or y0 >= y1:
         return b""
 
-    crop_rect = fitz.Rect(x0, y0, x1, y1).intersect(rect)
+    crop_rect = pymupdf.Rect(x0, y0, x1, y1).intersect(rect)
     if crop_rect.is_empty:
         return b""
 
@@ -164,7 +164,7 @@ class ManagedAgentChapterGenerator:
         image_output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            doc = fitz.open(pdf_path)
+            doc = pymupdf.open(pdf_path)
         except Exception as e:
             logger.error(f"Failed to open PDF {pdf_path}: {e}")
             return False
@@ -377,7 +377,7 @@ class ManagedAgentChapterGenerator:
         return None, None
 
     def _process_diagram_tokens_in_question(
-        self, page: fitz.Page, question_xml: str, image_dir: Path
+        self, page: pymupdf.Page, question_xml: str, image_dir: Path
     ) -> str:
         block_tags = "questiontext|generalfeedback|correctfeedback|partiallycorrectfeedback|incorrectfeedback|answer"
         block_pattern = rf"(<({block_tags})\b[^>]*>.*?)(</\2>)"

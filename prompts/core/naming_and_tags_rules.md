@@ -45,6 +45,7 @@ Construct the question name dynamically using **ONLY** the available metadata to
 ## Mandatory Standard Tag (`standard`)
 - Every question MUST include a `standard` tag representing the target exams.
 - NEVER omit the `standard` tag from the `<tags>` container.
+- Tag values must be lowercase `snake_case` (except numeric year).
 
 ## Mandatory Tag Formatting Laws
 - Tag keys must be lowercase.
@@ -62,13 +63,5 @@ Construct the question name dynamically using **ONLY** the available metadata to
 
 ## Language Tag Law (`lang`)
 * Every target language must be emitted as its own individual tag using its 2-letter ISO code (e.g., `lang:en`, `lang:bn`).
-* **FORBIDDEN TAGS:**
-  - NEVER emit combined/hyphenated/underscored language tags like `<tag><text>lang:en_bn</text></tag>` or `<tag><text>lang:en-bn</text></tag>`.
-  - NEVER join multiple language codes into a single tag string.
-
-* **Examples:**
-  - **Monolingual (English):**
-    `<tag><text>lang:en</text></tag>`
-  - **Bilingual (English + Bengali):**
-    `<tag><text>lang:en</text></tag>`
+* **FORBIDDEN:** combined/hyphenated/underscored tags like `lang:en_bn` or `lang:en-bn`. Never join multiple language codes into a single tag string — always emit one `<tag>` per language.
     `<tag><text>lang:bn</text></tag>`  

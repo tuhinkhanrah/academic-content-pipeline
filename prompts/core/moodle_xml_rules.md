@@ -1,6 +1,5 @@
 # Output Contract
 - Output ONLY valid <question type="...">...</question> nodes.
-- No markdown code fences (e.g., ```xml).
 - If no question concludes on the current context, return "".
 
 # Formatting & Math Rules
@@ -31,7 +30,7 @@
 
 ## Position-Independent Rewriting & Shuffling
 - If an option is position-dependent (e.g., *"Both (1) and (2)"* or *"None of the above"*):
-  - Rewrite the option text to be position-independent (e.g., *"Both option (1) and option (2) are correct"*), OR
+  - Rewrite the option text to be position-independent (e.g., *"Both option (1) and option (2) are correct"* or *"None of the given options are correct"*), OR
   - Explicitly set `<shuffleanswers>false</shuffleanswers>`.
 
 # Visual Rules
@@ -47,22 +46,33 @@ For EVERY extracted question on the page:
 4. DO NOT generate the final <question> XML until you have performed the search step for each question.
 
 # Feedback Rules
-- Do not reference option letters/numbers in <generalfeedback>.
-- Explain by concept/value, not by option position.
+- Explain by concept/value, not by option position/letter — options are randomized for students.
+  - **NEVER** write position-referential phrases in `<generalfeedback>` such as:
+    - *"Option 3 is correct"*, *"choice (B)"*, *"(A) is true"*
+    - *"Statement 1 is correct"*, *"statement (1) is incorrect"*, *"both (1) and (2)"*
+    - *"Graph 3"*, *"Figure (2)"*, *"Table II"*, *"Column I"*, *"Row 4"*
+  - This prohibition applies even for assertion-reason, statement-based, and match-the-following questions.
+  - **ALWAYS** target the conceptual value: *"Both statements are incorrect because..."* or *"The correct matching is A-II, B-I because..."*
 - Explain conceptually with clear K-12 steps.
 - In generalfeedback, explain the solution in clear numbered steps (Step 1, Step 2, ...) with each step starting on a new line, then state the final answer.
 - Do not skip any intermediate step, however small. Include every transformation, substitution, simplification, and unit/sign check explicitly.
+- Treat each algebraic or logical move as a separate step line. Never merge two reasoning moves into one step.
 - **BILINGUAL REQUIREMENT:** 
   - If a regional language is enabled (e.g., Bengali), `<generalfeedback>` MUST be fully stacked bilingual.
   - Output the full English explanation steps first, followed by `<hr/>` or a clean line break, and then the exact translated explanation steps in the secondary language.
   - **NEVER** output `<generalfeedback>` in English only when bilingual mode is active.
 
-# Shuffling-Safe General Feedback (`<generalfeedback>`)
-Because options are randomized for students, explanations cannot point to alphanumeric option labels.
-* **NEVER** write phrases like: *"Option 3 is correct"* or *"Hence, (A) is the true choice."* or *"Statement 1 is correct"* in `<generalfeedback>` node.
-* **ALWAYS** target the conceptual value: *"Both statements are incorrect because..."* or *"The correct matching is A-II, B-I because..."*
-
-# Position-Independent Choice Rewriting
-* If an option reads *"None of these"* or *"Both (1) and (2)"*, rewrite it to position-neutral wording unless shuffling is explicitly disabled:
-  * *"None of the given options are correct"*
-  * *"Both option (1) and option (2) are correct"*
+# Universal Reasoning Consistency Gate
+- For ANY calculational or diagram-based question, generalfeedback MUST include this order before final answer:
+  1. Data inventory: list all given values, symbols, labels, and constraints from the source.
+  2. Model declaration: state the exact physical/mathematical model and conventions (signs, directions, assumptions).
+  3. Governing relations: write the exact equations/relations used.
+  4. Micro-step solve: one transformation per step line, with units/sign tracking.
+  5. Sanity checks: unit consistency plus one bounds/limiting-case or conservation check.
+- Domain specialization inside the same gate (do not add new section blocks):
+  - Circuits/capacitors: include node map and explicit series/parallel proof from connectivity.
+  - Mechanics: include force/torque inventory and sign convention.
+  - Optics/waves: include ray/path or phase/sign convention before equations.
+- If any gate item is missing, do not finalize; revise the reasoning first.
+- Never infer hidden diagram values. Use only visible labels/values from the source.
+- **STRICT OUTPUT GATE:** If `<generalfeedback>` contains any option/choice/statement/graph/figure/table/column/row index reference, rewrite it to concept-only form before returning XML.

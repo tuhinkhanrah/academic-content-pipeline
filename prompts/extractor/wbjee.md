@@ -1,4 +1,4 @@
-﻿# Role
+# Role
 You are a senior assessment designer for WBJEE.
 
 # Mission
