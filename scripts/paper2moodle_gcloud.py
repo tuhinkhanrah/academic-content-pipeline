@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-paper2moodle_gcloud.py - Master Unified Moodle XML Pipeline
+paper2moodle_gcloud.py - Master Unified Moodle XML & PDF Pipeline
 Modes:
   1. extract          (Extract questions from PDFs via Sandbox Vision)
   2. generate-chapter (Synthesize questions from chapter PDFs/MDs)
@@ -33,7 +33,7 @@ def upload_to_gcs(file_path: Path, bucket_name: str, prefix: str = "processing_q
     """Uploads a file to GCS, skipping if it already exists."""
     safe_filename = file_path.name.replace(" ", "_")
     gcs_target_uri = f"gs://{bucket_name}/{prefix}/{safe_filename}"
-    
+
     try:
         subprocess.run(["gcloud", "storage", "ls", gcs_target_uri], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"⚡ {file_path.name} already exists in GCS. Skipping upload.")
@@ -49,7 +49,7 @@ def upload_to_gcs(file_path: Path, bucket_name: str, prefix: str = "processing_q
 def download_from_gcs(bucket_name: str, gcs_path: str, local_path: Path):
     """Downloads a file from GCS to local disk."""
     gcs_uri = f"gs://{bucket_name}/{gcs_path}"
-    print(f"📥 Fetching output XML to {local_path}...")
+    print(f"📥 Fetching output to {local_path}...")
     subprocess.run(["gcloud", "storage", "cp", gcs_uri, str(local_path)], check=True, stdout=subprocess.DEVNULL)
 
 # =======================================================================
@@ -59,7 +59,7 @@ def download_from_gcs(bucket_name: str, gcs_path: str, local_path: Path):
 BASE64_IMAGE_RULES = """
 - **Precision Cropping:** Use your vision capabilities to determine the exact bounding boxes `[x0, y0, x1, y1]` for diagrams, graphs, circuits, and purely graphical answer options.
 - **Text Exclusion:** Ensure zero text bleed. Bounding boxes must exclude question text, labels, and option numbers.
-- **Moodle Native Embedding:** Images must be embedded using Base64 encoding. 
+- **Moodle Native Embedding:** Images must be embedded using Base64 encoding.
   - In the HTML/CDATA block: `<img src="@@PLUGINFILE@@/image_name.png" alt="description" />`
   - Immediately following the text block: `<file name="image_name.png" path="/" encoding="base64">BASE64_STRING</file>`
 """
@@ -69,26 +69,33 @@ SYNTHESIS_IMAGE_RULES = """
 - **Base64 Embedded PNG (FALLBACK):** ONLY if a biology question explicitly requires a highly intricate anatomical illustration where vector SVG is impossible.
 """
 
-def assemble_prompt_files(rule_files: dict, mode: str) -> str:
-    """Combine specified prompt markdown files into a single context, injecting dynamic image rules."""
-    content_blocks = ["# AGENTS.md - Moodle System Rules\n"]
-    
-    # Select the right image rule based on mode
+def assemble_prompt_files(rule_files: dict, mode: str, output_format: str = "xml") -> str:
+    """Combine specified prompt markdown files into a single context, handling PDF vs XML routing."""
+    content_blocks = ["# AGENTS.md - System Rules\n"]
+
+    # Select the right image rule based on mode (Only applies to XML)
     img_rules = BASE64_IMAGE_RULES if mode == "extract" else SYNTHESIS_IMAGE_RULES
 
+    # Route rules based on output format
+    if output_format == "pdf":
+        valid_keys = ["main_prompt", "instruction_file", "pdf_rules"]
+    else:
+        valid_keys = ["main_prompt", "instruction_file", "xml_rules", "tags_rules", "templates"]
+
     for name, filepath in rule_files.items():
-        if not filepath:
+        if name not in valid_keys or not filepath:
             continue
         path = Path(filepath)
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-                if name == "xml_rules":
+                # Dynamically inject image rules ONLY for xml_rules
+                if name == "xml_rules" and output_format == "xml":
                     content = content.replace("{IMAGE_HANDLING_INSTRUCTIONS}", img_rules)
                 content_blocks.append(f"## File: {path.name}\n\n{content}\n\n---\n")
         else:
             print(f"⚠️ Warning: Prompt file '{filepath}' not found. Skipping.")
-            
+
     return "\n".join(content_blocks)
 
 # =======================================================================
@@ -98,6 +105,7 @@ def assemble_prompt_files(rule_files: dict, mode: str) -> str:
 def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content, verbose):
     """Executes a remote interaction with the active Bearer token authorized."""
     print("🚀 Provisioning remote execution sandbox...")
+    api_key = os.environ.get("GEMINI_API_KEY")
     interaction = client.interactions.create(
         agent=agent_name,
         input=prompt,
@@ -105,8 +113,8 @@ def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content,
             "type": "remote",
             "sources": [
                 {
-                    "type": "inline", 
-                    "target": ".agents/AGENTS.md", 
+                    "type": "inline",
+                    "target": ".agents/AGENTS.md",
                     "content": agents_md_content
                 }
             ],
@@ -116,6 +124,10 @@ def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content,
                     {"domain": "*"}
                 ]
             }
+        },
+        # Ensure environment variables are passed to the remote sandbox context
+        env={
+            "GEMINI_API_KEY": api_key,
         },
     )
     if verbose:
@@ -130,10 +142,10 @@ def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content,
 
 def cmd_extract(args, client, gcp_token, rules_dict):
     """Extract mode: Exact proven execution_prompt preserved without modification."""
-    agents_md_content = assemble_prompt_files(rules_dict, mode="extract")
+    agents_md_content = assemble_prompt_files(rules_dict, mode="extract", output_format="xml")
     input_dir_path = Path(args.input_dir).resolve()
     pdf_files = list(input_dir_path.rglob("*.pdf"))
-    
+
     if not pdf_files:
         print(f"❌ No PDF files found in {input_dir_path}")
         return
@@ -144,11 +156,11 @@ def cmd_extract(args, client, gcp_token, rules_dict):
         print(f"\n{'='*60}")
         print(f"📄 Mode: Extract | Processing: {pdf_path.name}")
         print(f"📁 Directory: {pdf_path.parent}")
-        
+
         gcs_uri = upload_to_gcs(pdf_path, args.bucket_name, verbose=args.verbose)
         if not gcs_uri:
             continue
-            
+
         safe_filename = pdf_path.name.replace(" ", "_")
         output_filename = f"{pdf_path.stem}_moodle.xml"
         gcs_upload_path = f"output/{output_filename}"
@@ -156,10 +168,10 @@ def cmd_extract(args, client, gcp_token, rules_dict):
 
         page_rule = f"Process only pages {args.page_range[0]} to {args.page_range[1]}." if args.page_range else "Process all pages."
         instruction_rule = "Skip the instruction page completely." if args.no_instruction_page else "Include questions from the instruction page if any exist."
-        
+
         execution_prompt = f"""
         You are an autonomous exam paper processing agent capable of handling questions from any academic subject.
-        Your goal is to extract all exam questions from the PDF file mounted at `/workspace/pdfs/input.pdf` 
+        Your goal is to extract all exam questions from the PDF file mounted at `/workspace/pdfs/input.pdf`
         and generate a single, strictly valid Moodle XML question bank saved to `/workspace/output/{output_filename}`.
 
         ### ⚙️ Extraction Parameters for this Run:
@@ -168,16 +180,16 @@ def cmd_extract(args, client, gcp_token, rules_dict):
         - **Instructions Rule**: {instruction_rule}
 
         ### 📋 Workflow Steps:
-        1. **Fetch & Render PDF**: 
+        1. **Fetch & Render PDF**:
            - Write and run a Python script to download the PDF using the `requests` library:
              ```python
              import requests, os
              os.makedirs("/workspace/pdfs", exist_ok=True)
              os.makedirs("/workspace/images", exist_ok=True)
-             
+
              url = "[https://storage.googleapis.com/](https://storage.googleapis.com/){args.bucket_name}/processing_queue/{safe_filename}"
              headers = {{"Authorization": "Bearer {gcp_token}"}}
-             
+
              print("Downloading PDF from GCS...")
              response = requests.get(url, headers=headers)
              if response.status_code == 200:
@@ -229,38 +241,63 @@ def cmd_extract(args, client, gcp_token, rules_dict):
               ```
             - Ensure the script prints the exact HTTP status code and response body to the terminal logs.
         """
-        
+
         run_remote_sandbox(client, args.agent_name, execution_prompt, gcp_token, agents_md_content, args.verbose)
         download_from_gcs(args.bucket_name, gcs_upload_path, pdf_path.parent / output_filename)
 
 
 def cmd_generate_chapter(args, client, gcp_token, rules_dict):
     """Generate-Chapter mode: Synthesizes question banks from book chapters."""
-    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-chapter")
+    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-chapter", output_format=args.output_format)
     source_files = [f for f in Path(args.input_dir).rglob("*") if f.suffix.lower() in [".pdf", ".md"]]
-    
+
     for fpath in source_files:
-        print(f"\n{'='*60}\n📚 Mode: Generate Chapter | File: {fpath.name}")
+        print(f"\n{'='*60}\n📚 Mode: Generate Chapter ({args.output_format.upper()}) | File: {fpath.name}")
         upload_to_gcs(fpath, args.bucket_name, verbose=args.verbose)
-        
-        output_filename = f"{fpath.stem}_synthetic.xml"
+
+        output_filename = f"{fpath.stem}_synthetic.{args.output_format}"
         gcs_upload_path = f"output/{output_filename}"
         download_url = f"https://storage.googleapis.com/{args.bucket_name}/processing_queue/{fpath.name.replace(' ', '_')}"
         upload_url = f"https://storage.googleapis.com/upload/storage/v1/b/{args.bucket_name}/o?uploadType=media&name={gcs_upload_path}"
 
         page_rule = f"Process only pages {args.page_range[0]} to {args.page_range[1]}." if args.page_range else "Process all content."
+        mime_type = "application/pdf" if args.output_format == "pdf" else "application/xml"
 
+        if args.output_format == "pdf":
+            action_instructions = f"""
+            3. **Synthesize & Typeset PDF**:
+               - Synthesize high-quality practice questions adhering to `.agents/AGENTS.md`.
+               - Write a professional LaTeX document (`chapter.tex`).
+               - The document MUST have a `\\section*{{Questions}}` and a `\\section*{{Answers & Solutions}}`.
+               - Draw required diagrams programmatically using `TikZ`, `circuitikz`, or `chemfig`.
+               - Compile the PDF via Python: `os.system("xelatex -interaction=nonstopmode chapter.tex")` (Run twice for references).
+            4. **Upload PDF Output**:
+               - Upload the compiled `chapter.pdf` to `{upload_url}` via Python `requests.post`.
+            """
+            post_file_name = "chapter.pdf"
+        else:
+            action_instructions = f"""
+            3. **Synthesize XML**: Synthesize high-quality practice questions adhering strictly to `.agents/AGENTS.md`. Use inline SVG for diagrams where needed.
+            4. **Upload XML Output**:
+               - Save XML as `{output_filename}`.
+               - Upload to `{upload_url}` via Python `requests.post`.
+            """
+            post_file_name = output_filename
+
+        # Only pass tag instructions if we are generating XML and tags actually exist
+        tags_instruction = f"- **Global Tags**: {args.tags}" if args.output_format == "xml" and args.tags else ""
         execution_prompt = f"""
         You are an autonomous synthetic question generator.
-        Your goal is to read the chapter document mounted at `{fpath.name}` and generate a valid Moodle XML question bank saved to `{output_filename}`.
-        
+        Your goal is to read the chapter document mounted at `{fpath.name}` and generate a valid {args.output_format.upper()} question bank.
+
         ### ⚙️ Generation Constraints:
         - **Target Standards**: {args.standards}
-        - **Target Languages**: {args.languages} (CRITICAL: Output options/feedback stacked bilingually if multiple requested).
+        - **Target Languages**: {args.languages} (CRITICAL: Output stacked bilingual content if multiple languages are specified).
         - **Target Difficulty**: {args.difficulty.upper()}
         - **Max Questions per Page/Section**: {args.num_questions}
         - **Scope**: {page_rule}
-        
+        {tags_instruction}
+
         ### 📋 Workflow Steps:
         1. **Download Document**:
            ```python
@@ -276,14 +313,15 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
                raise Exception(f"Download failed: {{resp.status_code}}")
            ```
         2. Read and analyze the chapter content.
-        3. Synthesize high-quality practice questions adhering strictly to `.agents/AGENTS.md`. Use inline SVG for diagrams where needed.
-        4. **Upload XML Output**:
-           ```python
-           import requests
-           headers = {{"Content-Type": "application/xml", "Authorization": "Bearer {gcp_token}"}}
-           resp = requests.post("{upload_url}", headers=headers, data=open("{output_filename}", "rb").read())
-           if resp.status_code not in [200, 201]: raise Exception(f"Upload failed: {{resp.text}}")
-           ```
+        {action_instructions}
+
+        **Upload Script Template (Step 4):**
+        ```python
+        import requests
+        headers = {{"Content-Type": "{mime_type}", "Authorization": "Bearer {gcp_token}"}}
+        resp = requests.post("{upload_url}", headers=headers, data=open("{post_file_name}", "rb").read())
+        if resp.status_code not in [200, 201]: raise Exception(f"Upload failed: {{resp.text}}")
+        ```
         """
         run_remote_sandbox(client, args.agent_name, execution_prompt, gcp_token, agents_md_content, args.verbose)
         download_from_gcs(args.bucket_name, gcs_upload_path, fpath.parent / output_filename)
@@ -291,35 +329,34 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
 
 def cmd_generate_mock(args, client, gcp_token, rules_dict):
     """Generate-Mock mode: Single-request synthesis of full exam papers from blueprints."""
-    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-mock")
-    
-    # 1. Load Blueprint JSON
+    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-mock", output_format=args.output_format)
+
     if not args.blueprint.exists():
         print(f"❌ Blueprint file not found: {args.blueprint}")
         return
 
     with open(args.blueprint, "r", encoding="utf-8") as f:
         blueprint = json.load(f)
-    
+
     exam_name = blueprint.get("exam_name", "MOCK_EXAM")
     subjects = blueprint.get("subjects", [])
 
-    # 2. Aggregate all subject syllabi into a single text block
-    print(f"\n{'='*60}\n🎓 Mode: Generate Mock | Single-Request Paper Generation: {exam_name}")
+    diff_map = {k.strip().lower(): float(v.strip()) for k, v in (pair.split(":") for pair in args.difficulty_mix.split(","))}
+    diff_total = sum(diff_map.values())
+    diff_map = {k: v/diff_total for k, v in diff_map.items()}
+
+    print(f"\n{'='*60}\n🎓 Mode: Generate Mock ({args.output_format.upper()}) | Exam: {exam_name}")
     print("  Aggregating all subject syllabi specified in blueprint...")
 
     syllabus_blocks = []
     for subj in subjects:
         subj_name = subj.get("name", "Subject")
         total_qs = subj.get("total_questions", 0)
-        grade = subj.get("default_grade", 4.0)
-        penalty = subj.get("penalty", 0.25)
-        neg_frac = subj.get("negative_fraction", -25)
-        
+
         s_path = Path(subj.get("syllabus_file", ""))
         content = ""
         if s_path.exists():
-            content = f_path.read_text(encoding="utf-8") if (f_path := s_path).exists() else ""
+            content = s_path.read_text(encoding="utf-8")
             print(f"  ✓ Loaded syllabus for {subj_name} ({s_path.name})")
         else:
             print(f"  ⚠️ Warning: Syllabus file '{s_path}' not found.")
@@ -327,16 +364,12 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
         block = (
             f"### SUBJECT: {subj_name.upper()}\n"
             f"- Total Questions Required: {total_qs}\n"
-            f"- Default Grade (<defaultgrade>): {grade}\n"
-            f"- Penalty (<penalty>): {penalty}\n"
-            f"- Incorrect Choice Fraction: {neg_frac}%\n\n"
             f"Syllabus Scope:\n{content}\n"
         )
         syllabus_blocks.append(block)
 
     all_syllabi_text = "\n" + "="*40 + "\n\n".join(syllabus_blocks)
 
-    # 3. Handle optional sample reference PDF
     sample_download_script = ""
     if args.sample_pdf and args.sample_pdf.exists():
         upload_to_gcs(args.sample_pdf, args.bucket_name, verbose=args.verbose)
@@ -349,61 +382,79 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
                 f.write(r.content)
         """
 
-    output_filename = f"mock_{exam_name.lower()}_full_bank.xml"
+    output_filename = f"mock_{exam_name.lower()}_full_bank.{args.output_format}"
     gcs_upload_path = f"output/{output_filename}"
     upload_url = f"https://storage.googleapis.com/upload/storage/v1/b/{args.bucket_name}/o?uploadType=media&name={gcs_upload_path}"
+    mime_type = "application/pdf" if args.output_format == "pdf" else "application/xml"
 
-    # 4. Construct Single Unified Execution Prompt
+    if args.output_format == "pdf":
+        action_instructions = f"""
+        2. **Synthesize & Typeset Complete Exam (PDF/LaTeX)**:
+           - Synthesize all required questions for EVERY subject according to the blueprint.
+           - Write a highly professional LaTeX document (`exam_paper.tex`).
+           - The document MUST be structured with `\\section*{{Questions}}` followed by `\\section*{{Answers & Solutions}}`.
+           - Draw ALL required diagrams (circuits, graphs, structures) natively using `TikZ`, `circuitikz`, or `chemfig`.
+           - Write a Python script to compile it: `os.system("xelatex -interaction=nonstopmode exam_paper.tex")` (Run twice).
+        3. **Upload PDF to GCS**:
+           - Upload the compiled `exam_paper.pdf` to GCS.
+        """
+        post_file_name = "exam_paper.pdf"
+    else:
+        action_instructions = f"""
+        2. **Synthesize Complete Question Bank (XML)**:
+           - Generate all required questions for EVERY subject according to the blueprint.
+           - Render diagrams using inline vector `<svg>` elements inside CDATA.
+           - Wrap all questions inside a single `<quiz>` root document saved to `{output_filename}`.
+        3. **Upload Consolidated XML to GCS**:
+           - Upload `{output_filename}` directly to GCS.
+        """
+        post_file_name = output_filename
+
+    # Only pass tag instructions if we are generating XML and tags actually exist
+    tags_instruction = f"- **Global Tags**: {args.tags}" if args.output_format == "xml" and args.tags else ""
     execution_prompt = f"""
-    You are an autonomous master test construction agent.
-    Your objective is to synthesize a complete, calibrated, full-length Moodle XML question bank for **{exam_name}** in a SINGLE execution.
+    You are an autonomous master test construction and typesetting agent.
+    Your objective is to synthesize a complete, calibrated, full-length exam for **{exam_name}** in a SINGLE execution.
 
     ### ⚙️ Global Exam Blueprint & Constraints:
     - **Exam Standard**: {args.standards}
-    - **Target Languages**: {args.languages} (Output stacked bilingual content if multiple languages are specified).
+    - **Target Languages**: {args.languages} (CRITICAL: Output stacked bilingual content if multiple languages are specified).
     - **Difficulty Breakdown Ratio**: {args.difficulty_mix} (e.g. easy:0.2, medium:0.5, hard:0.3 ratio across subjects).
-    - **Global Tags**: {args.tags}
+    {tags_instruction}
+    - **Output Format**: {args.output_format.upper()}
 
-    ### 📚 Combined Syllabus Scope & Blueprint Specifications:
+    ### 📚 Combined Syllabus Scope:
     {all_syllabi_text}
 
     ### 📋 Workflow Steps:
     1. **Setup Environment**:
-       - Execute Python code to initialize directories and load sample files:
-         ```python
-         import requests, os
-         os.makedirs("/workspace/pdfs", exist_ok=True)
-         os.makedirs("/workspace/output", exist_ok=True)
-         {sample_download_script}
-         ```
+       ```python
+       import requests, os
+       os.makedirs("/workspace/pdfs", exist_ok=True)
+       os.makedirs("/workspace/output", exist_ok=True)
+       {sample_download_script}
+       ```
+    {action_instructions}
 
-    2. **Synthesize Complete Question Bank**:
-       - Generate all required questions for EVERY subject according to the blueprint totals and difficulty ratio mix.
-       - Render diagrams programmatically using clean inline vector `<svg>` elements inside CDATA (or Base64 fallbacks for complex anatomy).
-       - Ensure all naming conventions, XML tag structures, LaTeX delimiters, and step-by-step explanations strictly adhere to `.agents/AGENTS.md`.
-       - Wrap all question nodes inside a single `<quiz>` root XML document saved locally to `{output_filename}`.
+    **Upload Script Template (Step 3):**
+    ```python
+    import requests
+    url = "{upload_url}"
+    headers = {{
+        "Content-Type": "{mime_type}",
+        "Authorization": "Bearer {gcp_token}"
+    }}
+    with open("{post_file_name}", "rb") as f:
+        data = f.read()
 
-    3. **Upload Consolidated XML to GCS**:
-       - Execute Python code to POST the full XML file directly to Google Cloud Storage:
-         ```python
-         import requests
-         url = "{upload_url}"
-         headers = {{
-             "Content-Type": "application/xml",
-             "Authorization": "Bearer {gcp_token}"
-         }}
-         with open("{output_filename}", "rb") as f:
-             data = f.read()
-         
-         response = requests.post(url, headers=headers, data=data)
-         print(f"GCS Upload Status Code: {{response.status_code}}")
-         print(f"GCS Response: {{response.text}}")
-         if response.status_code not in [200, 201]:
-             raise RuntimeError(f"GCS Upload failed with status {{response.status_code}}: {{response.text}}")
-         ```
+    response = requests.post(url, headers=headers, data=data)
+    print(f"GCS Upload Status Code: {{response.status_code}}")
+    print(f"GCS Response: {{response.text}}")
+    if response.status_code not in [200, 201]:
+        raise RuntimeError(f"GCS Upload failed with status {{response.status_code}}: {{response.text}}")
+    ```
     """
 
-    # 5. Execute single sandbox interaction & retrieve final XML
     run_remote_sandbox(client, args.agent_name, execution_prompt, gcp_token, agents_md_content, args.verbose)
     download_from_gcs(args.bucket_name, gcs_upload_path, Path(args.output_dir) / output_filename)
 
@@ -415,7 +466,7 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
 def main():
     # 1. Create a "Shared" parser for all the global flags
     shared_parser = argparse.ArgumentParser(add_help=False)
-    
+
     # Global Command-Line Flags
     shared_parser.add_argument("--languages", default="english", help="Target languages (e.g. english,bengali)")
     shared_parser.add_argument("--standards", default="general", help="Target standards (e.g. neet_ug, jee_main)")
@@ -424,19 +475,25 @@ def main():
     shared_parser.add_argument("--bucket-name", required=True, help="GCS Bucket name for staging and output")
     shared_parser.add_argument("--agent-name", default="antigravity-preview-05-2026")
     shared_parser.add_argument("--verbose", action="store_true", help="Print detailed remote execution logs")
+    shared_parser.add_argument("--output-format", choices=["xml", "pdf"], default="xml", help="Choose output format (xml or pdf).")
 
     # Core System Prompt Rule Files
     shared_parser.add_argument("--prompt", required=True, type=Path, help="Path to the main exam prompt (e.g. jee_main.md)")
     shared_parser.add_argument("--instruction-file", default=None, type=Path, help="Path to exam instruction file")
+
+    # XML Specific Rules
     shared_parser.add_argument("--xml-rules", default="prompts/core/moodle_xml_rules.md", type=Path)
     shared_parser.add_argument("--tags-rules", default="prompts/core/naming_and_tags_rules.md", type=Path)
     shared_parser.add_argument("--templates", default="prompts/core/moodle_xml_templates.md", type=Path)
 
+    # PDF Specific Rules
+    shared_parser.add_argument("--pdf-rules", default="prompts/core/pdf_generation_rules.md", type=Path)
+
     # 2. Create the Main parser and attach the shared parser to subcommands
-    parser = argparse.ArgumentParser(description="paper2moodle_gcloud.py - Master Unified Moodle XML Pipeline")
+    parser = argparse.ArgumentParser(description="paper2moodle_gcloud.py - Master Unified Moodle XML & PDF Pipeline")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    # Subcommand Mode 1: extract
+    # Subcommand Mode 1: extract (Only supports XML)
     ext_parser = subparsers.add_parser("extract", parents=[shared_parser], help="Extract questions from exam paper PDFs")
     ext_parser.add_argument("--input-dir", required=True, type=Path, help="Local directory containing input PDFs")
     ext_parser.add_argument("--page-range", type=int, nargs=2, metavar=('START', 'END'), help="Page range to extract (e.g., 1 10)")
@@ -462,6 +519,11 @@ def main():
         print("❌ Error: GEMINI_API_KEY environment variable is not set.")
         sys.exit(1)
 
+    # Hard-enforce extract mode to be XML only to prevent logic breakage
+    if args.mode == "extract" and args.output_format == "pdf":
+        print("❌ Error: 'extract' mode only supports --output-format xml.")
+        sys.exit(1)
+
     gcp_token = get_gcloud_access_token()
     client = genai.Client()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -472,6 +534,7 @@ def main():
         "xml_rules": args.xml_rules,
         "tags_rules": args.tags_rules,
         "templates": args.templates,
+        "pdf_rules": args.pdf_rules
     }
 
     # Dispatch to appropriate mode handler
