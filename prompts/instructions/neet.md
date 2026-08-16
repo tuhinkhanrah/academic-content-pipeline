@@ -4,10 +4,10 @@
 - Choose the actual number dynamically from 0..max based on concept quality, novelty, and solvability in the current page/content block.
 - Prefer fewer high-quality questions over filler; output 0 questions when the source block is weak or non-assessable.
 - Prefer conceptual variety across generated questions:
-  - standard MCQ
-  - assertion-reason
-  - statement-based
-  - match/list style
+- standard MCQ
+- assertion-reason
+- statement-based
+- match/list style
 - Include at least one multi-concept question when the source supports it.
 - Every question must be standalone and solvable without external context.
 

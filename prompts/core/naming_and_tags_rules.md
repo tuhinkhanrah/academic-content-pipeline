@@ -8,9 +8,10 @@ Construct the question name dynamically using **ONLY** the available metadata to
 * **NO PLACEHOLDERS / NO GUESSING:**
   * NEVER invent or assume missing tokens (e.g., do **NOT** add `SECTION_A`, `SECTION`, `SEC1`, `CHAPTER`, or `GENERAL` unless explicitly printed in the paper).
   * Skip any token that is not explicitly present in the source text. Do NOT leave trailing or double underscores (`__`).
+* **STRICT FORBIDDEN FORMATS:** Do NOT use spaces, parentheses `()`, or hyphens `-` between the prefix tokens.
 * **Formatting:**
-  * Tokens MUST be UPPERCASE alphanumeric with spaces removed (e.g., `SECTIONA`, `CAT1`).
-  * Snippet MUST be 5–8 plain-text words (no HTML, LaTeX, or math delimiters).
+  * Tokens MUST be UPPERCASE alphanumeric with spaces removed and joined strictly by underscores (e.g., `JEEMAIN_MATHEMATICS_2025_Q01`).
+  * You MUST append a 5–8 word plain-text snippet at the very end, separated by a single hyphen and a space. Example: `_Q01 - Area bounded by the curves` (no HTML, LaTeX, or math delimiters).
 
 ## Canonical Examples
 
@@ -48,6 +49,8 @@ Construct the question name dynamically using **ONLY** the available metadata to
 - Tag values must be lowercase `snake_case` (except numeric year).
 
 ## Mandatory Tag Formatting Laws
+- **CRITICAL:** EVERY single tag MUST follow the `key:value` format. 
+- **FORBIDDEN:** NEVER output raw values like `jee_main` or `mathematics`. You MUST output `standard:jee_main` and `subject:mathematics`.
 - Tag keys must be lowercase.
 - Tag values must be lowercase `snake_case` (except numeric year).
 - Tag text format: `<tag><text>key:value</text></tag>`
@@ -64,4 +67,4 @@ Construct the question name dynamically using **ONLY** the available metadata to
 ## Language Tag Law (`lang`)
 * Every target language must be emitted as its own individual tag using its 2-letter ISO code (e.g., `lang:en`, `lang:bn`).
 * **FORBIDDEN:** combined/hyphenated/underscored tags like `lang:en_bn` or `lang:en-bn`. Never join multiple language codes into a single tag string — always emit one `<tag>` per language.
-    `<tag><text>lang:bn</text></tag>`  
+    `<tag><text>lang:bn</text></tag>`
