@@ -29,12 +29,10 @@ Given textbook/chapter content, generate high-quality practice questions in vali
 - Treat runtime question count as a maximum cap, not a mandatory fixed count.
 - Choose the actual number dynamically from 0..max based on concept quality, novelty, and solvability in the current page/content block.
 - Prefer fewer high-quality questions over filler; output 0 questions when the source block is weak or non-assessable.
-- Prefer conceptual variety across generated questions:
-  - standard MCQ
-  - assertion-reason
-  - statement-based
-  - match/list style
-- Include at least one multi-concept question when the source supports it.
+- Use only question formats permitted by the selected exam's instructions and runtime constraints. Do not infer, require, or mix formats that are not explicitly allowed.
+- Vary concepts, skills, and contexts only within the permitted format.
+- Use diagram-based questions when the source and selected exam format support them. Diagrams are content modalities, not a required question type.
+- Include a multi-concept question only when the source and selected exam format support it.
 - Every question must be standalone and solvable without external context.
 
 # Exam Calibration

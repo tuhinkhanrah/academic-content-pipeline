@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-paper2moodle_gcloud.py - Master Unified Moodle XML & PDF Pipeline
+academic_content_pipeline.py - Master Unified Academic Content Pipeline
 Modes:
   1. extract          (Extract questions from PDFs via Sandbox Vision)
   2. generate-chapter (Synthesize questions from chapter PDFs/MDs)
@@ -69,7 +69,7 @@ SYNTHESIS_IMAGE_RULES = """
 - **Base64 Embedded PNG (FALLBACK):** ONLY if a biology question explicitly requires a highly intricate anatomical illustration where vector SVG is impossible.
 """
 
-def assemble_prompt_files(rule_files: dict, mode: str, output_format: str = "xml") -> str:
+def assemble_prompt_files(rule_files: dict, mode: str, output_format: str = "xml", pdf_engine: str = "html") -> str:
     """Combine specified prompt markdown files into a single context, handling PDF vs XML routing."""
     content_blocks = ["# AGENTS.md - System Rules\n"]
 
@@ -78,7 +78,11 @@ def assemble_prompt_files(rule_files: dict, mode: str, output_format: str = "xml
 
     # Route rules based on output format
     if output_format == "pdf":
-        valid_keys = ["main_prompt", "instruction_file", "pdf_rules"]
+        pdf_rule_key = "pdf_rules_tex" if pdf_engine == "tex" else "pdf_rules_html"
+        valid_keys = ["main_prompt", "instruction_file", pdf_rule_key]
+        legacy_key = rule_files.get("pdf_rules")
+        if legacy_key:
+            valid_keys.append("pdf_rules")
     else:
         valid_keys = ["main_prompt", "instruction_file", "xml_rules", "tags_rules", "templates"]
 
@@ -97,6 +101,70 @@ def assemble_prompt_files(rule_files: dict, mode: str, output_format: str = "xml
             print(f"⚠️ Warning: Prompt file '{filepath}' not found. Skipping.")
 
     return "\n".join(content_blocks)
+
+
+def build_pdf_action_instructions(pdf_engine: str, artifact_base: str, upload_url: str) -> tuple[str, str]:
+    """Return the PDF generation instructions and the final artifact file name for the selected engine."""
+    if pdf_engine == "tex":
+        action_instructions = f"""
+        3. **Synthesize LaTeX & Compile PDF**:
+           - Create a complete standalone LaTeX document named `{artifact_base}.tex` using `article`/`exam`-style structure.
+           - CRITICAL: Ensure no text extends beyond the right margin or gets cut off. Every question and statement must be fully contained within the page boundaries.
+           - Use native LaTeX for all equations and labels, and keep bilingual output in a clean stacked or side-by-side layout (for example, English first then target language).
+           - Ensure the source is valid UTF-8 and includes packages for multilingual text if the target language requires it.
+           - For every bilingual question, create two fully separate blocks: first the complete English question block, then a second block for the translated language. Each block must be a standalone question unit with its own option list and its own numbering.
+           - For long assertions, statements, or reasons, insert explicit line breaks (`\\\\` or new paragraphs) to prevent text from overflowing past the page edge. Break them at logical points (commas, clause boundaries) rather than allowing one continuous unbroken line.
+           - If the chapter/source or applicable subject syllabus supports a diagram question and the selected exam format permits it, include at least one diagram-based MCQ. Do not force one when the source is unsuitable, the question cap leaves no room, or a faithful diagram cannot be rendered.
+           - Before selecting SVG-based diagram questions, check whether `rsvg-convert` or Inkscape is available. For eligible diagrams such as circuits, graphs, ray diagrams, geometry, force vectors, and simple chemical structures, create an SVG source with a `viewBox` and padding. If a converter is available, convert the SVG to a local PDF (for example, `rsvg-convert -f pdf -o diagram.pdf diagram.svg`) and include it using `\\includegraphics`; do not put raw SVG in the `.tex` document or depend on an unverified `\\includesvg` workflow.
+           - If no SVG-to-PDF converter is available, use TikZ when it can render the diagram accurately. Only omit the diagram-based question when neither SVG conversion nor a faithful TikZ implementation is available. Use PNG only when an accurate vector diagram is impractical, such as detailed biological anatomy.
+           - For any Indic language (Hindi, Bengali, Tamil, Telugu, Gujarati, Kannada, Malayalam, Marathi, Punjabi, Odia, Assamese, etc.), use `xelatex` or `lualatex` with `fontspec` and a script-specific Unicode-capable font such as `Noto Serif Devanagari`, `Noto Serif Bengali`, `Noto Serif Tamil`, `Noto Serif Telugu`, etc.
+           - Include an overflow-resistant preamble:
+             ```latex
+             \\documentclass{{article}}
+             \\usepackage[margin=1.0in]{{geometry}}
+             \\usepackage{{amsmath,amssymb,microtype}}
+             \\usepackage{{ragged2e}}
+             \\usepackage{{fontspec}}
+             \\usepackage{{polyglossia}}
+             \\raggedbottom
+             \\setmainlanguage{{english}}
+             \\setotherlanguage{{hindi}}
+             \\newfontfamily\\hindifont[Script=Devanagari]{{Noto Serif Devanagari}}
+             \\begin{{document}}
+             \\RaggedRight
+             \\parindent=0pt
+             \\emergencystretch=2em
+             ```
+           - Compile with `xelatex -interaction=nonstopmode -halt-on-error {artifact_base}.tex` or `lualatex -interaction=nonstopmode -halt-on-error {artifact_base}.tex`.
+           - Confirm the compiled PDF exists, is non-empty, and contains no truncated text before upload. For every diagram question, confirm every `\\includegraphics` file exists and visually inspect the rendered page to verify the complete diagram and its labels are visible without clipping.
+        4. **Upload PDF Output**:
+           - Upload the compiled `{artifact_base}.pdf` to `{upload_url}` via Python `requests.post`.
+        """
+        post_file_name = f"{artifact_base}.pdf"
+    else:
+        action_instructions = f"""
+        3. **Synthesize HTML & Compile PDF**:
+           - Synthesize high-quality practice questions adhering to `.agents/AGENTS.md`.
+           - Output a clean, complete HTML file (`{artifact_base}.html`) correctly importing KaTeX and Google Web Fonts.
+           - CRITICAL: For every bilingual question, create two fully separate HTML blocks: first the complete English question with its full option set (A, B, C, D), then the translated question with a separate full option set. Do not merge English and translated options into one shared list like `(A) 1 (English) / 1 (Translated)`.
+           - For generated diagrams such as circuits, graphs, ray diagrams, geometry, force vectors, and simple chemical structures, use native inline SVG with a `viewBox`, explicit dimensions, and padding so Chrome renders the complete diagram into the PDF. Do not use external image URLs or JavaScript-dependent graphics. Use a local PNG only when an accurate SVG is impractical, such as detailed biological anatomy.
+           - IMPORTANT: For every mathematical expression, preserve the literal LaTeX backslashes in the final HTML source. Example: use `$$\\frac{{u^2 \\cos^2 \\theta}}{{g}}$$` and `\\sin\\theta`, not truncated text like `rac{{...}}` or `cos^2` without the leading backslash.
+           - Write a Python script using the Headless Chrome CLI to compile the PDF:
+             ```python
+             import subprocess
+             subprocess.run([
+                 "google-chrome", "--headless", "--disable-gpu", "--no-sandbox",
+                 "--disable-dev-shm-usage", "--run-all-compositor-stages-before-draw",
+                 "--virtual-time-budget=5000", "--no-pdf-header-footer",
+                 "--print-to-pdf={artifact_base}.pdf", "{artifact_base}.html"
+             ], check=True)
+             ```
+        4. **Upload PDF Output**:
+           - Upload the compiled `{artifact_base}.pdf` to `{upload_url}` via Python `requests.post`.
+        """
+        post_file_name = f"{artifact_base}.pdf"
+
+    return action_instructions, post_file_name
 
 # =======================================================================
 # 3. Sandbox Execution Engine
@@ -123,12 +191,12 @@ def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content,
                     {"domain": "storage.googleapis.com", "transform": {"Authorization": f"Bearer {gcp_token}"}},
                     {"domain": "*"}
                 ]
+            },
+            # 🐛 FIX: 'env' must be nested INSIDE the environment configuration!
+            "env": {
+                "GEMINI_API_KEY": api_key,
             }
-        },
-        # Ensure environment variables are passed to the remote sandbox context
-        env={
-            "GEMINI_API_KEY": api_key,
-        },
+        }
     )
     if verbose:
         print("\n🔍 Agent Finished Execution. Logs:\n" + "="*60)
@@ -248,7 +316,12 @@ def cmd_extract(args, client, gcp_token, rules_dict):
 
 def cmd_generate_chapter(args, client, gcp_token, rules_dict):
     """Generate-Chapter mode: Synthesizes question banks from book chapters."""
-    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-chapter", output_format=args.output_format)
+    agents_md_content = assemble_prompt_files(
+        rules_dict,
+        mode="generate-chapter",
+        output_format=args.output_format,
+        pdf_engine=args.pdf_engine,
+    )
     source_files = [f for f in Path(args.input_dir).rglob("*") if f.suffix.lower() in [".pdf", ".md"]]
 
     for fpath in source_files:
@@ -264,17 +337,8 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
         mime_type = "application/pdf" if args.output_format == "pdf" else "application/xml"
 
         if args.output_format == "pdf":
-            action_instructions = f"""
-            3. **Synthesize & Typeset PDF**:
-               - Synthesize high-quality practice questions adhering to `.agents/AGENTS.md`.
-               - Write a professional LaTeX document (`chapter.tex`).
-               - The document MUST have a `\\section*{{Questions}}` and a `\\section*{{Answers & Solutions}}`.
-               - Draw required diagrams programmatically using `TikZ`, `circuitikz`, or `chemfig`.
-               - Compile the PDF via Python: `os.system("xelatex -interaction=nonstopmode chapter.tex")` (Run twice for references).
-            4. **Upload PDF Output**:
-               - Upload the compiled `chapter.pdf` to `{upload_url}` via Python `requests.post`.
-            """
-            post_file_name = "chapter.pdf"
+            artifact_base = f"{fpath.stem}_synthetic"
+            action_instructions, post_file_name = build_pdf_action_instructions(args.pdf_engine, artifact_base, upload_url)
         else:
             action_instructions = f"""
             3. **Synthesize XML**: Synthesize high-quality practice questions adhering strictly to `.agents/AGENTS.md`. Use inline SVG for diagrams where needed.
@@ -292,10 +356,11 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
 
         ### ⚙️ Generation Constraints:
         - **Target Standards**: {args.standards}
-        - **Target Languages**: {args.languages} (CRITICAL: Output stacked bilingual content if multiple languages are specified).
+        - **Target Languages**: {args.languages} (CRITICAL: Every single question stem, option, answer key, and STEP-BY-STEP DETAILED SOLUTION MUST be strictly stacked bilingual English + Target Language. Do NOT output solutions or explanations in English only!).
         - **Target Difficulty**: {args.difficulty.upper()}
-        - **Max Questions per Page/Section**: {args.num_questions}
+        - **Max Questions**: {args.num_questions}
         - **Scope**: {page_rule}
+        - **PDF Generation Engine**: {args.pdf_engine.upper()} (HTML/Chrome or LaTeX compiler)
         {tags_instruction}
 
         ### 📋 Workflow Steps:
@@ -324,12 +389,17 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
         ```
         """
         run_remote_sandbox(client, args.agent_name, execution_prompt, gcp_token, agents_md_content, args.verbose)
-        download_from_gcs(args.bucket_name, gcs_upload_path, fpath.parent / output_filename)
+        download_from_gcs(args.bucket_name, gcs_upload_path, Path(args.output_dir) / output_filename)
 
 
 def cmd_generate_mock(args, client, gcp_token, rules_dict):
     """Generate-Mock mode: Single-request synthesis of full exam papers from blueprints."""
-    agents_md_content = assemble_prompt_files(rules_dict, mode="generate-mock", output_format=args.output_format)
+    agents_md_content = assemble_prompt_files(
+        rules_dict,
+        mode="generate-mock",
+        output_format=args.output_format,
+        pdf_engine=args.pdf_engine,
+    )
 
     if not args.blueprint.exists():
         print(f"❌ Blueprint file not found: {args.blueprint}")
@@ -388,17 +458,8 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
     mime_type = "application/pdf" if args.output_format == "pdf" else "application/xml"
 
     if args.output_format == "pdf":
-        action_instructions = f"""
-        2. **Synthesize & Typeset Complete Exam (PDF/LaTeX)**:
-           - Synthesize all required questions for EVERY subject according to the blueprint.
-           - Write a highly professional LaTeX document (`exam_paper.tex`).
-           - The document MUST be structured with `\\section*{{Questions}}` followed by `\\section*{{Answers & Solutions}}`.
-           - Draw ALL required diagrams (circuits, graphs, structures) natively using `TikZ`, `circuitikz`, or `chemfig`.
-           - Write a Python script to compile it: `os.system("xelatex -interaction=nonstopmode exam_paper.tex")` (Run twice).
-        3. **Upload PDF to GCS**:
-           - Upload the compiled `exam_paper.pdf` to GCS.
-        """
-        post_file_name = "exam_paper.pdf"
+        artifact_base = "exam_paper"
+        action_instructions, post_file_name = build_pdf_action_instructions(args.pdf_engine, artifact_base, upload_url)
     else:
         action_instructions = f"""
         2. **Synthesize Complete Question Bank (XML)**:
@@ -418,8 +479,9 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
 
     ### ⚙️ Global Exam Blueprint & Constraints:
     - **Exam Standard**: {args.standards}
-    - **Target Languages**: {args.languages} (CRITICAL: Output stacked bilingual content if multiple languages are specified).
+    - **Target Languages**: {args.languages} (CRITICAL: Every single question stem, option, answer key, and STEP-BY-STEP DETAILED SOLUTION MUST be strictly stacked bilingual English + Target Language. Do NOT output solutions or explanations in English only!).
     - **Difficulty Breakdown Ratio**: {args.difficulty_mix} (e.g. easy:0.2, medium:0.5, hard:0.3 ratio across subjects).
+    - **PDF Generation Engine**: {args.pdf_engine.upper()} (HTML/Chrome or LaTeX compiler)
     {tags_instruction}
     - **Output Format**: {args.output_format.upper()}
 
@@ -476,6 +538,7 @@ def main():
     shared_parser.add_argument("--agent-name", default="antigravity-preview-05-2026")
     shared_parser.add_argument("--verbose", action="store_true", help="Print detailed remote execution logs")
     shared_parser.add_argument("--output-format", choices=["xml", "pdf"], default="xml", help="Choose output format (xml or pdf).")
+    shared_parser.add_argument("--pdf-engine", choices=["html", "tex"], default="html", help="Choose PDF renderer: html (Chrome) or tex (LaTeX).")
 
     # Core System Prompt Rule Files
     shared_parser.add_argument("--prompt", required=True, type=Path, help="Path to the main exam prompt (e.g. jee_main.md)")
@@ -487,10 +550,12 @@ def main():
     shared_parser.add_argument("--templates", default="prompts/core/moodle_xml_templates.md", type=Path)
 
     # PDF Specific Rules
-    shared_parser.add_argument("--pdf-rules", default="prompts/core/pdf_generation_rules.md", type=Path)
+    shared_parser.add_argument("--pdf-rules", default=None, type=Path, help="Legacy single PDF rules file; optional compatibility fallback")
+    shared_parser.add_argument("--pdf-rules-html", default="prompts/core/pdf_html_rules.md", type=Path)
+    shared_parser.add_argument("--pdf-rules-tex", default="prompts/core/pdf_tex_rules.md", type=Path)
 
     # 2. Create the Main parser and attach the shared parser to subcommands
-    parser = argparse.ArgumentParser(description="paper2moodle_gcloud.py - Master Unified Moodle XML & PDF Pipeline")
+    parser = argparse.ArgumentParser(description="academic_content_pipeline.py - Master Unified Academic Content Pipeline")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     # Subcommand Mode 1: extract (Only supports XML)
@@ -534,7 +599,9 @@ def main():
         "xml_rules": args.xml_rules,
         "tags_rules": args.tags_rules,
         "templates": args.templates,
-        "pdf_rules": args.pdf_rules
+        "pdf_rules": args.pdf_rules,
+        "pdf_rules_html": args.pdf_rules_html,
+        "pdf_rules_tex": args.pdf_rules_tex,
     }
 
     # Dispatch to appropriate mode handler
