@@ -1,0 +1,59 @@
+{
+  "mcq_types": [
+    {
+      "id": "MCQ_STD_001",
+      "name": "standard MCQ",
+      "description": "Single-best-answer multiple choice question with four options."
+    },
+    {
+      "id": "MCQ_ASSERT_001",
+      "name": "assertion-reason",
+      "description": "Assertion and reason pair with a single correct conclusion based on the relationship between the statements."
+    },
+    {
+      "id": "MCQ_STMT_2_001",
+      "name": "statement-based",
+      "description": "Two-statement evaluation question where the student selects the correct logical relationship or conclusion."
+    },
+    {
+      "id": "MCQ_STMT_3_001",
+      "name": "statement-based",
+      "description": "Three-statement evaluation question with analysis of correctness and interdependence."
+    },
+    {
+      "id": "MCQ_STMT_4_001",
+      "name": "statement-based",
+      "description": "Four-statement evaluation question requiring logical synthesis across multiple propositions."
+    },
+    {
+      "id": "MCQ_STMT_MULTI_001",
+      "name": "statement-based",
+      "description": "Multi-statement evaluation question where several statements must be assessed together to determine the correct answer."
+    },
+    {
+      "id": "MCQ_MATCH_001",
+      "name": "match/list style",
+      "description": "Matching or list-based question where entries from two lists are paired or arranged correctly."
+    },
+    {
+      "id": "MCQ_DIAGRAM_001",
+      "name": "diagram/image-based",
+      "description": "Question based on a diagram, image, chart, graph, ray diagram, circuit, or visual representation."
+    },
+    {
+      "id": "MCQ_SEQ_001",
+      "name": "sequencing / chronological order",
+      "description": "Question requiring ordering of events, steps, reactions, stages, or processes in the correct chronological or logical sequence."
+    },
+    {
+      "id": "MCQ_NUM_001",
+      "name": "numerical / calculation-based",
+      "description": "Numerical problem requiring quantitative reasoning, calculation, and final value selection."
+    },
+    {
+      "id": "MCQ_MULTI_CORRECT_001",
+      "name": "multiple correct options",
+      "description": "Question with more than one correct option, where the candidate must identify all valid answers according to the exam rule."
+    }
+  ]
+}

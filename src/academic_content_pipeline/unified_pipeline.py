@@ -10,7 +10,7 @@ Modes of Communication:
 Functionalities:
   1. extract               : Extract questions from PDF question papers via Mistral OCR
   2. generate-questions     : Synthesize questions from chapter PDFs/MDs
-  3. generate-paper         : Synthesize full mock exams from JSON blueprints / syllabi
+  3. generate-paper         : Synthesize full mock exams from JSON specs / syllabi
 """
 
 import argparse
@@ -99,18 +99,19 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_ext.add_argument("--verify-online", action="store_true", help="Verify answers online.")
 
     # 2. generate-questions
-    p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs.")
+    p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs and optional specs.")
     add_common_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
+    p_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON spec or markdown file with extra generation constraints.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
-    p_chap.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium", help="Question difficulty.")
+    p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
 
     # 3. generate-paper
-    p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from blueprints / syllabi.")
+    p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
-    p_syl.add_argument("--blueprint", type=Path, default=None, help="Path to JSON blueprint or syllabus markdown/pdf.")
+    p_syl.add_argument("--spec", type=Path, default=None, help="Path to JSON spec or syllabus markdown/pdf.")
     p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
 
@@ -189,14 +190,15 @@ def main():
     add_common_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
+    p_direct_chap.add_argument("--spec", type=Path, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
-    p_direct_chap.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
+    p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
     p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
     add_common_options(p_direct_syl)
-    p_direct_syl.add_argument("--blueprint", type=Path, default=None)
+    p_direct_syl.add_argument("--spec", type=Path, default=None)
     p_direct_syl.add_argument("--sample-pdf", type=Path, default=None)
     p_direct_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
 
@@ -315,11 +317,12 @@ def main():
                 languages=languages_list,
                 standards=args.standards,
                 tags=args.tags,
-                difficulty=args.difficulty,
+                difficulty_mix=args.difficulty_mix,
                 num_questions=args.num_questions,
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
                 page_range=args.page_range,
+                spec_path=args.spec,
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -330,8 +333,8 @@ def main():
                 sys.exit(1)
 
         elif task == "generate-paper":
-            if not args.blueprint:
-                print("❌ Error: Please specify --blueprint (JSON blueprint or syllabus markdown/pdf).")
+            if not args.spec:
+                print("❌ Error: Please specify --spec (JSON spec or syllabus markdown/pdf).")
                 sys.exit(1)
 
             mock_generator = PaperGenerator(
@@ -346,7 +349,7 @@ def main():
                 pdf_engine=args.pdf_engine,
                 sample_pdf=args.sample_pdf,
             )
-            mock_generator.process_blueprint(args.blueprint, args.output_dir)
+            mock_generator.process_spec(args.spec, args.output_dir)
     finally:
         if hasattr(communicator, "close"):
             communicator.close()

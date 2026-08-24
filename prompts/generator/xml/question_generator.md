@@ -8,6 +8,7 @@ Given textbook/chapter content, generate high-quality practice questions in vali
 - Output only complete `<question>...</question>` nodes wrapped inside a `<quiz>` root document.
 - Do not wrap output in markdown code fences.
 - If content is non-academic or insufficient, return an empty string `""`.
+- Use inline `<svg>` for diagrams, circuits, graphs, ray diagrams, chemistry structures, and geometry figures inside the relevant question text.
 
 # Priority Order (Critical)
 - If any rules conflict, follow this order:

@@ -5,7 +5,7 @@ content_processors.py - Core Content Processing Classes.
 Classes:
   1. QuestionPaperExtractor : Extracts questions & diagrams from exam paper PDFs.
   2. QuestionGenerator      : Synthesizes calibrated questions from source PDFs/MDs.
-  3. PaperGenerator         : Synthesizes full mock exam papers from syllabi & blueprints.
+  3. PaperGenerator         : Synthesizes full mock exam papers from syllabi & specs.
 """
 
 import json
@@ -239,12 +239,13 @@ class QuestionGenerator:
         languages: Optional[List[str]] = None,
         standards: str = "General",
         tags: str = "",
-        difficulty: str = "medium",
+        difficulty_mix: str = "easy:0.2,medium:0.5,hard:0.3",
         num_questions: int = 5,
         output_format: str = "xml",
         pdf_engine: str = "html",
         page_range: Optional[List[int]] = None,
         staging_dir: Path = Path("extracted_data"),
+        spec_path: Optional[Path] = None,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -252,12 +253,13 @@ class QuestionGenerator:
         self.languages = languages or ["english"]
         self.standards = standards
         self.tags = tags
-        self.difficulty = difficulty
+        self.difficulty_mix = difficulty_mix
         self.num_questions = num_questions
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
         self.page_range = page_range
         self.staging_dir = Path(staging_dir)
+        self.spec_path = Path(spec_path).resolve() if spec_path else None
 
     def process_file(self, input_file: Path, output_dir: Path) -> Path:
         """Synthesizes questions from a chapter file (.pdf or .md)."""
@@ -307,11 +309,25 @@ class QuestionGenerator:
             format_instruction = "CRITICAL FORMAT RULE: Generate valid Moodle XML (<quiz>...</quiz>)."
 
         # 3. Build turn content
+        optional_spec_text = ""
+        if self.spec_path is not None:
+            if not self.spec_path.exists():
+                raise FileNotFoundError(f"Generation spec file not found: {self.spec_path}")
+            if self.spec_path.suffix.lower() == ".json":
+                spec_payload = json.loads(self.spec_path.read_text(encoding="utf-8"))
+                spec_text = json.dumps(spec_payload, indent=2, ensure_ascii=False)
+            else:
+                spec_text = load_file_content(self.spec_path)
+            optional_spec_text = (
+                f"### Optional Generation Spec:\n{spec_text}\n\n"
+            )
+
         prompt_text = (
+            f"{optional_spec_text}"
             f"### Chapter Content Markdown:\n\n{markdown_text}\n\n"
             f"### Generation Constraints:\n"
             f"- Number of Questions: {self.num_questions}\n"
-            f"- Difficulty Level: {self.difficulty.upper()}\n"
+            f"- Difficulty Breakdown: {self.difficulty_mix}\n"
             f"- Target Languages: {', '.join(self.languages)}\n"
             f"- Target Standards: {self.standards}\n"
             f"- Global Tags: {', '.join(all_tags)}\n"
@@ -382,7 +398,7 @@ class QuestionGenerator:
 # =======================================================================
 
 class PaperGenerator:
-    """Synthesizes complete mock exam papers or question banks from syllabi & blueprints."""
+    """Synthesizes complete mock exam papers or question banks from syllabi & specs."""
 
     def __init__(
         self,
@@ -410,26 +426,26 @@ class PaperGenerator:
         self.sample_pdf = sample_pdf
         self.staging_dir = Path(staging_dir)
 
-    def process_blueprint(self, blueprint_path: Path, output_dir: Path) -> Path:
-        """Synthesizes a full calibrated mock exam from a blueprint JSON or syllabus."""
-        blueprint_path = Path(blueprint_path).resolve()
+    def process_spec(self, spec_path: Path, output_dir: Path) -> Path:
+        """Synthesizes a full calibrated mock exam from a spec JSON or syllabus."""
+        spec_path = Path(spec_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        if not blueprint_path.exists():
-            raise FileNotFoundError(f"Blueprint file not found: {blueprint_path}")
+        if not spec_path.exists():
+            raise FileNotFoundError(f"Spec file not found: {spec_path}")
 
-        blueprint_data = {}
-        if blueprint_path.suffix.lower() == ".json":
-            blueprint_data = json.loads(blueprint_path.read_text(encoding="utf-8"))
+        spec_data = {}
+        if spec_path.suffix.lower() == ".json":
+            spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
         else:
-            blueprint_data = {
-                "exam_name": blueprint_path.stem.upper(),
-                "subjects": [{"name": blueprint_path.stem, "syllabus_file": str(blueprint_path), "total_questions": 10}],
+            spec_data = {
+                "exam_name": spec_path.stem.upper(),
+                "subjects": [{"name": spec_path.stem, "syllabus_file": str(spec_path), "total_questions": 10}],
             }
 
-        exam_name = blueprint_data.get("exam_name", "MOCK_EXAM")
-        subjects = blueprint_data.get("subjects", [])
+        exam_name = spec_data.get("exam_name", "MOCK_EXAM")
+        subjects = spec_data.get("subjects", [])
 
         logger.info(f"\n{'='*60}\n🎓 [GENERATE-PAPER] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
 
@@ -487,8 +503,8 @@ class PaperGenerator:
 
         # 3. Build turn content
         prompt_text = (
-            f"### Exam Blueprint & Combined Syllabi Scope:\n{all_syllabi_text}\n\n"
-            f"### Global Blueprint Constraints:\n"
+            f"### Exam Spec & Combined Syllabi Scope:\n{all_syllabi_text}\n\n"
+            f"### Global Spec Constraints:\n"
             f"- Exam Name: {exam_name}\n"
             f"- Target Standards: {self.standards}\n"
             f"- Target Languages: {', '.join(self.languages)}\n"
@@ -498,7 +514,7 @@ class PaperGenerator:
             f"- PDF Engine: {self.pdf_engine.upper()}\n\n"
             f"{lang_instruction}\n"
             f"{format_instruction}\n"
-            f"Synthesize the complete exam paper adhering strictly to the blueprint."
+            f"Synthesize the complete exam paper adhering strictly to the spec."
         )
 
         contents: List[Any] = [prompt_text]
