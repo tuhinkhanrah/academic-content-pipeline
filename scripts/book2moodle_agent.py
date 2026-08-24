@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import pymupdf
 from google import genai
 
-from moodle_utils import (
+from pipeline_utils import (
     build_language_instructions,
     encode_bytes_to_base64,
     extract_clean_question_nodes_with_status,

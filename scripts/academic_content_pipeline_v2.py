@@ -2,13 +2,14 @@
 """
 academic_content_pipeline.py - Master Unified Academic Content Pipeline
 Modes:
-  1. extract          (Extract questions from PDFs via Sandbox Vision)
+  1. extract          (Two-Pass Extraction: Structure -> Crop -> Solve -> XML)
   2. generate-chapter (Synthesize questions from chapter PDFs/MDs)
   3. generate-mock    (Synthesize full mock exams from JSON blueprints)
 """
 
 import os
 import sys
+import time
 import argparse
 import subprocess
 import json
@@ -64,10 +65,8 @@ def assemble_prompt_files(
     pdf_engine: str = "html",
     verify_online: bool = False,
 ) -> str:
-    """Combine specified prompt markdown files into a single context, handling PDF vs XML routing."""
     content_blocks = ["# AGENTS.md - System Rules\n"]
 
-    # Route rules based on output format
     if output_format == "pdf":
         pdf_rule_key = "pdf_rules_tex" if pdf_engine == "tex" else "pdf_rules_html"
         valid_keys = ["main_prompt", "instruction_file", pdf_rule_key]
@@ -97,22 +96,13 @@ def assemble_prompt_files(
 
     return "\n".join(content_blocks)
 
-
 def build_pdf_action_instructions(pdf_engine: str, artifact_base: str, upload_url: str) -> tuple[str, str]:
-    """Return the PDF generation instructions and the final artifact file name for the selected engine."""
     if pdf_engine == "tex":
         action_instructions = f"""
         3. **Synthesize LaTeX & Compile PDF**:
            - Create a complete standalone LaTeX document named `{artifact_base}.tex` using `article`/`exam`-style structure.
-           - CRITICAL: Ensure no text extends beyond the right margin or gets cut off. Every question and statement must be fully contained within the page boundaries.
-           - Use native LaTeX for all equations and labels, and keep bilingual output in a clean stacked or side-by-side layout (for example, English first then target language).
-           - Ensure the source is valid UTF-8 and includes packages for multilingual text if the target language requires it.
-           - For every bilingual question, create two fully separate blocks: first the complete English question block, then a second block for the translated language. Each block must be a standalone question unit with its own option list and its own numbering.
-           - For long assertions, statements, or reasons, insert explicit line breaks (`\\\\` or new paragraphs) to prevent text from overflowing past the page edge. Break them at logical points (commas, clause boundaries) rather than allowing one continuous unbroken line.
-           - If the chapter/source or applicable subject syllabus supports a diagram question and the selected exam format permits it, include at least one diagram-based MCQ. Do not force one when the source is unsuitable, the question cap leaves no room, or a faithful diagram cannot be rendered.
-           - Before selecting SVG-based diagram questions, check whether `rsvg-convert` or Inkscape is available. For eligible diagrams such as circuits, graphs, ray diagrams, geometry, force vectors, and simple chemical structures, create an SVG source with a `viewBox` and padding. If a converter is available, convert the SVG to a local PDF (for example, `rsvg-convert -f pdf -o diagram.pdf diagram.svg`) and include it using `\\includegraphics`; do not put raw SVG in the `.tex` document or depend on an unverified `\\includesvg` workflow.
-           - If no SVG-to-PDF converter is available, use TikZ when it can render the diagram accurately. Only omit the diagram-based question when neither SVG conversion nor a faithful TikZ implementation is available. Use PNG only when an accurate vector diagram is impractical, such as detailed biological anatomy.
-           - For any Indic language (Hindi, Bengali, Tamil, Telugu, Gujarati, Kannada, Malayalam, Marathi, Punjabi, Odia, Assamese, etc.), use `xelatex` or `lualatex` with `fontspec` and a script-specific Unicode-capable font such as `Noto Serif Devanagari`, `Noto Serif Bengali`, `Noto Serif Tamil`, `Noto Serif Telugu`, etc.
+           - CRITICAL: Ensure no text extends beyond the right margin or gets cut off.
+           - Use native LaTeX for all equations and labels, and keep bilingual output in a clean layout.
            - Include an overflow-resistant preamble:
              ```latex
              \\documentclass{{article}}
@@ -130,8 +120,7 @@ def build_pdf_action_instructions(pdf_engine: str, artifact_base: str, upload_ur
              \\parindent=0pt
              \\emergencystretch=2em
              ```
-           - Compile with `xelatex -interaction=nonstopmode -halt-on-error {artifact_base}.tex` or `lualatex -interaction=nonstopmode -halt-on-error {artifact_base}.tex`.
-           - Confirm the compiled PDF exists, is non-empty, and contains no truncated text before upload. For every diagram question, confirm every `\\includegraphics` file exists and visually inspect the rendered page to verify the complete diagram and its labels are visible without clipping.
+           - Compile with `xelatex -interaction=nonstopmode -halt-on-error {artifact_base}.tex`.
         4. **Upload PDF Output**:
            - Upload the compiled `{artifact_base}.pdf` to `{upload_url}` via Python `requests.post`.
         """
@@ -139,12 +128,9 @@ def build_pdf_action_instructions(pdf_engine: str, artifact_base: str, upload_ur
     else:
         action_instructions = f"""
         3. **Synthesize HTML & Compile PDF**:
-           - Synthesize high-quality practice questions adhering to `.agents/AGENTS.md`.
            - Output a clean, complete HTML file (`{artifact_base}.html`) correctly importing KaTeX and Google Web Fonts.
-           - CRITICAL: For every bilingual question, create two fully separate HTML blocks: first the complete English question with its full option set (A, B, C, D), then the translated question with a separate full option set. Do not merge English and translated options into one shared list like `(A) 1 (English) / 1 (Translated)`.
-           - For generated diagrams such as circuits, graphs, ray diagrams, geometry, force vectors, and simple chemical structures, use native inline SVG with a `viewBox`, explicit dimensions, and padding so Chrome renders the complete diagram into the PDF. Do not use external image URLs or JavaScript-dependent graphics. Use a local PNG only when an accurate SVG is impractical, such as detailed biological anatomy.
-           - IMPORTANT: For every mathematical expression, preserve the literal LaTeX backslashes in the final HTML source. Example: use `$$\\frac{{u^2 \\cos^2 \\theta}}{{g}}$$` and `\\sin\\theta`, not truncated text like `rac{{...}}` or `cos^2` without the leading backslash.
-           - Write a Python script using the Headless Chrome CLI to compile the PDF:
+           - For generated diagrams, use native inline SVG.
+           - Write a Python script using Headless Chrome CLI to compile the PDF:
              ```python
              import subprocess
              subprocess.run([
@@ -166,45 +152,56 @@ def build_pdf_action_instructions(pdf_engine: str, artifact_base: str, upload_ur
 # =======================================================================
 
 def run_remote_sandbox(client, agent_name, prompt, gcp_token, agents_md_content, verbose):
-    """Executes a remote interaction with the active Bearer token authorized."""
     print("🚀 Provisioning remote execution sandbox...")
     api_key = os.environ.get("GEMINI_API_KEY")
-    interaction = client.interactions.create(
-        agent=agent_name,
-        input=prompt,
-        environment={
-            "type": "remote",
-            "sources": [
-                {
-                    "type": "inline",
-                    "target": ".agents/AGENTS.md",
-                    "content": agents_md_content
+
+    for attempt in range(3):
+        try:
+            interaction = client.interactions.create(
+                agent=agent_name,
+                input=prompt,
+                environment={
+                    "type": "remote",
+                    "sources": [
+                        {
+                            "type": "inline",
+                            "target": ".agents/AGENTS.md",
+                            "content": agents_md_content
+                        }
+                    ],
+                    "network": {
+                        "allowlist": [
+                            {"domain": "storage.googleapis.com", "transform": {"Authorization": f"Bearer {gcp_token}"}},
+                            {"domain": "*"}
+                        ]
+                    },
+                    "env": {
+                        "GEMINI_API_KEY": api_key,
+                    }
                 }
-            ],
-            "network": {
-                "allowlist": [
-                    {"domain": "storage.googleapis.com", "transform": {"Authorization": f"Bearer {gcp_token}"}},
-                    {"domain": "*"}
-                ]
-            },
-            # 🐛 FIX: 'env' must be nested INSIDE the environment configuration!
-            "env": {
-                "GEMINI_API_KEY": api_key,
-            }
-        }
-    )
-    if verbose:
-        print("\n🔍 Agent Finished Execution. Logs:\n" + "="*60)
-        print(interaction.output_text)
-        print("="*60 + "\n")
-    return interaction
+            )
+
+            if verbose:
+                print("\n🔍 Agent Finished Execution. Logs:\n" + "="*60)
+                print(interaction.output_text)
+                print("="*60 + "\n")
+
+            return interaction
+
+        except Exception as e:
+            print(f"⚠️ Sandbox API Error (Attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                print("Retrying in 15 seconds...")
+                time.sleep(15)
+            else:
+                print("❌ Max retries reached. Google GenAI API is likely down.")
+                sys.exit(1)
 
 # =======================================================================
 # 4. Mode Implementations
 # =======================================================================
 
 def cmd_extract(args, client, gcp_token, rules_dict):
-    """Extract mode: Exact proven execution_prompt preserved without modification."""
     agents_md_content = assemble_prompt_files(
         rules_dict,
         mode="extract",
@@ -236,85 +233,353 @@ def cmd_extract(args, client, gcp_token, rules_dict):
 
         page_rule = f"Process only pages {args.page_range[0]} to {args.page_range[1]}." if args.page_range else "Process all pages."
         instruction_rule = "Skip the instruction page completely." if args.no_instruction_page else "Include questions from the instruction page if any exist."
-        verification_rule = (
-            "For every extracted question, use Google Search to verify the official answer before writing XML."
-            if args.verify_online
-            else
-            "Do not use Google Search or any external answer verification. Determine the answer from the source PDF and your subject knowledge."
-        )
 
         execution_prompt = f"""
-        You are an autonomous exam paper processing agent capable of handling questions from any academic subject.
+        You are an autonomous exam paper processing agent.
         Your goal is to extract all exam questions from the PDF file mounted at `/workspace/pdfs/input.pdf`
         and generate a single, strictly valid Moodle XML question bank saved to `/workspace/output/{output_filename}`.
 
-        ### ⚙️ Extraction Parameters for this Run:
-        - **Target Languages**: {args.languages} (CRITICAL: You MUST output all question text, options, and feedback in ALL of these languages. If a language is missing in the source PDF, you MUST translate it.)
+        ### ⚙️ Extraction Parameters:
+        - **Target Languages**: {args.languages}
         - **Page Range**: {page_rule}
         - **Instructions Rule**: {instruction_rule}
-        - **Answer Verification**: {verification_rule}
 
-        ### 📋 Workflow Steps:
-        1. **Fetch & Render PDF**:
-           - Write and run a Python script to download the PDF using the `requests` library:
-             ```python
-             import requests, os
-             os.makedirs("/workspace/pdfs", exist_ok=True)
-             os.makedirs("/workspace/images", exist_ok=True)
+        ### 📋 Execution Plan:
+        Write and execute a Python script (`extract.py`) in your workspace to perform a strictly decoupled TWO-PASS extraction pipeline.
 
-             url = "[https://storage.googleapis.com/](https://storage.googleapis.com/){args.bucket_name}/processing_queue/{safe_filename}"
-             headers = {{"Authorization": "Bearer {gcp_token}"}}
+        Execute the script using `python3 extract.py`. Here is the exact Python script implementation you must create and run:
 
-             print("Downloading PDF from GCS...")
-             response = requests.get(url, headers=headers)
-             if response.status_code == 200:
-                 with open("/workspace/pdfs/input.pdf", "wb") as f:
-                     f.write(response.content)
-                 print("PDF downloaded successfully.")
-             else:
-                 raise Exception(f"Failed to download PDF: {{response.status_code}} {{response.text}}")
-             ```
-           - After downloading, write a script using `pymupdf` (PyMuPDF) to convert the specified pages of `/workspace/pdfs/input.pdf` into high-resolution PNG images in `/workspace/images/`.
+        ```python
+        import os, sys, base64, io, json, time, requests, pymupdf
+        from PIL import Image
+        from google import genai
+        from google.genai import types
+        from pydantic import BaseModel, Field
 
-        2. **Visual Inspection & Verification**:
-           - Visually inspect the rendered PNG images.
-           - Accurately read all textual content, mathematical formulas, and diagrams.
-           - Run Python verification scripts to double-check mathematical calculations or logic if needed.
+        # Load system rules for Gemini to follow strictly
+        system_rules = ""
+        if os.path.exists(".agents/AGENTS.md"):
+            with open(".agents/AGENTS.md", "r", encoding="utf-8") as f:
+                system_rules = f.read()
 
-        3. **Vision-Guided Precision Cropping (No Text Bleed)**:
-            - **USE YOUR VISION**: Do NOT rely on `pymupdf` `get_images()` or `get_drawings()` to find diagrams, as the PDF structure often bundles text and images together.
-            - **Determine Coordinates**: Visually inspect the rendered PNGs. Determine the exact bounding box coordinates `[x0, y0, x1, y1]` for ANY visual asset. This includes, but is not limited to: graphs, circuits, chemical structures, biological diagrams, maps, data charts, or photographs.
-            - **STRICT TEXT EXCLUSION**: Your bounding box MUST ONLY encapsulate the graphical elements. You must explicitly exclude any surrounding question text, labels like "Select one:", prose, or standard mathematical/chemical formulas (which should be LaTeX).
-            - **Python Cropping**: Write a Python script using `PIL` (Pillow) to open the rendered high-resolution PNGs and crop them using your visually determined coordinates.
-            - **Graphical Multiple-Choice Options**: If the options are purely graphical (e.g., individual charts, molecular rings, or diagrams), visually determine the coordinates for EACH option separately and crop them into individual images. DO NOT use placeholders like "Option 1 graph".
-            - **Base64 & XML Embedding**: Convert the perfectly cropped images to Base64 strings. You MUST use Moodle's native file embedding:
-              - **For Question Text**: `<img src="@@PLUGINFILE@@/q_img.png" />` followed by `<file name="q_img.png" path="/" encoding="base64">YOUR_BASE64_STRING_HERE</file>`.
-              - **For Answer Options**: Inside EACH `<answer>`, place `<img src="@@PLUGINFILE@@/opt_img.png" />` followed by `<file name="opt_img.png" path="/" encoding="base64">YOUR_BASE64_STRING_HERE</file>`.
+        # =========================================================
+        # 1. SCHEMAS: PASS 1 (THE EYES - EXACT PDF2HTML CLONE)
+        # =========================================================
+        class DiagramBox(BaseModel):
+            box_2d: list[int] = Field(description="Bounding box [ymin, xmin, ymax, xmax] normalized to 0-1000")
 
-        4. **Moodle XML Formatting**: Adhere strictly to all formatting rules, tag schemas, and bilingual/monolingual instructions provided in `.agents/AGENTS.md`.
+        class MCQOptionPass1(BaseModel):
+            text: str = Field(description="The text for this option. Leave empty if it is purely graphical.")
+            diagram: DiagramBox | None = Field(description="Bounding box if this specific option is a graph, circuit, or image", default=None)
 
-        5. **Output & Persistent Delivery**:
-            - Write the final Moodle XML file locally to `{output_filename}`.
-            - Write and execute a Python script to upload `{output_filename}` directly to Google Cloud Storage.
-            - Use the `requests` library:
-              ```python
-              import requests
-              url = "{bucket_upload_url}"
-              with open("{output_filename}", "rb") as f:
-                  data = f.read()
-              # Execute POST request to upload
-              headers = {{
-                  "Content-Type": "application/xml",
-                  "Authorization": "Bearer {gcp_token}"
-              }}
-              response = requests.post(url, headers=headers, data=data)
-              print(f"GCS Upload Status Code: {{response.status_code}}")
-              print(f"GCS Response: {{response.text}}")
-              # CRITICAL: Raise error if upload failed so the process halts explicitly
-              if response.status_code not in [200, 201]:
-                  raise RuntimeError(f"GCS Upload failed with status {{response.status_code}}: {{response.text}}")
-              ```
-            - Ensure the script prints the exact HTTP status code and response body to the terminal logs.
+        class ExtractedQuestionPass1(BaseModel):
+            question_number: str = Field(description="Question number (e.g., '22')")
+            question_html: str = Field(description="The question stem text formatted as HTML")
+            question_diagram: DiagramBox | None = Field(description="Bounding box of the diagram in the question stem, if present", default=None)
+            options: list[MCQOptionPass1] = Field(description="Exactly 4 multiple choice options", default_factory=list)
+
+        class PageExtractionPass1(BaseModel):
+            is_question_page: bool = Field(description="True if this page contains questions.")
+            questions: list[ExtractedQuestionPass1] = Field(description="List of MCQs found", default_factory=list)
+
+        # =========================================================
+        # 2. SCHEMAS: PASS 2 (THE BRAIN - SOLVER & TAGGER)
+        # =========================================================
+        class TagItem(BaseModel):
+            key: str = Field(description="Tag key in lowercase e.g. standard, subject, chapter")
+            value: str = Field(description="Tag value in lowercase snake_case")
+
+        class QuestionSolutionPass2(BaseModel):
+            question_name: str = Field(description="Dynamic Question Name e.g. JEEMAIN_PHYSICS_2026_Q01 - Title snippet")
+            question_type: str = Field(description="'multichoice' or 'numerical'")
+            is_single_choice: bool = Field(default=True)
+            correct_option_indices: list[int] = Field(default_factory=list)
+            numerical_answer: str | None = Field(default=None)
+            tolerance: float = Field(default=0.0)
+            default_grade: float = Field(default=4.0)
+            penalty: float = Field(default=0.25)
+            answernumbering: str = Field(default="abc")
+            shuffleanswers: bool = Field(default=True)
+            step_by_step_solution: str = Field(description="Detailed 5-step solution formatted in HTML")
+            tags: list[TagItem] = Field(default_factory=list)
+
+        # =========================================================
+        # 3. HELPER FUNCTIONS
+        # =========================================================
+        def get_cropped_pil(img, box_2d, padding_pct=0.04):
+            if not box_2d or len(box_2d) != 4: return None
+            ymin, xmin, ymax, xmax = box_2d
+            
+            if ymin > ymax: ymin, ymax = ymax, ymin
+            if xmin > xmax: xmin, xmax = xmax, xmin
+
+            width, height = img.size
+            pad_x = (xmax - xmin) * padding_pct
+            pad_y = (ymax - ymin) * padding_pct
+
+            xmin_pad = max(0, xmin - pad_x)
+            ymin_pad = max(0, ymin - pad_y)
+            xmax_pad = min(1000, xmax + pad_x)
+            ymax_pad = min(1000, ymax + pad_y)
+
+            left = int((xmin_pad / 1000.0) * width)
+            top = int((ymin_pad / 1000.0) * height)
+            right = int((xmax_pad / 1000.0) * width)
+            bottom = int((ymax_pad / 1000.0) * height)
+            
+            if right <= left or bottom <= top: return None
+            return img.crop((left, top, right, bottom))
+
+        def pil_to_base64(cropped_img):
+            if not cropped_img: return ""
+            buffered = io.BytesIO()
+            cropped_img.save(buffered, format="PNG")
+            return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+        # =========================================================
+        # 4. MAIN PIPELINE
+        # =========================================================
+        os.makedirs("/workspace/pdfs", exist_ok=True)
+        os.makedirs("/workspace/output", exist_ok=True)
+
+        pdf_url = "[https://storage.googleapis.com/](https://storage.googleapis.com/){args.bucket_name}/processing_queue/{safe_filename}"
+        headers = {{"Authorization": "Bearer {gcp_token}"}}
+        r = requests.get(pdf_url, headers=headers)
+        if r.status_code == 200:
+            with open("/workspace/pdfs/input.pdf", "wb") as f:
+                f.write(r.content)
+            print("PDF Downloaded.")
+        else:
+            raise Exception("Failed to download PDF")
+
+        doc = pymupdf.open("/workspace/pdfs/input.pdf")
+        total_pages = len(doc)
+        client = genai.Client()
+
+        xml_output = '<?xml version="1.0" encoding="UTF-8"?>\\n<quiz>\\n'
+        question_global_counter = 1
+
+        for page_idx in range(total_pages):
+            page_num = page_idx + 1
+            print(f"\\n--- Processing Page {{page_num}}/{{total_pages}} ---")
+            page = doc[page_idx]
+            pix = page.get_pixmap(dpi=200)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+            # ---------------------------------------------------------
+            # PASS 1: THE EYES (Extract Structure & Bounding Boxes)
+            # ---------------------------------------------------------
+            prompt_pass_1 = (
+                "Extract all MCQs. "
+                "Ensure MathJax is wrapped in \\\\(...\\\\) or \\\\[...\\\\]. "
+                "CRITICAL VISUAL RULE: If the 4 options are graphs, circuits, or diagrams, you MUST return the bounding box "
+                "for EACH option individually inside the `options[].diagram` field. Do NOT group option graphs into the main "
+                "question diagram. Exclude question text from bounding boxes."
+            )
+            
+            page_data = None
+            for attempt in range(5):
+                try:
+                    chat1 = client.chats.create(model="gemini-3.7-flash")
+                    resp1 = chat1.send_message(
+                        message=[img, prompt_pass_1],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json", 
+                            response_schema=PageExtractionPass1, 
+                            temperature=0.1
+                        )
+                    )
+                    page_data = json.loads(resp1.text)
+                    break
+                except Exception as e:
+                    print(f"Pass 1 Attempt {{attempt+1}} failed: {{e}}")
+                    time.sleep(10)
+
+            if not page_data or not page_data.get("is_question_page") or not page_data.get("questions"):
+                print(f"Skipping page {{page_num}} (No concluding questions).")
+                continue
+
+            for mcq_dict in page_data.get("questions", []):
+                q_pass1 = ExtractedQuestionPass1(**mcq_dict)
+                q_id = f"q_{{question_global_counter}}"
+                question_global_counter += 1
+
+                # Step 1A: Crop Main Diagram safely
+                q_img_pil = None
+                q_files_xml = ""
+                q_img_tag = ""
+                if q_pass1.question_diagram and q_pass1.question_diagram.box_2d:
+                    q_img_pil = get_cropped_pil(img, q_pass1.question_diagram.box_2d)
+                    b64 = pil_to_base64(q_img_pil)
+                    if b64:
+                        filename = f"{{q_id}}_main.png"
+                        q_img_tag = f'<br/><img src="@@PLUGINFILE@@/{{filename}}" alt="Question Diagram"/><br/>'
+                        q_files_xml = f'<file name="{{filename}}" path="/" encoding="base64">{{b64}}</file>\\n'
+
+                q_text_full = f"{{q_pass1.question_html}} {{q_img_tag}}"
+
+                # Step 1B: Crop Option Diagrams (Hold for Pass 2 context & XML) safely
+                options_data = []
+                for opt_idx, opt in enumerate(q_pass1.options or []):
+                    opt_pil = None
+                    opt_files_xml = ""
+                    opt_img_tag = ""
+                    if opt.diagram and opt.diagram.box_2d:
+                        opt_pil = get_cropped_pil(img, opt.diagram.box_2d)
+                        b64_opt = pil_to_base64(opt_pil)
+                        if b64_opt:
+                            opt_filename = f"{{q_id}}_opt_{{opt_idx}}.png"
+                            opt_img_tag = f'<br/><img src="@@PLUGINFILE@@/{{opt_filename}}" alt="Option Diagram"/><br/>'
+                            opt_files_xml = f'\\n      <file name="{{opt_filename}}" path="/" encoding="base64">{{b64_opt}}</file>'
+                    
+                    options_data.append({{
+                        "text": opt.text if opt.text else "",
+                        "tag": opt_img_tag,
+                        "xml": opt_files_xml,
+                        "pil": opt_pil
+                    }})
+
+                # ---------------------------------------------------------
+                # PASS 2: THE BRAIN (Solve & Tag)
+                # ---------------------------------------------------------
+                print(f"  Generating solution for Question {{question_global_counter-1}}...")
+                
+                pass_2_prompt_text = (
+                    "You are the Expert Solver. Review the following question text and attached cropped diagrams (if any). "
+                    "Determine the correct answer, build the 5-step solution, and assign appropriate metadata tags.\\n\\n"
+                    f"Question Text:\\n{{q_pass1.question_html}}\\n\\n"
+                )
+                if options_data:
+                    pass_2_prompt_text += "Options:\\n"
+                    for i, opt in enumerate(options_data):
+                        pass_2_prompt_text += f"Index {{i}}: {{opt['text']}}\\n"
+
+                pass_2_payload = [pass_2_prompt_text]
+                if q_img_pil: pass_2_payload.append(q_img_pil)
+                for opt in options_data:
+                    if opt["pil"]: pass_2_payload.append(opt["pil"])
+                
+                solution_data = None
+                for attempt in range(5):
+                    try:
+                        chat2 = client.chats.create(model="gemini-3.7-flash")
+                        resp2 = chat2.send_message(
+                            message=pass_2_payload,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_rules,
+                                response_mime_type="application/json", 
+                                response_schema=QuestionSolutionPass2, 
+                                temperature=0.2
+                            )
+                        )
+                        solution_data = json.loads(resp2.text)
+                        break
+                    except Exception as e:
+                        print(f"Pass 2 Attempt {{attempt+1}} failed: {{e}}")
+                        time.sleep(10)
+
+                if not solution_data:
+                    print("  Failed to generate solution. Using fallback.")
+                    solution_data = {{
+                        "question_name": f"Question {{question_global_counter-1}}",
+                        "question_type": "multichoice",
+                        "is_single_choice": True,
+                        "correct_option_indices": [0],
+                        "numerical_answer": None,
+                        "tolerance": 0.0,
+                        "default_grade": 4.0,
+                        "penalty": 0.25,
+                        "answernumbering": "abc",
+                        "shuffleanswers": True,
+                        "step_by_step_solution": "<p>Solution generation failed.</p>",
+                        "tags": []
+                    }}
+                
+                q_pass2 = QuestionSolutionPass2(**solution_data)
+
+                # ---------------------------------------------------------
+                # STEP 3: Moodle XML Assembly
+                # ---------------------------------------------------------
+                tags_xml = "<tags>\\n"
+                for t in q_pass2.tags:
+                    tags_xml += f'    <tag><text>{{t.key}}:{{t.value}}</text></tag>\\n'
+                tags_xml += "</tags>"
+
+                if q_pass2.question_type == "numerical":
+                    num_val = q_pass2.numerical_answer if q_pass2.numerical_answer else "0"
+                    xml_block = f'''  <question type="numerical">
+    <name><text>{{q_pass2.question_name}}</text></name>
+    <questiontext format="html">
+      <text><![CDATA[{{q_text_full}}]]></text>
+      {{q_files_xml}}</questiontext>
+    <generalfeedback format="html">
+      <text><![CDATA[{{q_pass2.step_by_step_solution}}]]></text>
+    </generalfeedback>
+    <defaultgrade>{{q_pass2.default_grade}}</defaultgrade>
+    <penalty>{{q_pass2.penalty}}</penalty>
+    <answer fraction="100" format="moodle_auto_format">
+      <text>{{num_val}}</text>
+      <tolerance>{{q_pass2.tolerance}}</tolerance>
+    </answer>
+    <unitgradingtype>0</unitgradingtype>
+    <unitpenalty>0.1000000</unitpenalty>
+    <showunits>3</showunits>
+    {{tags_xml}}
+  </question>\\n'''
+                else:
+                    single_str = "true" if q_pass2.is_single_choice else "false"
+                    shuffle_str = "true" if q_pass2.shuffleanswers else "false"
+
+                    num_correct = len(q_pass2.correct_option_indices)
+                    pos_fraction = (100.0 / num_correct) if num_correct > 0 else 100.0
+                    neg_fraction = -abs(q_pass2.penalty * 100) if q_pass2.is_single_choice else -50.0
+
+                    answers_xml = ""
+                    for opt_idx, opt in enumerate(options_data):
+                        is_correct = opt_idx in q_pass2.correct_option_indices
+                        fraction = pos_fraction if is_correct else neg_fraction
+                        opt_text_full = f"{{opt['text']}} {{opt['tag']}}"
+
+                        answers_xml += f'''    <answer fraction="{{fraction:.7f}}" format="html">
+      <text><![CDATA[{{opt_text_full}}]]></text>{{opt['xml']}}
+    </answer>\\n'''
+
+                    xml_block = f'''  <question type="multichoice">
+    <name><text>{{q_pass2.question_name}}</text></name>
+    <questiontext format="html">
+      <text><![CDATA[{{q_text_full}}]]></text>
+      {{q_files_xml}}</questiontext>
+    <generalfeedback format="html">
+      <text><![CDATA[{{q_pass2.step_by_step_solution}}]]></text>
+    </generalfeedback>
+    <defaultgrade>{{q_pass2.default_grade}}</defaultgrade>
+    <penalty>{{q_pass2.penalty}}</penalty>
+    <hidden>0</hidden>
+    <single>{{single_str}}</single>
+    <shuffleanswers>{{shuffle_str}}</shuffleanswers>
+    <answernumbering>{{q_pass2.answernumbering}}</answernumbering>
+{{answers_xml}}    {{tags_xml}}
+  </question>\\n'''
+
+                xml_output += xml_block
+
+        xml_output += "</quiz>"
+
+        with open("/workspace/output/{output_filename}", "w", encoding="utf-8") as f:
+            f.write(xml_output)
+        print("XML written successfully to /workspace/output/{output_filename}.")
+
+        print("Uploading generated XML to GCS...")
+        upload_url = "{bucket_upload_url}"
+        up_headers = {{"Content-Type": "application/xml", "Authorization": "Bearer {gcp_token}"}}
+        with open("/workspace/output/{output_filename}", "rb") as f:
+            data = f.read()
+
+        up_resp = requests.post(upload_url, headers=up_headers, data=data)
+        print(f"GCS Upload Status Code: {{up_resp.status_code}}")
+        if up_resp.status_code not in [200, 201]:
+            raise RuntimeError("GCS Upload failed")
+        ```
         """
 
         run_remote_sandbox(client, args.agent_name, execution_prompt, gcp_token, agents_md_content, args.verbose)
@@ -322,7 +587,6 @@ def cmd_extract(args, client, gcp_token, rules_dict):
 
 
 def cmd_generate_chapter(args, client, gcp_token, rules_dict):
-    """Generate-Chapter mode: Synthesizes question banks from book chapters."""
     agents_md_content = assemble_prompt_files(
         rules_dict,
         mode="generate-chapter",
@@ -355,7 +619,6 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
             """
             post_file_name = output_filename
 
-        # Only pass tag instructions if we are generating XML and tags actually exist
         tags_instruction = f"- **Global Tags**: {args.tags}" if args.output_format == "xml" and args.tags else ""
         execution_prompt = f"""
         You are an autonomous synthetic question generator.
@@ -363,11 +626,11 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
 
         ### ⚙️ Generation Constraints:
         - **Target Standards**: {args.standards}
-        - **Target Languages**: {args.languages} (CRITICAL: Every single question stem, option, answer key, and STEP-BY-STEP DETAILED SOLUTION MUST be strictly stacked bilingual English + Target Language. Do NOT output solutions or explanations in English only!).
+        - **Target Languages**: {args.languages}
         - **Target Difficulty**: {args.difficulty.upper()}
         - **Max Questions**: {args.num_questions}
         - **Scope**: {page_rule}
-        - **PDF Generation Engine**: {args.pdf_engine.upper()} (HTML/Chrome or LaTeX compiler)
+        - **PDF Generation Engine**: {args.pdf_engine.upper()}
         {tags_instruction}
 
         ### 📋 Workflow Steps:
@@ -400,7 +663,6 @@ def cmd_generate_chapter(args, client, gcp_token, rules_dict):
 
 
 def cmd_generate_mock(args, client, gcp_token, rules_dict):
-    """Generate-Mock mode: Single-request synthesis of full exam papers from blueprints."""
     agents_md_content = assemble_prompt_files(
         rules_dict,
         mode="generate-mock",
@@ -478,7 +740,6 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
         """
         post_file_name = output_filename
 
-    # Only pass tag instructions if we are generating XML and tags actually exist
     tags_instruction = f"- **Global Tags**: {args.tags}" if args.output_format == "xml" and args.tags else ""
     execution_prompt = f"""
     You are an autonomous master test construction and typesetting agent.
@@ -486,8 +747,8 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
 
     ### ⚙️ Global Exam Blueprint & Constraints:
     - **Exam Standard**: {args.standards}
-    - **Target Languages**: {args.languages} (CRITICAL: Every single question stem, option, answer key, and STEP-BY-STEP DETAILED SOLUTION MUST be strictly stacked bilingual English + Target Language. Do NOT output solutions or explanations in English only!).
-    - **Difficulty Breakdown Ratio**: {args.difficulty_mix} (e.g. easy:0.2, medium:0.5, hard:0.3 ratio across subjects).
+    - **Target Languages**: {args.languages}
+    - **Difficulty Breakdown Ratio**: {args.difficulty_mix} (e.g. easy:0.2,medium:0.5,hard:0.3 ratio across subjects).
     - **PDF Generation Engine**: {args.pdf_engine.upper()} (HTML/Chrome or LaTeX compiler)
     {tags_instruction}
     - **Output Format**: {args.output_format.upper()}
@@ -533,10 +794,8 @@ def cmd_generate_mock(args, client, gcp_token, rules_dict):
 # =======================================================================
 
 def main():
-    # 1. Create a "Shared" parser for all the global flags
     shared_parser = argparse.ArgumentParser(add_help=False)
 
-    # Global Command-Line Flags
     shared_parser.add_argument("--languages", default="english", help="Target languages (e.g. english,bengali)")
     shared_parser.add_argument("--standards", default="general", help="Target standards (e.g. neet_ug, jee_main)")
     shared_parser.add_argument("--tags", default="", help="Global tags (e.g. year:2026)")
@@ -547,25 +806,22 @@ def main():
     shared_parser.add_argument("--output-format", choices=["xml", "pdf"], default="xml", help="Choose output format (xml or pdf).")
     shared_parser.add_argument("--pdf-engine", choices=["html", "tex"], default="html", help="Choose PDF renderer: html (Chrome) or tex (LaTeX).")
 
-    # Core System Prompt Rule Files
     shared_parser.add_argument("--prompt", required=True, type=Path, help="Path to the main exam prompt (e.g. jee_main.md)")
     shared_parser.add_argument("--instruction-file", default=None, type=Path, help="Path to exam instruction file")
 
-    # XML Specific Rules
     shared_parser.add_argument("--xml-rules", default="prompts/core/moodle_xml_rules.md", type=Path)
     shared_parser.add_argument("--tags-rules", default="prompts/core/naming_and_tags_rules.md", type=Path)
     shared_parser.add_argument("--templates", default="prompts/core/moodle_xml_templates.md", type=Path)
 
-    # PDF Specific Rules
+    shared_parser.add_argument("--extractor-rules", default="prompts/core/extractor_rules.md", type=Path)
+
     shared_parser.add_argument("--pdf-rules", default=None, type=Path, help="Legacy single PDF rules file; optional compatibility fallback")
     shared_parser.add_argument("--pdf-rules-html", default="prompts/core/pdf_html_rules.md", type=Path)
     shared_parser.add_argument("--pdf-rules-tex", default="prompts/core/pdf_tex_rules.md", type=Path)
 
-    # 2. Create the Main parser and attach the shared parser to subcommands
     parser = argparse.ArgumentParser(description="academic_content_pipeline.py - Master Unified Academic Content Pipeline")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    # Subcommand Mode 1: extract (Only supports XML)
     ext_parser = subparsers.add_parser("extract", parents=[shared_parser], help="Extract questions from exam paper PDFs")
     ext_parser.add_argument("--input-dir", required=True, type=Path, help="Local directory containing input PDFs")
     ext_parser.add_argument("--page-range", type=int, nargs=2, metavar=('START', 'END'), help="Page range to extract (e.g., 1 10)")
@@ -576,14 +832,12 @@ def main():
         help="Verify each extracted answer with Google Search before writing XML (slower).",
     )
 
-    # Subcommand Mode 2: generate-chapter
     chap_parser = subparsers.add_parser("generate-chapter", parents=[shared_parser], help="Synthesize practice questions from chapter documents")
     chap_parser.add_argument("--input-dir", required=True, type=Path)
     chap_parser.add_argument("--page-range", type=int, nargs=2, metavar=('START', 'END'))
     chap_parser.add_argument("--num-questions", type=int, default=5)
     chap_parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
 
-    # Subcommand Mode 3: generate-mock
     mock_parser = subparsers.add_parser("generate-mock", parents=[shared_parser], help="Synthesize full mock exam papers from JSON blueprints")
     mock_parser.add_argument("--blueprint", required=True, type=Path)
     mock_parser.add_argument("--sample-pdf", type=Path)
@@ -591,12 +845,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate Environment
     if not os.environ.get("GEMINI_API_KEY"):
         print("❌ Error: GEMINI_API_KEY environment variable is not set.")
         sys.exit(1)
 
-    # Hard-enforce extract mode to be XML only to prevent logic breakage
     if args.mode == "extract" and args.output_format == "pdf":
         print("❌ Error: 'extract' mode only supports --output-format xml.")
         sys.exit(1)
@@ -605,18 +857,19 @@ def main():
     client = genai.Client()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    active_core_rules = args.extractor_rules if args.mode == "extract" else args.xml_rules
+
     rules_dict = {
         "main_prompt": args.prompt,
         "instruction_file": args.instruction_file,
-        "xml_rules": args.xml_rules,
+        "xml_rules": active_core_rules,
         "tags_rules": args.tags_rules,
-        "templates": args.templates,
+        "templates": args.templates if args.mode != "extract" else None,
         "pdf_rules": args.pdf_rules,
         "pdf_rules_html": args.pdf_rules_html,
         "pdf_rules_tex": args.pdf_rules_tex,
     }
 
-    # Dispatch to appropriate mode handler
     if args.mode == "extract":
         cmd_extract(args, client, gcp_token, rules_dict)
     elif args.mode == "generate-chapter":

@@ -23,7 +23,7 @@ from google.genai import types
 from google.genai.errors import APIError
 import xml.etree.ElementTree as ET
 
-from moodle_utils import (
+from pipeline_utils import (
     build_language_instructions,
     encode_bytes_to_base64,
     load_combined_prompt,

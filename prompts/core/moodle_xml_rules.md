@@ -2,6 +2,12 @@
 - Output ONLY valid <question type="...">...</question> nodes.
 - If no question concludes on the current context, return "".
 
+# Feedback Tag Prohibition
+- NEVER emit `<correctfeedback>`, `<partiallycorrectfeedback>`, or `<incorrectfeedback>` anywhere in Moodle XML.
+- Do not emit these tags even with empty content or default text such as "Your answer is correct.", "Your answer is partially correct.", or "Your answer is incorrect.".
+- Put the complete solution explanation only in `<generalfeedback format="html">` using the required step-by-step structure below.
+- Before writing XML, verify that none of the three prohibited tag names appears anywhere in the question node.
+
 # Formatting & Math Rules
 - Math delimiters MUST use LaTeX inline \(...\) or display \[...\].
 - NEVER use single $ or double $$ delimiters.
@@ -35,6 +41,16 @@
 
 # Visual Rules
 - Extract and verify diagram labels/units before reasoning.
+
+## Extracting Visuals From a Source Paper
+A question that is unreadable without its visual MUST carry that visual into the XML. Dropping it, or replacing it with prose like "refer to the figure", is a failure.
+
+- **Detect:** Treat as a visual any circuit, graph, ray diagram, geometry figure, chemical/biological structure, map, data chart, apparatus sketch, or photograph. Do not rely on the PDF's embedded image objects — scanned and vector-drawn papers frequently bundle figures with text, so inspect the rendered page.
+- **Crop:** Determine a bounding box that encloses the complete figure with all its labels, axis values, and units, plus a small margin. Exclude surrounding prose, the question number, and option letters. A figure cut mid-way or a crop containing question text are both defects — re-crop instead of accepting them.
+- **Attach:** Crop to PNG, base64-encode it, and embed it using the two-part `@@PLUGINFILE@@` + `<file>` structure in Section 8 of the templates doc.
+- **Graphical options:** When the four options are themselves figures, crop each one separately and attach it to its own `<answer>`. Never collapse them into one image or describe them as text.
+
+## Synthesizing Visuals For Generated Questions
 - **Synthetic Diagram Default:** For generated questions, create circuits, graphs, ray diagrams, geometry, force vectors, and simple chemical structures as SVG. Use a raster image only when an accurate vector diagram is impractical, such as detailed biological anatomy.
 - **Moodle SVG Embedding:** Place generated SVG directly inside the appropriate question HTML CDATA. Include a `viewBox`, explicit dimensions, and enough padding to prevent cropping; do not use external files, scripts, or remote image URLs. If the target Moodle installation strips inline SVG, attach the SVG or a PNG fallback as a Moodle `<file>` and reference it using `@@PLUGINFILE@@/filename.svg` or `@@PLUGINFILE@@/filename.png`.
 
@@ -53,11 +69,6 @@ For EVERY extracted question on the page:
     - *"Graph 3"*, *"Figure (2)"*, *"Table II"*, *"Column I"*, *"Row 4"*
   - **ALWAYS** target the conceptual value: *"Both statements are incorrect because..."* or *"The correct matching is A-II, B-I because..."*
 
-- **No Evaluative or Conversational Fillers:**
-  - NEVER start, end, or include phrases like *"Your answer is correct"*, *"Your answer is incorrect"*, *"Let's solve this"*, or *"The correct answer is..."* inside `<generalfeedback>`.
-  - The feedback must be purely objective and contain ONLY the step-by-step scientific/mathematical reasoning.
-  - Assume the student is reading this explanation after the quiz is over, regardless of what option they chose.
-
 - **Strict Step Formatting (NO HEADINGS):**
   - **FORBIDDEN:** NEVER use HTML heading tags (`<h1>`, `<h2>`, `<h3>`, `<h4>`, etc.) or Markdown headers (`#`, `##`, `###`).
   - All steps MUST be formatted using standard paragraphs and bold text: `<p><strong>Step X: [Brief Title]</strong><br/>[Explanation text...]</p>`.
@@ -70,12 +81,12 @@ For EVERY extracted question on the page:
 - Use standard Grade 11–12 physics/chemistry models, formulas, and terminology without introducing unnecessary college-level mathematics or middle-school simplifications.
 
 - **Mandatory 5-Stage Step Mapping (For Calculational & Diagram Questions):**
-  When generating steps for any numerical, algebraic, or diagram-based question, you MUST align your **Step 1** through **Step 5** directly to these five stages:
-    - **Step 1: Data Inventory & Constraints** — List all given values, symbols, labels, and constraints from the source (no hidden values).
-    - **Step 2: Model & Sign Conventions** — State the exact physical/mathematical model, assumptions, and conventions (sign, direction, node map, ray path, or FBD inventory).
+  When generating steps for any numerical, algebraic, or diagram-based question, you MUST align your **Step 1** through **Step 5** directly to these five stages. Use clear headings for each stage:
+    - **Step 1: Data Inventory & Constraints** — List all given values, symbols, labels, and constraints from the source. If a diagram is involved, explicitly describe the layout you are interpreting. No hidden values.
+    - **Step 2: Model & Sign Conventions** — State the exact physical/mathematical model, assumptions, and conventions (sign, direction, node map, ray path, or Free Body Diagram inventory).
     - **Step 3: Governing Relations** — Write all exact equations, formulas, or theorems used.
-    - **Step 4: Micro-Step Solution** — Perform operations line-by-line (one substitution/transformation per line with units and signs).
-    - **Step 5: Sanity Check & Final Conclusion** — Perform unit consistency and bounds/limiting-case checks, then state the final conceptual answer.
+    - **Step 4: Micro-Step Solution** — Perform operations line-by-line (one substitution/transformation per line with units and signs). Trivial arithmetic can be grouped, but never skip algebraic logic.
+    - **Step 5: Sanity Check & Final Conclusion** — Perform unit consistency and bounds/limiting-case checks. State the final conceptual answer clearly in bold.
 
 - **Conceptual / Non-Calculational Questions:**
   For purely qualitative or theoretical questions, use sequential steps (**Step 1: Conceptual Principle**, **Step 2: Evaluation of Claim**, etc.) to arrive at the final answer.

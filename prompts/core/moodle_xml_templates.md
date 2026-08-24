@@ -2,6 +2,10 @@
 
 Skeleton structures for each question type. Reuse these tag shapes; fill content per question. Feedback text should follow the Feedback Rules in the core rules doc, not the placeholder text below.
 
+The generated XML MUST NOT contain `<correctfeedback>`, `<partiallycorrectfeedback>`, or `<incorrectfeedback>`. Use only `<generalfeedback format="html">` for the complete solution explanation.
+
+The skeletons in Sections 2-7 are text-only for brevity. Whenever a question, option, or explanation carries a diagram, photo, graph, or chemical structure, you MUST additionally apply Section 8 — omitting it silently drops the visual from the imported question.
+
 ## 1. File Wrapper
 
 <?xml version="1.0" encoding="UTF-8"?>
@@ -96,3 +100,42 @@ Use the Section 2 skeleton; put an HTML `<table>` of Column I/II pairs in `quest
   <showunits>3</showunits>
   <tags><tag><text>standard:VALUE</text></tag></tags>
 </question>
+
+## 8. Image & Diagram Embedding
+
+Applies to every question type above. A Moodle image is always two parts that must stay separate:
+
+1. A reference `<img src="@@PLUGINFILE@@/FILENAME" />` inside the `<text>` CDATA.
+2. A `<file name="FILENAME" path="/" encoding="base64">` sibling holding the payload.
+
+The `<file>` element is a sibling of `<text>`, never a child of it. The `name` attribute must match the `@@PLUGINFILE@@` reference exactly. Use a unique filename per image within a question.
+
+### 8.1 Diagram in the question stem
+
+<questiontext format="html">
+  <text><![CDATA[<p>QUESTION</p><p><img src="@@PLUGINFILE@@/q1_diagram.png" alt="DESCRIPTION" /></p>]]></text>
+  <file name="q1_diagram.png" path="/" encoding="base64">BASE64_BYTES_ONLY</file>
+</questiontext>
+
+### 8.2 Diagram inside an answer option
+
+Use when the options themselves are graphical (structures, graphs, ray diagrams). Each option carries its own file.
+
+<answer fraction="100" format="html">
+  <text><![CDATA[<p><img src="@@PLUGINFILE@@/q1_opt_a.png" alt="Option A" /></p>]]></text>
+  <file name="q1_opt_a.png" path="/" encoding="base64">BASE64_BYTES_ONLY</file>
+</answer>
+
+### 8.3 Diagram inside generalfeedback
+
+<generalfeedback format="html">
+  <text><![CDATA[<p>EXPLANATION</p><p><img src="@@PLUGINFILE@@/q1_solution.png" alt="Worked solution" /></p>]]></text>
+  <file name="q1_solution.png" path="/" encoding="base64">BASE64_BYTES_ONLY</file>
+</generalfeedback>
+
+### 8.4 Prohibitions
+
+- Never put base64 bytes, a `data:image/...;base64,` URI, or a `<file>` tag inside `<text>`.
+- Never emit an `@@PLUGINFILE@@` reference without its matching `<file>` sibling, and never emit a `<file>` that nothing references.
+- Never use remote URLs, local filesystem paths, or `<img>` tags with a bare filename as `src`.
+- `<file>` content is raw base64 characters only — no prefix, whitespace formatting, markdown fences, or commentary.

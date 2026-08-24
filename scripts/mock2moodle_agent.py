@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import pymupdf
 from google import genai
 
-from moodle_utils import (
+from pipeline_utils import (
     build_language_instructions,
     encode_bytes_to_base64,
     extract_clean_question_nodes_with_status,
@@ -125,7 +125,7 @@ class ManagedAgentMockGenerator:
         if self.sample_pdf_path and self.sample_pdf_path.exists():
             try:
                 sample_doc = pymupdf.open(self.sample_pdf_path)
-                logger.info(f"📄 Attached sample reference PDF: {self.sample_pdf_path.name} ({len(sample_doc)} pages)"))
+                logger.info(f"📄 Attached sample reference PDF: {self.sample_pdf_path.name} ({len(sample_doc)} pages)")
                 for i in range(min(4, len(sample_doc))):
                     pix = sample_doc[i].get_pixmap(dpi=self.dpi)
                     b64_img = encode_bytes_to_base64(pix.tobytes("png"))
