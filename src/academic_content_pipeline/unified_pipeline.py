@@ -8,9 +8,9 @@ Modes of Communication:
   3. remote  : Remote sandbox execution with GCS staging
 
 Functionalities:
-  1. extract           : Extract questions from PDF question papers via Mistral OCR
-  2. generate-chapter  : Synthesize questions from chapter PDFs/MDs
-  3. generate-syllabus : Synthesize full mock exams from JSON blueprints / syllabi
+  1. extract               : Extract questions from PDF question papers via Mistral OCR
+  2. generate-questions     : Synthesize questions from chapter PDFs/MDs
+  3. generate-paper         : Synthesize full mock exams from JSON blueprints / syllabi
 """
 
 import argparse
@@ -30,9 +30,9 @@ try:
         RemoteSandboxBackend,
     )
     from .content_processors import (
-        ChapterQuestionGenerator,
+        PaperGenerator,
+        QuestionGenerator,
         QuestionPaperExtractor,
-        SyllabusQuestionGenerator,
     )
     from .mistral_ocr import MistralOCREngine
     from .pipeline_utils import load_and_merge_config, setup_logger
@@ -44,9 +44,9 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
         RemoteSandboxBackend,
     )
     from content_processors import (
-        ChapterQuestionGenerator,
+        PaperGenerator,
+        QuestionGenerator,
         QuestionPaperExtractor,
-        SyllabusQuestionGenerator,
     )
     from mistral_ocr import MistralOCREngine
     from pipeline_utils import load_and_merge_config, setup_logger
@@ -86,7 +86,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 
 
 def add_task_subparsers(subparser_dest: Any) -> None:
-    """Attaches extract, generate-chapter, and generate-syllabus subparsers."""
+    """Attaches extract, generate-questions, and generate-paper subparsers."""
 
     # 1. extract
     p_ext = subparser_dest.add_parser("extract", help="Extract questions from exam paper PDFs via Mistral OCR.")
@@ -98,8 +98,8 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_ext.add_argument("--instruction-page", type=int, default=1, help="Index of front instruction page (1-based).")
     p_ext.add_argument("--verify-online", action="store_true", help="Verify answers online.")
 
-    # 2. generate-chapter
-    p_chap = subparser_dest.add_parser("generate-chapter", help="Synthesize practice questions from chapter PDFs/MDs.")
+    # 2. generate-questions
+    p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs.")
     add_common_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
@@ -107,8 +107,8 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_chap.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium", help="Question difficulty.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
 
-    # 3. generate-syllabus / generate-mock
-    p_syl = subparser_dest.add_parser("generate-syllabus", aliases=["generate-mock"], help="Synthesize mock exams from blueprints / syllabi.")
+    # 3. generate-paper
+    p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from blueprints / syllabi.")
     add_common_options(p_syl)
     p_syl.add_argument("--blueprint", type=Path, default=None, help="Path to JSON blueprint or syllabus markdown/pdf.")
     p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
@@ -184,7 +184,7 @@ def main():
     p_direct_ext.add_argument("--instruction-page", type=int, default=1)
     p_direct_ext.add_argument("--verify-online", action="store_true")
 
-    p_direct_chap = top_subparsers.add_parser("generate-chapter", help="Synthesize questions from chapter documents.")
+    p_direct_chap = top_subparsers.add_parser("generate-questions", help="Synthesize questions from chapter documents.")
     p_direct_chap.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
     add_common_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
@@ -193,7 +193,7 @@ def main():
     p_direct_chap.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
-    p_direct_syl = top_subparsers.add_parser("generate-syllabus", aliases=["generate-mock"], help="Synthesize mock exams.")
+    p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
     add_common_options(p_direct_syl)
     p_direct_syl.add_argument("--blueprint", type=Path, default=None)
@@ -219,6 +219,9 @@ def main():
     # Setup Logging
     setup_logger(args.log_file, verbose=args.verbose)
 
+    runtime_config = {k: v for k, v in vars(args).items() if not callable(v)}
+    logger.info("CLI runtime configuration: %s", runtime_config)
+
     # Verify environment keys
     if not os.environ.get("GEMINI_API_KEY"):
         print("❌ Error: GEMINI_API_KEY environment variable must be set.")
@@ -242,12 +245,12 @@ def main():
     if args.prompt is None:
         if task == "extract":
             args.prompt = Path("prompts/extractor/neet.md")
-        elif task == "generate-chapter":
+        elif task == "generate-questions":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/question_generator.md")
             else:
                 args.prompt = Path("prompts/generator/xml/question_generator.md")
-        elif task in ["generate-syllabus", "generate-mock"]:
+        elif task == "generate-paper":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/paper_generator.md")
             else:
@@ -304,8 +307,8 @@ def main():
                 print("❌ Error: Please specify --input-dir or --input-file for extraction.")
                 sys.exit(1)
 
-        elif task == "generate-chapter":
-            generator = ChapterQuestionGenerator(
+        elif task == "generate-questions":
+            generator = QuestionGenerator(
                 communicator=communicator,
                 ocr_engine=ocr_engine,
                 rules_dict=rules_dict,
@@ -326,12 +329,12 @@ def main():
                 print("❌ Error: Please specify --input-dir or --input-file for chapter generation.")
                 sys.exit(1)
 
-        elif task in ["generate-syllabus", "generate-mock"]:
+        elif task == "generate-paper":
             if not args.blueprint:
                 print("❌ Error: Please specify --blueprint (JSON blueprint or syllabus markdown/pdf).")
                 sys.exit(1)
 
-            mock_generator = SyllabusQuestionGenerator(
+            mock_generator = PaperGenerator(
                 communicator=communicator,
                 ocr_engine=ocr_engine,
                 rules_dict=rules_dict,

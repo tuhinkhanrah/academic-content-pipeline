@@ -3,9 +3,9 @@
 content_processors.py - Core Content Processing Classes.
 
 Classes:
-  1. QuestionPaperExtractor    : Extracts questions & diagrams from exam paper PDFs.
-  2. ChapterQuestionGenerator  : Synthesizes calibrated questions from chapter PDFs/MDs.
-  3. SyllabusQuestionGenerator : Synthesizes full mock exams or topic banks from syllabi & blueprints.
+  1. QuestionPaperExtractor : Extracts questions & diagrams from exam paper PDFs.
+  2. QuestionGenerator      : Synthesizes calibrated questions from source PDFs/MDs.
+  3. PaperGenerator         : Synthesizes full mock exam papers from syllabi & blueprints.
 """
 
 import json
@@ -228,8 +228,8 @@ class QuestionPaperExtractor:
 # 2. Chapter Question Generator Class
 # =======================================================================
 
-class ChapterQuestionGenerator:
-    """Synthesizes questions from chapter PDFs or Markdown files."""
+class QuestionGenerator:
+    """Synthesizes questions from source PDFs or Markdown files."""
 
     def __init__(
         self,
@@ -265,9 +265,9 @@ class ChapterQuestionGenerator:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"\n{'='*60}\n📚 [GENERATE-CHAPTER] Processing: {input_file.name} ({self.output_format.upper()})\n{'='*60}")
+        logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()})\n{'='*60}")
 
-        # 1. Read or OCR chapter content
+        # 1. Read or OCR source content
         image_map: Dict[str, str] = {}
         if input_file.suffix.lower() == ".pdf":
             img_output_dir = self.staging_dir / input_file.stem / "images"
@@ -282,7 +282,7 @@ class ChapterQuestionGenerator:
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
             self.rules_dict,
-            mode="generate-chapter",
+            mode="generate-questions",
             output_format=self.output_format,
             pdf_engine=self.pdf_engine,
         )
@@ -381,8 +381,8 @@ class ChapterQuestionGenerator:
 # 3. Syllabus & Mock Exam Question Generator Class
 # =======================================================================
 
-class SyllabusQuestionGenerator:
-    """Synthesizes complete mock exams or question banks from syllabi & blueprints."""
+class PaperGenerator:
+    """Synthesizes complete mock exam papers or question banks from syllabi & blueprints."""
 
     def __init__(
         self,
@@ -431,7 +431,7 @@ class SyllabusQuestionGenerator:
         exam_name = blueprint_data.get("exam_name", "MOCK_EXAM")
         subjects = blueprint_data.get("subjects", [])
 
-        logger.info(f"\n{'='*60}\n🎓 [GENERATE-SYLLABUS/MOCK] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
+        logger.info(f"\n{'='*60}\n🎓 [GENERATE-PAPER] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
 
         # 1. Aggregate syllabi
         syllabus_blocks = []
@@ -461,7 +461,7 @@ class SyllabusQuestionGenerator:
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
             self.rules_dict,
-            mode="generate-mock",
+            mode="generate-paper",
             output_format=self.output_format,
             pdf_engine=self.pdf_engine,
         )
