@@ -79,7 +79,6 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-3.5-flash", help="Gemini model name.")
     parser.add_argument("--agent-name", default="antigravity-preview-05-2026", help="Agent identifier.")
-    parser.add_argument("--environment-id", default=None, help="Managed agent environment ID.")
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
     parser.add_argument("--retry-limit", type=int, default=5, help="Max retry attempts per page on API/quota error.")
@@ -133,7 +132,6 @@ def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicato
             client=genai_client,
             agent_name=args.agent_name,
             model_name=args.model_name,
-            environment_id=args.environment_id,
             attempt_limit=args.retry_limit,
             verbose=args.verbose,
         )
