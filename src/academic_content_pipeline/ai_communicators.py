@@ -25,7 +25,7 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
-logger = logging.getLogger("moodle_system")
+logger = logging.getLogger("academic_content_pipeline")
 
 
 class BaseAICommunicator(ABC):

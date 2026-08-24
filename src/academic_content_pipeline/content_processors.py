@@ -17,19 +17,32 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
-from ai_communicators import BaseAICommunicator, RemoteSandboxBackend
-from mistral_ocr import MistralOCREngine
-from pipeline_utils import (
-    assemble_prompt_files,
-    build_language_instructions,
-    compile_html_to_pdf,
-    compile_tex_to_pdf,
-    extract_clean_question_nodes_with_status,
-    fix_and_inject_moodle_xml,
-    load_file_content,
-)
+try:
+    from .ai_communicators import BaseAICommunicator, RemoteSandboxBackend
+    from .mistral_ocr import MistralOCREngine
+    from .pipeline_utils import (
+        assemble_prompt_files,
+        build_language_instructions,
+        compile_html_to_pdf,
+        compile_tex_to_pdf,
+        extract_clean_question_nodes_with_status,
+        fix_and_inject_moodle_xml,
+        load_file_content,
+    )
+except ImportError:  # pragma: no cover - fallback for direct script execution
+    from ai_communicators import BaseAICommunicator, RemoteSandboxBackend
+    from mistral_ocr import MistralOCREngine
+    from pipeline_utils import (
+        assemble_prompt_files,
+        build_language_instructions,
+        compile_html_to_pdf,
+        compile_tex_to_pdf,
+        extract_clean_question_nodes_with_status,
+        fix_and_inject_moodle_xml,
+        load_file_content,
+    )
 
-logger = logging.getLogger("moodle_system")
+logger = logging.getLogger("academic_content_pipeline")
 
 
 # =======================================================================

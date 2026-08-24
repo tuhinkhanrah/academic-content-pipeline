@@ -3,16 +3,24 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pdf2moodle-qbank"
+name = "academic-content-pipeline"
 version = "0.1.0"
-description = "Convert PDF past papers and textbook chapters into Moodle XML Question Banks"
+description = "Generate academic question banks, mock papers, and structured study content from PDFs and chapter materials"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
     "google-genai",
     "PyMuPDF",
+    "Pillow",
+    "httpx",
+    "mistralai",
+    "requests",
 ]
 
 [tool.setuptools]
-packages = []
+package-dir = {"" = "src"}
+packages = ["academic_content_pipeline"]
+
+[project.scripts]
+academic-content-pipeline = "academic_content_pipeline.unified_pipeline:main"

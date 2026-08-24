@@ -22,21 +22,36 @@ from typing import Any, Dict, List, Optional
 
 from google import genai
 
-from ai_communicators import (
-    AgentSessionBackend,
-    BaseAICommunicator,
-    ContextChatBackend,
-    RemoteSandboxBackend,
-)
-from content_processors import (
-    ChapterQuestionGenerator,
-    QuestionPaperExtractor,
-    SyllabusQuestionGenerator,
-)
-from mistral_ocr import MistralOCREngine
-from pipeline_utils import load_and_merge_config, setup_logger
+try:
+    from .ai_communicators import (
+        AgentSessionBackend,
+        BaseAICommunicator,
+        ContextChatBackend,
+        RemoteSandboxBackend,
+    )
+    from .content_processors import (
+        ChapterQuestionGenerator,
+        QuestionPaperExtractor,
+        SyllabusQuestionGenerator,
+    )
+    from .mistral_ocr import MistralOCREngine
+    from .pipeline_utils import load_and_merge_config, setup_logger
+except ImportError:  # pragma: no cover - fallback for direct script execution
+    from ai_communicators import (
+        AgentSessionBackend,
+        BaseAICommunicator,
+        ContextChatBackend,
+        RemoteSandboxBackend,
+    )
+    from content_processors import (
+        ChapterQuestionGenerator,
+        QuestionPaperExtractor,
+        SyllabusQuestionGenerator,
+    )
+    from mistral_ocr import MistralOCREngine
+    from pipeline_utils import load_and_merge_config, setup_logger
 
-logger = logging.getLogger("moodle_system")
+logger = logging.getLogger("academic_content_pipeline")
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -57,7 +72,6 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--xml-rules", type=Path, default="prompts/core/moodle_xml_rules.md")
     parser.add_argument("--tags-rules", type=Path, default="prompts/core/naming_and_tags_rules.md")
     parser.add_argument("--templates", type=Path, default="prompts/core/moodle_xml_templates.md")
-    parser.add_argument("--extractor-rules", type=Path, default="prompts/core/extractor_rules.md")
     parser.add_argument("--pdf-rules", type=Path, default=None)
     parser.add_argument("--pdf-rules-html", type=Path, default="prompts/core/pdf_html_rules.md")
     parser.add_argument("--pdf-rules-tex", type=Path, default="prompts/core/pdf_tex_rules.md")
@@ -256,9 +270,9 @@ def main():
     rules_dict = {
         "main_prompt": args.prompt,
         "instruction_file": args.instruction_file,
-        "xml_rules": args.xml_rules if task != "extract" else args.extractor_rules,
+        "xml_rules": args.xml_rules,
         "tags_rules": args.tags_rules,
-        "templates": args.templates if task != "extract" else None,
+        "templates": args.templates,
         "pdf_rules": args.pdf_rules,
         "pdf_rules_html": args.pdf_rules_html,
         "pdf_rules_tex": args.pdf_rules_tex,

@@ -27,7 +27,7 @@ try:
 except ImportError:
     Image, ImageEnhance = None, None
 
-logger = logging.getLogger("moodle_system")
+logger = logging.getLogger("academic_content_pipeline")
 
 LANG_ISO_MAP = {
     "english": "en",
@@ -514,33 +514,38 @@ def setup_logger(
     backup_count: int = 5,              # Keep up to 5 rotated backup files
 ) -> None:
     """Configures dual logging to both stdout and a rotating file log."""
-    logger_obj = logging.getLogger("moodle_system")
-    logger_obj.setLevel(logging.DEBUG if verbose else logging.INFO)
-
-    if logger_obj.hasHandlers():
-        logger_obj.handlers.clear()
-
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # 1. Console Stream Handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    logger_obj.addHandler(console_handler)
+    def _configure_logger(name: str) -> None:
+        logger_obj = logging.getLogger(name)
+        logger_obj.setLevel(logging.DEBUG if verbose else logging.INFO)
+        logger_obj.propagate = False
 
-    # 2. Standard Rotating File Handler
-    if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            filename=log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
-        logger_obj.addHandler(file_handler)
+        for handler in list(logger_obj.handlers):
+            logger_obj.removeHandler(handler)
+            handler.close()
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        logger_obj.addHandler(console_handler)
+
+        if log_file:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                filename=log_path,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            logger_obj.addHandler(file_handler)
+
+    _configure_logger("academic_content_pipeline")
+    _configure_logger("moodle_system")
 
 
 def encode_bytes_to_base64(raw_bytes: bytes) -> str:

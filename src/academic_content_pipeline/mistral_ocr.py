@@ -21,7 +21,7 @@ import pymupdf as fitz
 from mistralai.client import Mistral
 
 Image.MAX_IMAGE_PIXELS = None
-logger = logging.getLogger("moodle_system")
+logger = logging.getLogger("academic_content_pipeline")
 
 
 class OCRPageData:
