@@ -2,6 +2,12 @@
 - Output ONLY valid <question type="...">...</question> nodes.
 - If no question concludes on the current context, return "".
 
+## XML Solution Rendering
+- Apply all format-neutral requirements from `reasoning_rules.md`.
+- Place the complete solution for each question only inside `<generalfeedback format="html">`.
+- Render each reasoning step as an HTML paragraph using `<p><strong>Step ...</strong><br/>...</p>`.
+- Do not place solution prose directly inside `<quiz>` or outside a question node.
+
 # Feedback Tag Prohibition
 - NEVER emit `<correctfeedback>`, `<partiallycorrectfeedback>`, or `<incorrectfeedback>` anywhere in Moodle XML.
 - Do not emit these tags even with empty content or default text such as "Your answer is correct.", "Your answer is partially correct.", or "Your answer is incorrect.".

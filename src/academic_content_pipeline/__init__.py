@@ -6,4 +6,5 @@ __all__ = [
     "ai_communicators",
     "mistral_ocr",
     "pipeline_utils",
+    "output_renderers",
 ]

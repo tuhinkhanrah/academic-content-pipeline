@@ -29,6 +29,19 @@ except ImportError:
 
 logger = logging.getLogger("academic_content_pipeline")
 
+
+def unique_image_items(image_map: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    """Return one attachment per image path while preserving the first reference ID."""
+    seen_paths = set()
+    unique_items = []
+    for image_id, filepath in image_map.items():
+        path_key = str(Path(filepath).resolve())
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        unique_items.append((image_id, filepath))
+    return unique_items
+
 LANG_ISO_MAP = {
     "english": "en",
     "bengali": "bn",
@@ -263,6 +276,105 @@ def load_file_content(file_path: Optional[Union[Path, str]]) -> str:
         return ""
 
 
+def format_instruction_profile(profile: Dict[str, Any]) -> str:
+    """Render a structured exam profile as a readable AI instruction contract."""
+    lines = ["## STRUCTURED EXAM PROFILE"]
+    exam = profile.get("exam", {})
+    for label, key in (("Exam", "name"), ("Paper", "paper_name"), ("Duration", "duration_minutes"), ("Total Marks", "total_marks")):
+        if key in exam:
+            suffix = " minutes" if key == "duration_minutes" else ""
+            lines.append(f"- {label}: {exam[key]}{suffix}")
+
+    lines.extend(["", "### GLOBAL INSTRUCTIONS"])
+    lines.extend(
+        f"- {item}"
+        for item in profile.get("generation_instructions", profile.get("global_instructions", []))
+    )
+
+    policy = profile.get("generation_policy", {})
+    if policy:
+        lines.extend(["", "### GENERATION POLICY"])
+        lines.extend(f"- {key.replace('_', ' ').capitalize()}: {value}" for key, value in policy.items())
+
+    calibration = profile.get("calibration", {})
+    if calibration:
+        lines.extend(["", "### EXAM CALIBRATION"])
+        for key, value in calibration.items():
+            if isinstance(value, list):
+                lines.append(f"- {key.replace('_', ' ').capitalize()}: {', '.join(map(str, value))}")
+            else:
+                lines.append(f"- {key.replace('_', ' ').capitalize()}: {value}")
+
+    for section in profile.get("sections", []):
+        lines.extend(
+            [
+                "",
+                f"### SECTION: {section.get('name', section.get('id', 'Unnamed'))}",
+                f"- Subject: {section.get('subject', 'General')}",
+                f"- Questions: {section.get('question_count', section.get('total_questions', 0))}",
+                f"- Attempt count: {section.get('attempt_count', 'all')}",
+            ]
+        )
+        if "question_number_start" in section or "question_number_end" in section:
+            lines.append(
+                f"- Question numbers: {section.get('question_number_start', '?')}-"
+                f"{section.get('question_number_end', '?')}"
+            )
+        for allocation in section.get("question_types", []):
+            lines.append(
+                f"- Question type: {allocation.get('type', allocation)}"
+                + (f"; count: {allocation['count']}" if "count" in allocation else "")
+            )
+        scoring = section.get("scoring", {})
+        if scoring:
+            lines.append(f"- Scoring: {json.dumps(scoring, ensure_ascii=False, sort_keys=True)}")
+        answer_format = section.get("answer_format")
+        if answer_format:
+            lines.append(f"- Answer format: {json.dumps(answer_format, ensure_ascii=False, sort_keys=True)}")
+
+    lines.extend(
+        [
+            "",
+            "### PROFILE COMPLIANCE",
+            "Treat this profile as authoritative. Do not change section counts, numbering, scoring, instructions, or allowed question types.",
+            "Place the paper header and examination instructions before the first question for PDF output.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_prompt_snapshot(
+    snapshot_path: Path,
+    system_instruction: str,
+    contents: List[Any],
+) -> Path:
+    """Write the exact textual AI inputs and attachment references to Markdown."""
+    sections = [
+        "# AI Prompt Snapshot",
+        "",
+        "## System Instructions",
+        system_instruction,
+        "",
+        "## User Prompt and Attachments",
+    ]
+    for index, content in enumerate(contents, 1):
+        if isinstance(content, str):
+            sections.extend([f"### Content {index} (text)", content, ""])
+        else:
+            sections.extend(
+                [
+                    f"### Content {index} (attachment)",
+                    f"```text\n{type(content).__name__}\n{getattr(content, 'filename', '')}\n```",
+                    "",
+                ]
+            )
+    snapshot_path = Path(snapshot_path)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text("\n".join(sections), encoding="utf-8")
+    logger.info("📝 Wrote AI prompt snapshot: %s", snapshot_path)
+    return snapshot_path
+
+
 def assemble_prompt_files(
     rule_files: Dict[str, Any],
     mode: str,
@@ -280,26 +392,35 @@ def assemble_prompt_files(
     )
     content_blocks = [top_contract]
 
+    instruction_profile = rule_files.get("instruction_profile")
+    if instruction_profile:
+        content_blocks.append(format_instruction_profile(instruction_profile))
+
     if output_format == "pdf":
         pdf_rule_key = "pdf_rules_tex" if pdf_engine == "tex" else "pdf_rules_html"
-        valid_keys = ["main_prompt", "instruction_file", pdf_rule_key, "pdf_rules"]
+        valid_keys = ["main_prompt", "instruction_file", pdf_rule_key, "pdf_rules", "reasoning_rules"]
     else:
-        valid_keys = ["main_prompt", "instruction_file", "xml_rules", "tags_rules", "templates"]
+        valid_keys = [
+            "main_prompt",
+            "instruction_file",
+            "xml_rules",
+            "reasoning_rules",
+            "tags_rules",
+            "templates",
+        ]
 
+    seen_rule_paths = set()
     for name, filepath in rule_files.items():
         if name not in valid_keys or not filepath:
             continue
         path = Path(filepath)
+        path_key = str(path.resolve())
+        if path_key in seen_rule_paths:
+            continue
+        seen_rule_paths.add(path_key)
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-                if output_format == "pdf":
-                    # Sanitize any residual XML output contracts in main_prompt / instructions
-                    content = re.sub(r"(?i)#\s*Output Contract\s*\n.*?(?=\n#|\Z)", "", content, flags=re.DOTALL)
-                    content = re.sub(r"(?i)Moodle XML specialist", f"{engine_name} assessment typesetter", content)
-                    content = re.sub(r"(?i)in valid Moodle XML", f"in valid {engine_name} format", content)
-                    content = re.sub(r"(?i)output valid Moodle XML question nodes", f"output complete {engine_name} document", content)
-                    content = re.sub(r"(?i)<question\b[^>]*>.*?</question>", "", content, flags=re.DOTALL)
 
                 if name == "xml_rules" and mode == "extract" and not verify_online:
                     content = re.sub(

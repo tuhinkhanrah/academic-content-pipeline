@@ -238,9 +238,13 @@ class AgentSessionBackend(BaseAICommunicator):
                     "agent": self.agent_name,
                     "agent_config": agent_config_payload,
                     "environment": env_param,
-                    "system_instruction": system_instruction,
                     "input": multimodal_input,
                 }
+
+                # The system prompt establishes the session-wide contract once.
+                # Later page turns inherit it through previous_interaction_id.
+                if not self.last_interaction_id:
+                    interaction_params["system_instruction"] = system_instruction
 
                 if self.last_interaction_id:
                     interaction_params["previous_interaction_id"] = self.last_interaction_id
@@ -388,7 +392,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
         prompt_body = "\n\n".join([str(c) for c in contents if isinstance(c, str)])
 
         # Minimal Python execution code in remote sandbox (Requirement 8)
-        execution_prompt = f"""
+        execution_prompt = fr"""
 {prompt_body}
 
 ### 📋 EXECUTION & Persist Instructions:
@@ -409,6 +413,22 @@ if resp.status_code not in [200, 201]:
     raise RuntimeError('GCS Upload failed: ' + resp.text)
 ```
 """
+
+        prompt_snapshot_path = kwargs.get("prompt_snapshot_path")
+        if prompt_snapshot_path:
+            redacted_prompt = execution_prompt.replace(gcp_token, "[REDACTED_GCP_TOKEN]")
+            snapshot_path = Path(prompt_snapshot_path)
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot_path.write_text(
+                "# AI Prompt Snapshot\n\n"
+                "## System Instructions (remote inline source)\n\n"
+                + system_instruction.strip()
+                + "\n\n## Remote Execution Prompt\n\n"
+                + redacted_prompt.strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            logger.info("📝 Wrote remote AI prompt snapshot: %s", snapshot_path)
 
         logger.info("🚀 Provisioning remote execution sandbox...")
         for attempt in range(1, self.attempt_limit + 1):

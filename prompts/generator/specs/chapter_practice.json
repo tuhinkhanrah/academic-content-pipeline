@@ -1,0 +1,71 @@
+{
+  "paper_title": "Chapter Practice Test",
+  "duration_minutes": 60,
+  "total_marks": 10,
+  "paper_instructions": [
+    "Answer all questions.",
+    "Select the best answer from options A, B, C and D.",
+    "Each question has only one correct answer."
+  ],
+  "header_fields": {
+    "candidate_name": "",
+    "roll_number": "",
+    "date": ""
+  },
+  "instruction_profile": {
+    "exam": {
+      "name": "Chapter Practice",
+      "paper_name": "Chapter Practice Test",
+      "duration_minutes": 60,
+      "total_marks": 10
+    },
+    "global_instructions": [
+      "Every question must be standalone and solvable without external context."
+    ],
+    "generation_policy": {
+      "question_count_mode": "exact",
+      "prefer_quality_over_quantity": true,
+      "require_standalone_questions": true,
+      "require_solution": true,
+      "randomize_options": true,
+      "vary_correct_option_position": true,
+      "allow_question_type_substitution": true
+    },
+    "calibration": {
+      "style": ["conceptual clarity", "novel questions", "source-grounded"],
+      "avoid": ["filler questions", "ambiguous wording", "out-of-syllabus concepts"]
+    }
+  },
+  "total_questions": 10,
+  "marks_per_question": 1,
+  "question_types": [
+    {
+      "type": "standard_mcq",
+      "count": 3
+    },
+    {
+      "type": "assertion_reason",
+      "count": 1
+    },
+    {
+      "type": "statement_based_2",
+      "count": 1
+    },
+    {
+      "type": "match_list",
+      "count": 1
+    },
+    {
+      "type": "diagram_image",
+      "count": 1
+    },
+    {
+      "type": "sequencing",
+      "count": 1
+    },
+    {
+      "type": "numerical",
+      "count": 2
+    }
+  ]
+}

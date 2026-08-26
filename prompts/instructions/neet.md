@@ -1,17 +1,32 @@
-# Generation Rules
-- Follow runtime constraints from user prompt (question count, grade, penalty, tags).
-- Treat runtime question count as a maximum cap, not a mandatory fixed count.
-- Choose the actual number dynamically from 0..max based on concept quality, novelty, and solvability in the current page/content block.
-- Prefer fewer high-quality questions over filler; output 0 questions when the source block is weak or non-assessable.
-- Prefer conceptual variety across generated questions:
-  - standard MCQ
-  - assertion-reason
-  - statement-based (can include 2, 3, 4 or multi statements to evaluate)
-  - match/list style
-  - diagram/image-based
-  - sequencing / chronological order
-- Include at least one multi-concept question when the source supports it.
-- Every question must be standalone and solvable without external context.
-
-# Exam Calibration
-- NEET: direct, speed-oriented, light calculation, high conceptual clarity.
+# Physics
+- Number of Questions: 45
+- Question Number : 1 to 45
+- Number of Questions to be attempted: 45
+- Section Marks: 180
+- Multiple Choice Questions (MCQs)
+- Each correct answer is awarded +4 marks
+- Each incorrect answer results in −1 mark
+# Chemistry
+- Number of Questions: 45
+- Question Number : 46 to 90
+- Number of Questions to be attempted: 45
+- Section Marks: 180
+- Multiple Choice Questions (MCQs)
+- Each correct answer is awarded +4 marks
+- Each incorrect answer results in −1 mark
+# Botany
+- Number of Questions: 45
+- Question Number : 91 to 135
+- Number of Questions to be attempted: 45
+- Section Marks: 180
+- Multiple Choice Questions (MCQs)
+- Each correct answer is awarded +4 marks
+- Each incorrect answer results in −1 mark
+# Zoology
+- Number of Questions: 45
+- Question Number : 136 to 180
+- Number of Questions to be attempted: 45
+- Section Marks: 180
+- Multiple Choice Questions (MCQs)
+- Each correct answer is awarded +4 marks
+- Each incorrect answer results in −1 mark

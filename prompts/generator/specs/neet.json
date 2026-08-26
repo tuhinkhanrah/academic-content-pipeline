@@ -1,10 +1,50 @@
 {
   "exam_name": "NEET-UG",
+  "paper_title": "Practice Test",
+  "duration_minutes": 40,
+  "total_marks": 160,
+  "paper_instructions": [
+    "All questions are compulsory.",
+    "Select the best answer from options A, B, C and D.",
+    "Each question has only one correct answer."
+  ],
+  "header_fields": {
+    "candidate_name": "",
+    "roll_number": "",
+    "date": ""
+  },
+  "instruction_profile": {
+    "exam": {
+      "name": "NEET-UG",
+      "paper_name": "Practice Test",
+      "duration_minutes": 40,
+      "total_marks": 160
+    },
+    "global_instructions": [
+      "Follow the configured question count, marks, penalty, and question-type allocation.",
+      "Prefer fewer high-quality questions over filler.",
+      "Every question must be standalone and solvable without external context.",
+      "Include a multi-concept question when the source supports it."
+    ],
+    "generation_policy": {
+      "question_count_mode": "exact",
+      "prefer_quality_over_quantity": true,
+      "require_standalone_questions": true,
+      "randomize_options": true,
+      "vary_correct_option_position": true,
+      "allow_question_type_substitution": true
+    },
+    "calibration": {
+      "style": ["direct", "speed-oriented", "high conceptual clarity"],
+      "calculation_level": "light",
+      "avoid": ["trivial recall", "ambiguous wording", "out-of-syllabus concepts"]
+    }
+  },
     "batch_size": 45,
     "subjects": [
       {
         "name": "Physics",
-        "total_questions": 2,
+        "total_questions": 10,
         "default_grade": 4.0,
         "penalty": 0.25,
         "negative_fraction": -25,
@@ -12,7 +52,7 @@
       },
       {
         "name": "Chemistry",
-        "total_questions": 2,
+        "total_questions": 10,
         "default_grade": 4.0,
         "penalty": 0.25,
         "negative_fraction": -25,
@@ -20,11 +60,22 @@
       },
       {
         "name": "Biology",
-        "total_questions": 5,
+        "total_questions": 20,
         "default_grade": 4.0,
         "penalty": 0.25,
         "negative_fraction": -25,
         "syllabus_file": "prompts/generator/syllabus/neet/biology.md"
       }
-    ]
+    ],
+"question_types": {
+  "mode": "automatic",
+  "allowed": [
+    "standard_mcq",
+    "assertion_reason",
+    "statement_based_2",
+    "match_list",
+    "diagram_image",
+    "sequencing"
+  ]
   }
+}

@@ -75,6 +75,13 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pdf-rules", type=Path, default=None)
     parser.add_argument("--pdf-rules-html", type=Path, default="prompts/core/pdf_html_rules.md")
     parser.add_argument("--pdf-rules-tex", type=Path, default="prompts/core/pdf_tex_rules.md")
+    parser.add_argument(
+        "--reasoning-rules",
+        type=Path,
+        default="prompts/core/reasoning_rules.md",
+        help="Shared step-by-step reasoning and solution rules.",
+    )
+    parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.json", help="MCQ type registry JSON file.")
 
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-3.5-flash", help="Gemini model name.")
@@ -99,11 +106,12 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_ext.add_argument("--verify-online", action="store_true", help="Verify answers online.")
 
     # 2. generate-questions
-    p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs and optional specs.")
+    p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs.")
     add_common_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
-    p_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON spec or markdown file with extra generation constraints.")
+    p_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON paper spec for a formal PDF header.")
+    p_chap.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
@@ -113,6 +121,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     add_common_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to JSON spec or syllabus markdown/pdf.")
     p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
+    p_syl.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
 
 
@@ -190,7 +199,8 @@ def main():
     add_common_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
-    p_direct_chap.add_argument("--spec", type=Path, default=None)
+    p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON paper spec for a formal PDF header.")
+    p_direct_chap.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
@@ -200,6 +210,7 @@ def main():
     add_common_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
     p_direct_syl.add_argument("--sample-pdf", type=Path, default=None)
+    p_direct_syl.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
 
     args = parser.parse_args()
@@ -279,6 +290,7 @@ def main():
         "pdf_rules": args.pdf_rules,
         "pdf_rules_html": args.pdf_rules_html,
         "pdf_rules_tex": args.pdf_rules_tex,
+        "reasoning_rules": args.reasoning_rules,
     }
 
     languages_list = [l.strip() for l in args.languages.split(",") if l.strip()]
@@ -322,7 +334,9 @@ def main():
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
                 page_range=args.page_range,
-                spec_path=args.spec,
+                exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
+                spec_path=getattr(args, "spec", None),
+                mcq_types_path=args.mcq_types,
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -348,6 +362,8 @@ def main():
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
                 sample_pdf=args.sample_pdf,
+                exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
+                mcq_types_path=args.mcq_types,
             )
             mock_generator.process_spec(args.spec, args.output_dir)
     finally:

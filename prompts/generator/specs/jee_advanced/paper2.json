@@ -1,0 +1,28 @@
+{
+	"schema_version": "1.0",
+	"exam_name": "JEE Advanced",
+	"paper_title": "Paper 2",
+	"duration_minutes": 180,
+	"total_marks": 180,
+	"instruction_profile": {
+		"exam": {"name": "JEE Advanced", "paper_name": "Paper 2", "duration_minutes": 180, "total_marks": 180},
+		"global_instructions": [
+			"Answer according to the marking scheme of each section.",
+			"For multiple-correct questions, select all and only the correct options.",
+			"Numerical-value answers must be entered to at most two decimal places."
+		],
+		"generation_policy": {"question_count_mode": "exact", "require_standalone_questions": true, "require_solution": true, "randomize_options": true, "vary_correct_option_position": true, "allow_question_type_substitution": false},
+		"calibration": {"style": ["conceptually rigorous", "multi-step reasoning", "syllabus-bound"], "calculation_level": "high", "avoid": ["trivial recall", "ambiguous wording", "out-of-syllabus concepts"]}
+	},
+	"sections": [
+		{"id": "single_correct", "name": "Single Correct Option", "subject": "all", "question_count": 4, "question_types": [{"type": "standard_mcq", "count": 4}], "scoring": {"correct": 3, "incorrect": -1, "unanswered": 0}},
+		{"id": "multiple_correct", "name": "One or More Than One Correct Option", "subject": "all", "question_count": 5, "question_types": [{"type": "multiple_correct", "count": 5}], "scoring": {"correct": 4, "incorrect": -1, "unanswered": 0, "partial": true}},
+		{"id": "numerical", "name": "Numerical Value", "subject": "all", "question_count": 5, "question_types": [{"type": "numerical", "count": 5}], "scoring": {"correct": 4, "incorrect": 0, "unanswered": 0}},
+		{"id": "numerical_stems", "name": "Numerical Value Question Stems", "subject": "all", "question_count": 4, "question_types": [{"type": "numerical", "count": 4}], "scoring": {"correct": 2, "incorrect": 0, "unanswered": 0}, "answer_format": {"kind": "numeric", "decimal_places": 2, "rounding": "truncate"}}
+	],
+	"subjects": [
+		{"name": "Mathematics", "total_questions": 18, "default_grade": 56, "syllabus_file": "prompts/generator/syllabus/jee_advanced/mathematics.md"},
+		{"name": "Physics", "total_questions": 18, "default_grade": 56, "syllabus_file": "prompts/generator/syllabus/jee_advanced/physics.md"},
+		{"name": "Chemistry", "total_questions": 18, "default_grade": 56, "syllabus_file": "prompts/generator/syllabus/jee_advanced/chemistry.md"}
+	]
+}
