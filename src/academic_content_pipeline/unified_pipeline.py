@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from google import genai
 
@@ -70,6 +70,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prompt", type=Path, default=None, help="Path to the main prompt/exam profile markdown.")
     parser.add_argument("--instruction-file", type=Path, default=None, help="Path to exam instruction file.")
     parser.add_argument("--xml-rules", type=Path, default="prompts/core/moodle_xml_rules.md")
+    parser.add_argument("--xml-extraction-rules", type=Path, default="prompts/core/moodle_xml_extraction_rules.md")
     parser.add_argument("--tags-rules", type=Path, default="prompts/core/naming_and_tags_rules.md")
     parser.add_argument("--templates", type=Path, default="prompts/core/moodle_xml_templates.md")
     parser.add_argument("--pdf-rules", type=Path, default=None)
@@ -148,7 +149,10 @@ def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicato
     elif mode == "remote":
         bucket_name = args.bucket_name or os.environ.get("GCS_BUCKET_NAME")
         if not bucket_name:
-            print("❌ Error: GCS bucket name must be supplied via --bucket-name or GCS_BUCKET_NAME environment variable for remote mode.")
+            logger.error(
+                "GCS bucket name must be supplied via --bucket-name or "
+                "GCS_BUCKET_NAME environment variable for remote mode."
+            )
             sys.exit(1)
         return RemoteSandboxBackend(
             client=genai_client,
@@ -237,10 +241,10 @@ def main():
 
     # Verify environment keys
     if not os.environ.get("GEMINI_API_KEY"):
-        print("❌ Error: GEMINI_API_KEY environment variable must be set.")
+        logger.error("GEMINI_API_KEY environment variable must be set.")
         sys.exit(1)
     if not os.environ.get("MISTRAL_API_KEY"):
-        print("❌ Error: MISTRAL_API_KEY environment variable must be set.")
+        logger.error("MISTRAL_API_KEY environment variable must be set.")
         sys.exit(1)
 
     # Initialize communication backend & OCR engine
@@ -254,10 +258,35 @@ def main():
             if "--pdf-engine" not in sys.argv:
                 args.pdf_engine = "tex"
 
+    def resolve_format_prompt(prompt_path: Path) -> Path:
+        """Route known built-in prompts to the requested task/output format."""
+        prompt_path = Path(prompt_path)
+        parts = prompt_path.parts
+        if "generator" in parts:
+            stem = prompt_path.stem
+            if stem in {"question_generator", "paper_generator"}:
+                candidate = Path("prompts/generator") / (
+                    "xml" if args.output_format == "xml" else args.pdf_engine
+                ) / f"{stem}.md"
+                if candidate.exists():
+                    return candidate
+        if "extractor" in parts:
+            if args.output_format == "xml":
+                candidate = prompt_path
+            else:
+                candidate = Path("prompts/extractor") / args.pdf_engine / "extractor.md"
+                if not candidate.exists():
+                    candidate = Path("prompts/extractor") / args.pdf_engine / "base.md"
+            if candidate.exists():
+                return candidate
+        return prompt_path
+
     # Auto-resolve default prompt if not provided by user
     if args.prompt is None:
         if task == "extract":
-            args.prompt = Path("prompts/extractor/neet.md")
+            args.prompt = Path("prompts/extractor") / (
+                 "neet.md" if args.output_format == "xml" else f"{args.pdf_engine}/extractor.md"
+            )
         elif task == "generate-questions":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/question_generator.md")
@@ -269,22 +298,14 @@ def main():
             else:
                 args.prompt = Path("prompts/generator/xml/paper_generator.md")
     else:
-        # If user provided generic prompt path (e.g. prompts/generator/question_generator.md), route to format-specific one
-        p_str = str(args.prompt)
-        if p_str in ["prompts/generator/question_generator.md", "prompts/generator/paper_generator.md"]:
-            stem = Path(p_str).stem
-            if args.output_format == "pdf":
-                resolved_path = Path(f"prompts/generator/{args.pdf_engine}/{stem}.md")
-            else:
-                resolved_path = Path(f"prompts/generator/xml/{stem}.md")
-            if resolved_path.exists():
-                args.prompt = resolved_path
+        args.prompt = resolve_format_prompt(args.prompt)
 
     # Build rules dictionary
     rules_dict = {
         "main_prompt": args.prompt,
         "instruction_file": args.instruction_file,
         "xml_rules": args.xml_rules,
+        "xml_extraction_rules": args.xml_extraction_rules,
         "tags_rules": args.tags_rules,
         "templates": args.templates,
         "pdf_rules": args.pdf_rules,
@@ -312,13 +333,15 @@ def main():
                 instruction_page=args.instruction_page,
                 verify_online=args.verify_online,
                 rate_limit_delay=args.rate_limit_delay,
+                output_format=args.output_format,
+                pdf_engine=args.pdf_engine,
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)
             elif args.input_dir:
                 extractor.process_directory(args.input_dir, args.output_dir)
             else:
-                print("❌ Error: Please specify --input-dir or --input-file for extraction.")
+                logger.error("Please specify --input-dir or --input-file for extraction.")
                 sys.exit(1)
 
         elif task == "generate-questions":
@@ -343,12 +366,12 @@ def main():
             elif args.input_dir:
                 generator.process_directory(args.input_dir, args.output_dir)
             else:
-                print("❌ Error: Please specify --input-dir or --input-file for chapter generation.")
+                logger.error("Please specify --input-dir or --input-file for chapter generation.")
                 sys.exit(1)
 
         elif task == "generate-paper":
             if not args.spec:
-                print("❌ Error: Please specify --spec (JSON spec or syllabus markdown/pdf).")
+                logger.error("Please specify --spec (JSON spec or syllabus markdown/pdf).")
                 sys.exit(1)
 
             mock_generator = PaperGenerator(
@@ -366,6 +389,9 @@ def main():
                 mcq_types_path=args.mcq_types,
             )
             mock_generator.process_spec(args.spec, args.output_dir)
+    except Exception:
+        logger.exception("Pipeline command failed.")
+        raise
     finally:
         if hasattr(communicator, "close"):
             communicator.close()

@@ -12,14 +12,12 @@ import os
 import io
 import base64
 import re
-import sys
 import time
-import json
 import logging
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 from PIL import Image
 from google import genai
@@ -390,6 +388,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
         )
 
         prompt_body = "\n\n".join([str(c) for c in contents if isinstance(c, str)])
+        remote_input: List[Any] = [{"type": "text", "text": "PLACEHOLDER"}]
 
         # Minimal Python execution code in remote sandbox (Requirement 8)
         execution_prompt = fr"""
@@ -413,6 +412,26 @@ if resp.status_code not in [200, 201]:
     raise RuntimeError('GCS Upload failed: ' + resp.text)
 ```
 """
+        remote_input[0]["text"] = execution_prompt
+        for item in contents:
+            if isinstance(item, Image.Image):
+                buffer = io.BytesIO()
+                item.save(buffer, format="PNG")
+                remote_input.append(
+                    {
+                        "type": "image",
+                        "data": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+                        "mime_type": "image/png",
+                    }
+                )
+            elif isinstance(item, Path) and item.exists():
+                remote_input.append(
+                    {
+                        "type": "image",
+                        "data": base64.b64encode(item.read_bytes()).decode("utf-8"),
+                        "mime_type": "image/png",
+                    }
+                )
 
         prompt_snapshot_path = kwargs.get("prompt_snapshot_path")
         if prompt_snapshot_path:
@@ -435,7 +454,7 @@ if resp.status_code not in [200, 201]:
             try:
                 interaction = self.client.interactions.create(
                     agent=self.agent_name,
-                    input=execution_prompt,
+                    input=remote_input,
                     environment={
                         "type": "remote",
                         "sources": [

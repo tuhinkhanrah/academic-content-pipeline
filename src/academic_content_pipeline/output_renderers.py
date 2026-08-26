@@ -31,27 +31,6 @@ class OutputRenderer:
         if self.output_format == "pdf" and self.pdf_engine not in {"html", "tex"}:
             raise ValueError(f"Unsupported PDF engine: {self.pdf_engine}")
 
-    def format_instruction(self) -> str:
-        """Return the output contract appended to the generation prompt."""
-        if self.output_format == "xml":
-            return (
-                "CRITICAL FORMAT RULE: Generate valid Moodle XML (<quiz>...</quiz>). "
-                "Output only actual Moodle question records. Do not generate a paper header, "
-                "candidate fields, examination-instruction section, marking-scheme description, "
-                "or any <question type=\"description\"> element."
-            )
-
-        if self.pdf_engine == "tex":
-            return (
-                "CRITICAL FORMAT RULE: Output a complete standalone LaTeX document starting with `\\documentclass{article}` "
-                "and ending with `\\end{document}`. DO NOT output HTML tags (<p>, <div>, <hr/>) and DO NOT output Moodle XML (<question>, <quiz>)."
-            )
-
-        return (
-            "CRITICAL FORMAT RULE: Output a complete standalone HTML5 document starting with `<!DOCTYPE html><html>` "
-            "and ending with `</html>`. DO NOT output Moodle XML (<question>, <quiz>)."
-        )
-
     def render(
         self,
         raw_output: str,

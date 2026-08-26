@@ -7,7 +7,6 @@ with SHA-256 deduplication, page slicing, and Pillow enhancement.
 """
 
 import os
-import io
 import gc
 import base64
 import hashlib

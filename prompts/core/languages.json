@@ -1,0 +1,19 @@
+{
+  "languages": {
+    "english": {"iso": "en"},
+    "bengali": {"iso": "bn", "polyglossia": "bengali", "script": "Bengali", "font": "Noto Serif Bengali", "command": "bengalifont"},
+    "bangla": {"iso": "bn", "polyglossia": "bengali", "script": "Bengali", "font": "Noto Serif Bengali", "command": "bengalifont"},
+    "hindi": {"iso": "hi", "polyglossia": "hindi", "script": "Devanagari", "font": "Noto Serif Devanagari", "command": "hindifont"},
+    "tamil": {"iso": "ta", "polyglossia": "tamil", "script": "Tamil", "font": "Noto Serif Tamil", "command": "tamilfont"},
+    "telugu": {"iso": "te", "polyglossia": "telugu", "script": "Telugu", "font": "Noto Serif Telugu", "command": "telugufont"},
+    "marathi": {"iso": "mr", "polyglossia": "marathi", "script": "Devanagari", "font": "Noto Serif Devanagari", "command": "marathifont"},
+    "gujarati": {"iso": "gu", "polyglossia": "gujarati", "script": "Gujarati", "font": "Noto Serif Gujarati", "command": "gujaratifont"},
+    "kannada": {"iso": "kn", "polyglossia": "kannada", "script": "Kannada", "font": "Noto Serif Kannada", "command": "kannadafont"},
+    "malayalam": {"iso": "ml", "polyglossia": "malayalam", "script": "Malayalam", "font": "Noto Serif Malayalam", "command": "malayalamfont"},
+    "punjabi": {"iso": "pa", "polyglossia": "punjabi", "script": "Gurmukhi", "font": "Noto Serif Gurmukhi", "command": "punjabifont"},
+    "assamese": {"iso": "as", "polyglossia": "assamese", "script": "Bengali", "font": "Noto Serif Bengali", "command": "assamesefont"},
+    "odia": {"iso": "or", "polyglossia": "oriya", "script": "Oriya", "font": "Noto Serif Oriya", "command": "odiafont"},
+    "oriya": {"iso": "or", "polyglossia": "oriya", "script": "Oriya", "font": "Noto Serif Oriya", "command": "oriyafont"},
+    "urdu": {"iso": "ur", "polyglossia": "urdu", "script": "Arabic", "font": "Noto Nastaliq Urdu", "command": "urdufont"}
+  }
+}

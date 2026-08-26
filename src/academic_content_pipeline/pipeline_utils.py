@@ -4,8 +4,6 @@ pipeline_utils.py - Shared utilities for question generation, XML/HTML/LaTeX/PDF
 """
 
 import base64
-import hashlib
-import io
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -18,16 +16,57 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
-import pymupdf
-from google import genai
-from google.genai import types
-
-try:
-    from PIL import Image, ImageEnhance
-except ImportError:
-    Image, ImageEnhance = None, None
-
 logger = logging.getLogger("academic_content_pipeline")
+
+PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts"
+LANGUAGE_CATALOG_PATH = PROMPT_ROOT / "core" / "languages.json"
+LANGUAGE_RULES_PATH = PROMPT_ROOT / "core" / "language_rules.md"
+
+
+def load_prompt_template(template_path: Union[Path, str], **values: str) -> str:
+    """Load a UTF-8 prompt template and replace its named placeholders."""
+    template = Path(template_path).read_text(encoding="utf-8")
+    for key, value in values.items():
+        template = template.replace("{{" + key + "}}", str(value))
+    return template.strip()
+
+
+def load_prompt_section(template_path: Union[Path, str], heading: str, **values: str) -> str:
+    """Load one Markdown level-three section from a prompt template."""
+    template = Path(template_path).read_text(encoding="utf-8")
+    match = re.search(
+        rf"^### {re.escape(heading)}\s*$\n(.*?)(?=^### |\Z)",
+        template,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Prompt section '{heading}' not found in {template_path}")
+    section = match.group(1)
+    for key, value in values.items():
+        section = section.replace("{{" + key + "}}", str(value))
+    return section.strip()
+
+
+def _load_language_catalog() -> Dict[str, Dict[str, str]]:
+    """Load language metadata used to build runtime language instructions."""
+    try:
+        return json.loads(LANGUAGE_CATALOG_PATH.read_text(encoding="utf-8"))["languages"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        raise RuntimeError(f"Unable to load language catalog: {LANGUAGE_CATALOG_PATH}") from exc
+
+
+LANGUAGE_CATALOG = _load_language_catalog()
+LANG_ISO_MAP = {name: data["iso"] for name, data in LANGUAGE_CATALOG.items()}
+INDIC_LANGUAGE_CONFIG: Dict[str, Dict[str, str]] = {
+    name: {
+        "polyglossia": data["polyglossia"],
+        "script": data["script"],
+        "font": data["font"],
+        "cmd": data["command"],
+    }
+    for name, data in LANGUAGE_CATALOG.items()
+    if "polyglossia" in data
+}
 
 
 def unique_image_items(image_map: Dict[str, Any]) -> List[Tuple[str, Any]]:
@@ -42,226 +81,6 @@ def unique_image_items(image_map: Dict[str, Any]) -> List[Tuple[str, Any]]:
         unique_items.append((image_id, filepath))
     return unique_items
 
-LANG_ISO_MAP = {
-    "english": "en",
-    "bengali": "bn",
-    "bangla": "bn",
-    "hindi": "hi",
-    "tamil": "ta",
-    "telugu": "te",
-    "marathi": "mr",
-    "gujarati": "gu",
-    "kannada": "kn",
-    "malayalam": "ml",
-    "punjabi": "pa",
-    "assamese": "as",
-    "odia": "or",
-    "oriya": "or",
-    "urdu": "ur",
-}
-
-INDIC_LANGUAGE_CONFIG: Dict[str, Dict[str, str]] = {
-    "bengali": {"polyglossia": "bengali", "script": "Bengali", "font": "Noto Serif Bengali", "cmd": "bengalifont"},
-    "bangla": {"polyglossia": "bengali", "script": "Bengali", "font": "Noto Serif Bengali", "cmd": "bengalifont"},
-    "hindi": {"polyglossia": "hindi", "script": "Devanagari", "font": "Noto Serif Devanagari", "cmd": "hindifont"},
-    "tamil": {"polyglossia": "tamil", "script": "Tamil", "font": "Noto Serif Tamil", "cmd": "tamilfont"},
-    "telugu": {"polyglossia": "telugu", "script": "Telugu", "font": "Noto Serif Telugu", "cmd": "telugufont"},
-    "marathi": {"polyglossia": "marathi", "script": "Devanagari", "font": "Noto Serif Devanagari", "cmd": "marathifont"},
-    "gujarati": {"polyglossia": "gujarati", "script": "Gujarati", "font": "Noto Serif Gujarati", "cmd": "gujaratifont"},
-    "kannada": {"polyglossia": "kannada", "script": "Kannada", "font": "Noto Serif Kannada", "cmd": "kannadafont"},
-    "malayalam": {"polyglossia": "malayalam", "script": "Malayalam", "font": "Noto Serif Malayalam", "cmd": "malayalamfont"},
-    "punjabi": {"polyglossia": "punjabi", "script": "Gurmukhi", "font": "Noto Serif Gurmukhi", "cmd": "punjabifont"},
-    "assamese": {"polyglossia": "assamese", "script": "Bengali", "font": "Noto Serif Bengali", "cmd": "assamesefont"},
-    "odia": {"polyglossia": "oriya", "script": "Oriya", "font": "Noto Serif Oriya", "cmd": "odiafont"},
-    "oriya": {"polyglossia": "oriya", "script": "Oriya", "font": "Noto Serif Oriya", "cmd": "oriyafont"},
-    "urdu": {"polyglossia": "urdu", "script": "Arabic", "font": "Noto Nastaliq Urdu", "cmd": "urdufont"},
-}
-
-
-def _find_matching_brace(text: str, open_index: int) -> int:
-    """Returns the index of the closing brace matching the opening brace at open_index."""
-    depth = 0
-    escaped = False
-
-    for idx in range(open_index, len(text)):
-        ch = text[idx]
-        if escaped:
-            escaped = False
-            continue
-        if ch == "\\":
-            escaped = True
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return idx
-    return len(text) - 1
-
-
-def validate_tex_syntax(tex_content: str) -> bool:
-    r"""Validate raw TeX for structural errors before it is returned or compiled.
-
-    This is intentionally strict: it fails on unmatched braces and malformed
-    item-label groups before they reach XeLaTeX with errors like "Too many }'s."
-    or "Argument of \@item has an extra }".
-    """
-    if tex_content is None or not tex_content.strip():
-        raise ValueError("LaTeX source is empty.")
-
-    brace_stack: List[str] = []
-    escaped = False
-    in_comment = False
-    i = 0
-
-    while i < len(tex_content):
-        ch = tex_content[i]
-
-        if in_comment:
-            if ch == "\n":
-                in_comment = False
-            i += 1
-            continue
-
-        if ch == "%":
-            in_comment = True
-            i += 1
-            continue
-
-        if escaped:
-            escaped = False
-            i += 1
-            continue
-
-        if ch == "\\":
-            escaped = True
-            i += 1
-            continue
-
-        if ch == "{":
-            brace_stack.append("{")
-        elif ch == "}":
-            if not brace_stack:
-                raise ValueError(
-                    f"Unmatched closing brace detected in TeX source near: {tex_content[max(0, i - 32): i + 32]!r}"
-                )
-            brace_stack.pop()
-
-        i += 1
-
-    if brace_stack:
-        raise ValueError(f"Unbalanced opening braces remain in TeX source: {len(brace_stack)} unmatched '{{'.")
-
-    return True
-
-
-def sanitize_indic_font_blocks(tex_content: str) -> str:
-    """Forces ASCII labels and numeric markers outside Indic font blocks.
-
-    Noto Serif Bengali (and similar Indic fonts) do not contain Latin glyphs such as
-    A, I, P, Q, R, S, or digits used in option labels. When the model wraps those
-    characters inside an Indic font block, XeLaTeX emits the missing-character warnings
-    and renders them as empty boxes. This sanitizer isolates the Latin fragments so they
-    are rendered with the default Roman font instead of the Indic font.
-    """
-    if not tex_content:
-        return tex_content
-
-    def _sanitize_inner_text(inner: str) -> str:
-        result: List[str] = []
-        i = 0
-        while i < len(inner):
-            ch = inner[i]
-            if ch == "\\":
-                j = i + 1
-                while j < len(inner) and (inner[j].isalpha() or inner[j] == "@"):
-                    j += 1
-                if j > i + 1:
-                    result.append(inner[i:j])
-                    i = j
-                    continue
-                result.append(ch)
-                i += 1
-                continue
-
-            if ch.isalpha() or ch.isdigit():
-                # Preserve native Bengali/Unicode text, but wrap plain Latin fragments
-                # that should not be rendered by the Indic font.
-                if ch.isascii() and (ch.isalpha() or ch.isdigit()):
-                    j = i + 1
-                    while j < len(inner) and (inner[j].isascii() and (inner[j].isalpha() or inner[j].isdigit())):
-                        j += 1
-                    token = inner[i:j]
-                    if re.fullmatch(r"[A-Za-z0-9]+", token):
-                        result.append(r"\textnormal{" + token + "}")
-                        i = j
-                        continue
-                result.append(ch)
-                i += 1
-                continue
-
-            result.append(ch)
-            i += 1
-        return "".join(result)
-
-    def _contains_indic_chars(text: str) -> bool:
-        for ch in text:
-            code = ord(ch)
-            if 0x0900 <= code <= 0x097F or 0x0980 <= code <= 0x09FF:
-                return True
-        return False
-
-    def _wrap_indic_commands(text: str) -> str:
-        result: List[str] = []
-        i = 0
-        while i < len(text):
-            if text.startswith(r"{\bengalifont", i):
-                close_idx = _find_matching_brace(text, i)
-                block = text[i:close_idx + 1]
-                prefix = r"{\bengalifont"
-                inner = block[len(prefix):-1]
-                result.append(prefix + _sanitize_inner_text(inner) + "}")
-                i = close_idx + 1
-                continue
-
-            if text.startswith(r"\bengalifont", i):
-                j = i + len(r"\bengalifont")
-                if j < len(text) and text[j] == "{":
-                    close_idx = _find_matching_brace(text, j)
-                    block = text[i:close_idx + 1]
-                    inner = block[len(r"\bengalifont"):-1]
-                    result.append(r"\bengalifont" + _sanitize_inner_text(inner) + "}")
-                    i = close_idx + 1
-                    continue
-
-            matched = False
-            for cmd in (r"\textbf", r"\textit", r"\emph"):
-                if text.startswith(cmd, i):
-                    open_idx = i + len(cmd)
-                    if open_idx < len(text) and text[open_idx] == "{":
-                        close_idx = _find_matching_brace(text, open_idx)
-                        content = text[open_idx + 1:close_idx]
-                        if _contains_indic_chars(content):
-                            sanitized = _sanitize_inner_text(content)
-                            if r"\bengalifont" in content:
-                                result.append(cmd + "{" + sanitized + "}")
-                            else:
-                                result.append("{\\bengalifont " + cmd + "{" + sanitized + "}}")
-                            i = close_idx + 1
-                            matched = True
-                            break
-            if matched:
-                continue
-            result.append(text[i])
-            i += 1
-        return "".join(result)
-
-    tex_content = re.sub(r"(\\item\[[^\]]*?\})\}\s+", r"\1] ", tex_content)
-    tex_content = _wrap_indic_commands(tex_content)
-    return tex_content
-
-
 def load_file_content(file_path: Optional[Union[Path, str]]) -> str:
     """Reads and returns text content from a Path safely."""
     if not file_path:
@@ -274,6 +93,45 @@ def load_file_content(file_path: Optional[Union[Path, str]]) -> str:
     except Exception as e:
         logger.error(f"Failed to read file {file_path}: {e}")
         return ""
+
+
+def validate_local_image_references(
+    document_text: str,
+    output_dir: Path,
+    image_map: Optional[Dict[str, str]],
+    document_format: str,
+) -> None:
+    """Fail when a PDF document references a source image that is unavailable locally."""
+    if not image_map:
+        return
+
+    if document_format == "html":
+        references = re.findall(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']", document_text, re.IGNORECASE)
+    else:
+        references = re.findall(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", document_text)
+
+    available_names = {Path(name).name for name in image_map}
+    missing = []
+    for reference in references:
+        reference_name = Path(reference).name
+        if reference_name in available_names and not (Path(output_dir) / reference_name).exists():
+            missing.append(reference_name)
+
+    if missing:
+        missing_text = ", ".join(sorted(set(missing)))
+        raise FileNotFoundError(
+            f"PDF output references source image(s) that are not available beside the document: {missing_text}"
+        )
+
+
+def normalize_html_math_source(html_content: str) -> str:
+    """Restore lost backslashes from common escaped TeX commands in HTML output."""
+    html_content = html_content.replace("\f", r"\f")
+    html_content = html_content.replace("\v", r"\v")
+    html_content = html_content.replace("\a", r"\a")
+    html_content = re.sub(r"\r(?=(?:ight|ightarrow|mathrm|text)(?:\W|$))", r"\\r", html_content)
+    html_content = re.sub(r"\t(?=(?:ext|imes|heta|ag|op)(?:\W|$))", r"\\t", html_content)
+    return html_content
 
 
 def format_instruction_profile(profile: Dict[str, Any]) -> str:
@@ -386,7 +244,7 @@ def assemble_prompt_files(
     engine_name = "LaTeX (XeLaTeX)" if pdf_engine == "tex" else "HTML5 (KaTeX)"
     top_contract = (
         f"# SYSTEM INSTRUCTIONS & PIPELINE RULES\n"
-        f"TARGET FORMAT: Complete standalone {engine_name} document. Strict prohibition: NO Moodle XML (<question>, <quiz>).\n"
+        f"TARGET FORMAT: Complete standalone {engine_name} document.\n"
         if output_format == "pdf"
         else "# SYSTEM INSTRUCTIONS & PIPELINE RULES\n"
     )
@@ -408,9 +266,22 @@ def assemble_prompt_files(
             "tags_rules",
             "templates",
         ]
+        if mode == "extract":
+            valid_keys.insert(4, "xml_extraction_rules")
+
+    ordered_names = ["main_prompt", "reasoning_rules"]
+    if output_format == "pdf":
+        ordered_names.append(pdf_rule_key)
+    else:
+        ordered_names.append("xml_rules")
+        if mode == "extract":
+            ordered_names.append("xml_extraction_rules")
+        ordered_names.extend(["tags_rules", "templates"])
+    ordered_names.extend(name for name in rule_files if name not in ordered_names)
 
     seen_rule_paths = set()
-    for name, filepath in rule_files.items():
+    for name in ordered_names:
+        filepath = rule_files.get(name)
         if name not in valid_keys or not filepath:
             continue
         path = Path(filepath)
@@ -422,18 +293,11 @@ def assemble_prompt_files(
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-                if name == "xml_rules" and mode == "extract" and not verify_online:
-                    content = re.sub(
-                        r"\n# Mandatory Online Answer Verification\n.*?(?=\n# Feedback Rules & Reasoning Structure\n)",
-                        "\n",
-                        content,
-                        flags=re.DOTALL,
-                    )
                 content_blocks.append(f"## File: {path.name}\n\n{content}\n\n---\n")
         else:
             logger.warning(f"Prompt file '{filepath}' not found. Skipping.")
 
-    if mode == "extract":
+    if mode == "extract" and output_format != "pdf":
         content_blocks.append("""
 ## CRITICAL EXTRACTION OVERRIDE RULE FOR DIAGRAMS & IMAGES:
 1. DO NOT GENERATE INLINE <svg> CODE IN EXTRACTION MODE!
@@ -449,8 +313,7 @@ def assemble_prompt_files(
 ## CRITICAL LATEX OUTPUT OVERRIDE RULE:
 1. TARGET FORMAT: Output a complete, standalone, compilable LaTeX document starting with `\\documentclass{article}` and ending with `\\end{document}`.
 2. STRICT PROHIBITIONS:
-   - NEVER output Moodle XML tags (`<quiz>`, `<question>`, `<questiontext>`, `<generalfeedback>`, etc.).
-   - NEVER output HTML tags (`<!DOCTYPE html>`, `<html>`, `<p>`, `<div>`, `<hr/>`, `<b>`, `<br/>`).
+    - NEVER output HTML tags (`<!DOCTYPE html>`, `<html>`, `<p>`, `<div>`, `<hr/>`, `<b>`, `<br/>`).
 3. USE NATIVE LATEX:
    - For bold: `\\textbf{...}`
    - For italic: `\\textit{...}`
@@ -464,168 +327,74 @@ def assemble_prompt_files(
 ## CRITICAL HTML5 OUTPUT OVERRIDE RULE:
 1. TARGET FORMAT: Output a complete, standalone, valid HTML5 document starting with `<!DOCTYPE html><html>` and ending with `</html>`.
 2. STRICT PROHIBITIONS:
-   - NEVER output Moodle XML tags (`<quiz>`, `<question>`, `<questiontext>`, `<generalfeedback>`, etc.).
-   - NEVER output LaTeX document preambles (`\\documentclass`, `\\begin{document}`).
+    - NEVER output LaTeX document preambles (`\\documentclass`, `\\begin{document}`).
 3. USE CLEAN HTML5:
    - Include KaTeX and Google Web Fonts in `<head>`.
    - Use `$ ... $` and `$$ ... $$` for math.
+---
+""")
+        if mode == "extract":
+            content_blocks.append(f"""
+## CRITICAL EXTRACTION PDF OVERRIDE RULE:
+1. Preserve source visuals when they are required to understand a question.
+2. In HTML, reference supplied images by their exact attachment filename using relative `<img src=\"FILENAME\" />` paths.
+3. In TeX, reference supplied images by their exact attachment filename using `\\includegraphics{{FILENAME}}`.
+4. Do not synthesize a replacement visual when the supplied source image is needed for faithful extraction.
+5. Keep all extracted questions in source order and include the complete answer key and reasoning required by `reasoning_rules.md`.
+6. Do not invent exam title, subject, duration, marks, class, or other metadata that is not present in the supplied source or runtime parameters.
 ---
 """)
 
     return "\n".join(content_blocks)
 
 
-def load_combined_prompt(
-    main_prompt_path: Optional[Path],
-    xml_rules_path: Optional[Path] = None,
-    tags_rules_path: Optional[Path] = None,
-    templates_path: Optional[Path] = None,
-) -> str:
-    """
-    Combines the primary system prompt (exam profile or question generator) with
-    the core Moodle XML rules, naming/tag rules, and XML reference templates.
-    """
-    parts = []
-
-    # 1. Main Role/Exam/Generator Prompt
-    main_text = load_file_content(main_prompt_path)
-    if main_text:
-        parts.append(main_text)
-
-    # 2. Moodle Core XML Rules
-    xml_rules_text = load_file_content(xml_rules_path)
-    if xml_rules_text:
-        parts.append(f"=== MOODLE XML CORE RULES ===\n{xml_rules_text}")
-
-    # 3. Naming and Tags Rules
-    tags_rules_text = load_file_content(tags_rules_path)
-    if tags_rules_text:
-        parts.append(f"=== NAMING AND TAGS RULES ===\n{tags_rules_text}")
-
-    # 4. Reference XML Templates
-    templates_text = load_file_content(templates_path)
-    if templates_text:
-        parts.append(f"=== MOODLE XML REFERENCE TEMPLATES ===\n{templates_text}")
-
-    return "\n\n".join(parts)
-
-
 def build_language_instructions(
     languages: List[str], output_format: str = "xml", pdf_engine: str = "html"
 ) -> Tuple[str, List[str]]:
-    """
-    Returns:
-      1. Dynamic prompt instructions for Gemini.
-      2. List of XML tags containing strictly separate individual language tags.
-    """
+    """Load format-specific language instructions and return language tags."""
     clean_langs = [l.strip().lower() for l in languages if l.strip()]
     if not clean_langs:
         clean_langs = ["english"]
 
     iso_codes = [LANG_ISO_MAP.get(l, l[:2]) for l in clean_langs]
     lang_tags = [f"lang:{code}" for code in iso_codes]
-
-    # Handle PDF (HTML / LaTeX) document output format
-    if output_format.lower() == "pdf":
-        is_tex = pdf_engine.lower() == "tex"
-
-        if len(clean_langs) == 1 and clean_langs[0] == "english":
-            if is_tex:
-                instruction = (
-                    "=== LANGUAGE & FORMAT LAWS (LaTeX XeLaTeX) ===\n"
-                    "- Output all questions, choices, and statements strictly in English using native LaTeX.\n"
-                    "- DO NOT output HTML tags or Moodle XML tags.\n"
-                )
-            else:
-                instruction = (
-                    "=== LANGUAGE & FORMAT LAWS (HTML5) ===\n"
-                    "- Output all questions, choices, and statements strictly in English using clean HTML5.\n"
-                    "- DO NOT output Moodle XML or <question> tags.\n"
-                )
-            return instruction, lang_tags
-
-        primary_lang = "English"
-        secondary_langs = [l.capitalize() for l in clean_langs if l != "english"]
-        target_secondary = ", ".join(secondary_langs)
-
-        if is_tex:
-            # Generate exact font family setups for the requested secondary languages
-            preamble_font_lines = []
-            font_usage_notes = []
-            for lang in clean_langs:
-                if lang == "english":
-                    continue
-                cfg = INDIC_LANGUAGE_CONFIG.get(lang, {
-                    "polyglossia": lang,
-                    "script": lang.capitalize(),
-                    "font": f"Noto Serif {lang.capitalize()}",
-                    "cmd": f"{lang}font",
-                })
-                preamble_font_lines.append(
-                    f"\\setotherlanguage{{{cfg['polyglossia']}}}\n"
-                    f"\\newfontfamily\\{cfg['cmd']}[Script={cfg['script']}]{{{cfg['font']}}}"
-                )
-                font_usage_notes.append(
-                    f"   - Wrap the translated {lang.capitalize()} text in `{{\\{cfg['cmd']} ...}}`.\n"
-                    f"   - FONT GLYPH SAFETY: `{cfg['font']}` only contains {cfg['script']} glyphs. NEVER wrap Latin letters (e.g. `(A)`, `(B)`, `(C)`, `(D)`, matching labels `P`, `Q`, `R`, `S`) inside `{{\\{cfg['cmd']}}}`. Keep options outside the font block or in math mode `$P-2, Q-4$`."
-                )
-
-            preamble_snippet = "\n".join(preamble_font_lines)
-            notes_snippet = "\n".join(font_usage_notes)
-
-            instruction = (
-                f"=== BILINGUAL LANGUAGE & FORMAT LAWS (LaTeX / XeLaTeX: {primary_lang} + {target_secondary}) ===\n"
-                f"1. PREAMBLE CONFIGURATION FOR TARGET LANGUAGE:\n"
-                f"```latex\n"
-                f"{preamble_snippet}\n"
-                f"```\n"
-                f"2. QUESTION LAYOUT:\n"
-                f"   - For every bilingual question, render the complete English question block first, followed by `\\par\\medskip`, followed by the translated {target_secondary} block.\n"
-                f"   - Each language version must be a self-contained question unit with its own full set of choices (A, B, C, D).\n"
-                f"{notes_snippet}\n"
-                f"3. NATIVE LATEX:\n"
-                f"   - Use `\\textbf{{...}}`, `\\begin{{enumerate}} \\item ... \\end{{enumerate}}`, `\\par\\medskip`.\n"
-                f"   - DO NOT use HTML tags (`<p>`, `<div>`, `<hr/>`, `<br/>`) and DO NOT output Moodle XML tags (`<question>`, `<questiontext>`).\n"
-            )
-        else:
-            instruction = (
-                f"=== BILINGUAL LANGUAGE & FORMAT LAWS (HTML5: {primary_lang} + {target_secondary}) ===\n"
-                f"1. For every bilingual question, provide the complete English question block first, followed by `<hr/>`, followed by the complete {target_secondary} translated block.\n"
-                f"2. Each language version must be a self-contained question unit with its own full set of choices (A, B, C, D).\n"
-                f"3. DO NOT merge English and translated option values into one list.\n"
-                f"4. DO NOT output Moodle XML tags (<question>, <questiontext>, <generalfeedback>, <answer>, etc.).\n"
-            )
-        return instruction, lang_tags
-
-    # Default: Moodle XML format
-    # Case A: Monolingual English
-    if len(clean_langs) == 1 and clean_langs[0] == "english":
-        instruction = (
-            "=== LANGUAGE & FORMAT LAWS ===\n"
-            "- Output all questions, choices, and explanations strictly in English.\n"
-            "- Output only complete <question ...>...</question> nodes.\n"
-            "- Question type must be in the root attribute, e.g. <question type=\"multichoice\">.\n"
-        )
-        return instruction, lang_tags
-
-    # Case B: Bilingual / Multilingual (e.g., English + Bengali)
     primary_lang = "English"
     secondary_langs = [l.capitalize() for l in clean_langs if l != "english"]
     target_secondary = ", ".join(secondary_langs)
+    bilingual = len(secondary_langs) > 0
+    if output_format.lower() == "pdf":
+        section = "Bilingual TeX" if pdf_engine.lower() == "tex" and bilingual else None
+        section = section or ("Bilingual HTML" if bilingual else ("English TeX" if pdf_engine.lower() == "tex" else "English HTML"))
+    else:
+        section = "Bilingual XML" if bilingual else "English XML"
 
-    instruction = (
-        f"=== BILINGUAL LANGUAGE & FORMAT LAWS ({primary_lang} + {target_secondary}) ===\n"
-        f"Generate/Extract every question, choice, and feedback explanation in a STACKED BILINGUAL format:\n"
-        f"1. In <questiontext> and <generalfeedback>, provide the complete text in {primary_lang} first, then immediately follow with the complete translation in {target_secondary}.\n"
-        f"2. CRITICAL GENERALFEEDBACK RULE: <generalfeedback> MUST be 100% bilingual. Every numbered step (Step 1, Step 2, ...) and calculation step MUST appear in {primary_lang} and then be fully translated into {target_secondary}. NEVER leave <generalfeedback> in {primary_lang} only.\n"
-        f"3. Separate the two language versions in both <questiontext> and <generalfeedback> using a clean line break or <hr/> tag.\n"
-        f"4. For choices (<answer>), output only the {primary_lang} option text.\n"
-        f"5. Output only complete <question ...>...</question> nodes.\n"
-        f"6. DO NOT translate mathematical symbols, formulas, chemical equations, or LaTeX variables inside \\(...\\) or \\[...\\] delimiters.\n"
-        f"7. STRICT TAG LAW: Emit ONLY individual language tags (e.g., 'lang:en' and 'lang:{iso_codes[-1]}'). NEVER emit combined tags like 'lang:en_bn'.\n"
-    )
+    preamble_lines = []
+    font_notes = []
+    for lang in clean_langs:
+        if lang == "english":
+            continue
+        cfg = INDIC_LANGUAGE_CONFIG.get(lang, {
+            "polyglossia": lang,
+            "script": lang.capitalize(),
+            "font": f"Noto Serif {lang.capitalize()}",
+            "cmd": f"{lang}font",
+        })
+        preamble_lines.append(
+            f"\\setotherlanguage{{{cfg['polyglossia']}}}\n"
+            f"\\newfontfamily\\{cfg['cmd']}[Script={cfg['script']},AutoFakeBold=true,AutoFakeSlant=true]{{{cfg['font']}}}"
+        )
+        font_notes.append(
+            f"   - Wrap translated {lang.capitalize()} text in `{{\\{cfg['cmd']} ...}}`; keep Latin labels and formulas outside that font block."
+        )
 
-    return instruction, lang_tags
+    return load_prompt_section(
+        LANGUAGE_RULES_PATH,
+        section,
+        primary_lang=primary_lang,
+        target_secondary=target_secondary,
+        preamble_snippet="\n".join(preamble_lines),
+        font_usage_notes="\n".join(font_notes),
+    ), lang_tags
 
 
 def setup_logger(
@@ -667,54 +436,6 @@ def setup_logger(
 
     _configure_logger("academic_content_pipeline")
     _configure_logger("moodle_system")
-
-
-def encode_bytes_to_base64(raw_bytes: bytes) -> str:
-    return base64.b64encode(raw_bytes).decode("utf-8")
-
-
-def render_page_to_image_bytes(
-    page: pymupdf.Page,
-    dpi: int = 200,
-    zoom: float = 1.0,
-    enhance: bool = False
-) -> bytes:
-    """
-    Renders a PyMuPDF page to PNG bytes.
-    Applies an optional zoom matrix and PIL enhancements (contrast/sharpness).
-    """
-    if zoom != 1.0:
-        mat = pymupdf.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, dpi=dpi)
-    else:
-        pix = page.get_pixmap(dpi=dpi)
-
-    img_bytes = pix.tobytes("png")
-
-    if enhance and Image is not None:
-        try:
-            # Load into Pillow
-            img = Image.open(io.BytesIO(img_bytes))
-
-            # Boost Contrast by 50%
-            contrast_enhancer = ImageEnhance.Contrast(img)
-            img = contrast_enhancer.enhance(1.5)
-
-            # Double the Sharpness
-            sharpness_enhancer = ImageEnhance.Sharpness(img)
-            img = sharpness_enhancer.enhance(2.0)
-
-            # Save back to bytes
-            out_io = io.BytesIO()
-            img.save(out_io, format="PNG")
-            img_bytes = out_io.getvalue()
-        except Exception as e:
-            logger.error(f"Image enhancement failed, falling back to original: {e}")
-
-    elif enhance and Image is None:
-        logger.warning("Pillow (PIL) is not installed. Skipping image enhancement. Run `pip install Pillow`.")
-
-    return img_bytes
 
 
 def extract_clean_question_nodes_with_status(raw_text: str) -> Tuple[List[str], Optional[str]]:
@@ -787,107 +508,6 @@ def extract_clean_question_nodes_with_status(raw_text: str) -> Tuple[List[str], 
                 valid_nodes.append(node)
 
     return valid_nodes, last_error
-
-
-# --- PROMPT CACHE MANAGER UTILITIES ---
-
-REGISTRY_FILE = Path(".cache_registry.json")
-
-def _load_registry() -> dict:
-    """Loads the local cache registry file if present."""
-    if REGISTRY_FILE.exists():
-        try:
-            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-def _save_registry(data: dict) -> None:
-    """Saves updated cache mappings to the local JSON registry."""
-    try:
-        with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not save cache registry: {e}")
-
-def get_or_create_prompt_cache(
-    client: genai.Client,
-    prompt_path: Path,
-    prompt_text: str,
-    model_name: str,
-    ttl_seconds: int = 86400,
-    force_refresh: bool = False,
-    enable_code_execution: bool = False,
-) -> Optional[str]:
-    """
-    Returns a valid Gemini CachedContent resource name for the given system prompt.
-    Automatically invalidates and recreates the cache if the local file hash or tools change.
-    """
-    prompt_path = Path(prompt_path)
-
-    # Hash includes code_execution state so changing flags automatically refreshes cache
-    hash_payload = f"{prompt_text}__code_exec={enable_code_execution}"
-    current_hash = hashlib.sha256(hash_payload.encode("utf-8")).hexdigest()
-
-    registry = _load_registry()
-    str_path = str(prompt_path.resolve())
-    cached_info = registry.get(str_path, {})
-
-    old_cache_name = cached_info.get("cache_name")
-    old_hash = cached_info.get("hash")
-
-    needs_recreation = force_refresh or (current_hash != old_hash) or not old_cache_name
-
-    if not needs_recreation and old_cache_name:
-        try:
-            client.caches.get(name=old_cache_name)
-            logger.info(f"⚡ [PROMPT CACHE HIT] Reusing active prompt cache: {old_cache_name}")
-            return old_cache_name
-        except Exception:
-            logger.warning("⚠️ Remote prompt cache expired or deleted. Recreating...")
-            needs_recreation = True
-
-    if old_cache_name:
-        try:
-            logger.info(f"🗑️ Deleting outdated prompt cache: {old_cache_name}")
-            client.caches.delete(name=old_cache_name)
-        except Exception as e:
-            logger.debug(f"Cache cleanup info: {e}")
-
-    safe_display_name = f"prompt-{re.sub(r'[^a-zA-Z0-9_-]', '-', prompt_path.stem)}"
-
-    logger.info(f"📦 [PROMPT CACHE CREATING] Uploading system prompt '{prompt_path.name}' to Gemini Context Cache...")
-
-    tools = None
-    if enable_code_execution:
-        logger.info("🛠️ Enabling Python Code Execution inside Cached Content...")
-        tools = [types.Tool(code_execution=types.ToolCodeExecution())]
-
-    cache_config = types.CreateCachedContentConfig(
-        system_instruction=prompt_text,
-        display_name=safe_display_name,
-        ttl=f"{ttl_seconds}s",
-        tools=tools,
-    )
-
-    try:
-        new_cache = client.caches.create(
-            model=model_name,
-            config=cache_config
-        )
-        registry[str_path] = {
-            "hash": current_hash,
-            "cache_name": new_cache.name,
-            "model": model_name,
-            "code_execution": enable_code_execution,
-        }
-        _save_registry(registry)
-        logger.info(f"✅ System prompt cached successfully! Resource Name: {new_cache.name}")
-        return new_cache.name
-    except Exception as e:
-        logger.error(f"Failed to create prompt cache on Google servers: {e}")
-        return None
 
 
 # =======================================================================
@@ -970,6 +590,7 @@ def compile_html_to_pdf(
     html_content: str, output_pdf_path: Path, image_map: Optional[Dict[str, str]] = None
 ) -> Path:
     """Compiles HTML string to PDF locally via Headless Chrome."""
+    html_content = normalize_html_math_source(html_content)
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
     html_file = output_pdf_path.with_suffix(".html")
     html_file.write_text(html_content, encoding="utf-8")
@@ -983,6 +604,8 @@ def compile_html_to_pdf(
                     shutil.copy2(img_path, dest)
                 except Exception as e:
                     logger.debug(f"Image copy note: {e}")
+
+    validate_local_image_references(html_content, output_pdf_path.parent, image_map, "html")
 
     logger.info(f"Compiling HTML to PDF via Headless Chrome -> {output_pdf_path}...")
     cmd = [
@@ -1025,12 +648,7 @@ def compile_tex_to_pdf(
                 except Exception as e:
                     logger.debug(f"Image copy note: {e}")
 
-    tex_content = sanitize_indic_font_blocks(tex_content)
-    try:
-        validate_tex_syntax(tex_content)
-    except ValueError as exc:
-        logger.error("TeX validation failed before compilation: %s", exc)
-        raise
+    validate_local_image_references(tex_content, output_pdf_path.parent, image_map, "tex")
     tex_file.write_text(tex_content, encoding="utf-8")
 
     logger.info(f"Compiling TeX to PDF via xelatex -> {output_pdf_path}...")

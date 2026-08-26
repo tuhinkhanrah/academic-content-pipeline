@@ -10,10 +10,9 @@ Classes:
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
@@ -25,6 +24,7 @@ try:
         assemble_prompt_files,
         build_language_instructions,
         extract_clean_question_nodes_with_status,
+        load_prompt_template,
         load_file_content,
         fix_and_inject_moodle_xml,
         unique_image_items,
@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
         assemble_prompt_files,
         build_language_instructions,
         extract_clean_question_nodes_with_status,
+        load_prompt_template,
         load_file_content,
         fix_and_inject_moodle_xml,
         unique_image_items,
@@ -45,6 +46,8 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
     )
 
 logger = logging.getLogger("academic_content_pipeline")
+
+PROMPTS_DIR = Path("prompts")
 
 
 def build_paper_metadata(
@@ -195,11 +198,7 @@ def build_question_type_contract(
         if not weights or abs(sum(weights) - 1.0) > 1e-9:
             raise ValueError("Question type weights must sum to 1.0")
 
-    lines = [
-        "### QUESTION TYPE CONTRACT",
-        f"Generate at most {max_questions} questions using only the configured types.",
-        f"Allocation mode: {mode}",
-    ]
+    allocation_lines = []
     for entry, allocation in resolved:
         line = f"- {entry.get('display_name', entry['name'])} ({entry['name']}): {entry['description']}"
         constraints = entry.get("constraints", {})
@@ -209,18 +208,21 @@ def build_question_type_contract(
             line += f" Requested count: {int(allocation.get('count', 0))}."
         elif mode == "weighted":
             line += f" Weight: {float(allocation.get('weight', 0)):g}."
-        lines.append(line)
+        allocation_lines.append(line)
 
     minimum = config.get("minimum", {})
-    if minimum:
-        lines.append(f"Minimum counts: {json.dumps(minimum, sort_keys=True)}.")
-    lines.extend(
-        [
-            "Do not force a type when the source cannot support it; report any substitution.",
-            "Randomize option order independently for every MCQ and vary the correct option position across A-D.",
-        ]
+    minimum_counts = (
+        f"Minimum counts: {json.dumps(minimum, sort_keys=True)}."
+        if minimum
+        else ""
     )
-    return "\n".join(lines)
+    return load_prompt_template(
+        PROMPTS_DIR / "generator" / "question_type_contract.md",
+        max_questions=str(max_questions),
+        allocation_mode=mode,
+        allocations="\n".join(allocation_lines),
+        minimum_counts=minimum_counts,
+    )
 
 
 # =======================================================================
@@ -243,6 +245,8 @@ class QuestionPaperExtractor:
         instruction_page: int = 1,
         verify_online: bool = False,
         rate_limit_delay: float = 4.0,
+        output_format: str = "xml",
+        pdf_engine: str = "html",
         staging_dir: Path = Path("extracted_data"),
     ):
         self.communicator = communicator
@@ -256,6 +260,8 @@ class QuestionPaperExtractor:
         self.instruction_page = instruction_page
         self.verify_online = verify_online
         self.rate_limit_delay = rate_limit_delay
+        self.output_format = output_format.lower()
+        self.pdf_engine = pdf_engine.lower()
         self.staging_dir = Path(staging_dir)
 
     def process_file(self, pdf_path: Path, output_dir: Path) -> Path:
@@ -278,22 +284,24 @@ class QuestionPaperExtractor:
         system_instruction = assemble_prompt_files(
             self.rules_dict,
             mode="extract",
-            output_format="xml",
+            output_format="xml" if self.output_format == "xml" else "pdf",
+            pdf_engine=self.pdf_engine,
             verify_online=self.verify_online,
         )
 
-        lang_instruction, lang_tags = build_language_instructions(self.languages)
-        all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
-        system_instruction += (
-            "\n\n=== EXTRACTION SESSION CONTRACT ===\n"
-            f"{lang_instruction}\n"
-            "Extract only complete questions that conclude on each supplied page.\n"
-            f"Target Standards: {self.standards}\n"
-            "Global Tags:\n"
-            + "\n".join(f"  <tag><text>{tag}</text></tag>" for tag in all_tags)
-            + "\nFor each page turn, output only valid Moodle XML question nodes. "
-            "If no question concludes on that page, return an empty string."
+        lang_instruction, lang_tags = build_language_instructions(
+            self.languages,
+            output_format="xml" if self.output_format == "xml" else "pdf",
+            pdf_engine=self.pdf_engine,
         )
+        all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
+        if self.output_format == "xml":
+            system_instruction += "\n\n" + load_prompt_template(
+                PROMPTS_DIR / "core" / "extraction_contract.md",
+                language_instruction=lang_instruction,
+                standards=self.standards,
+                global_tags="\n".join(f"  <tag><text>{tag}</text></tag>" for tag in all_tags),
+            )
 
         all_questions_xml: List[str] = []
         is_remote_mode = isinstance(self.communicator, RemoteSandboxBackend)
@@ -301,7 +309,7 @@ class QuestionPaperExtractor:
 
         # For interactive context/agent sessions: process sequentially per page to avoid token limits
         # For remote execution mode: send entire document markdown in one single shot to GCS sandbox
-        if pages_to_process and not is_remote_mode:
+        if self.output_format == "xml" and pages_to_process and not is_remote_mode:
             logger.info(f"Processing {len(pages_to_process)} page(s) sequentially (with multi-turn context preservation)...")
             for page_data in pages_to_process:
                 p_num = page_data.page_num
@@ -311,13 +319,11 @@ class QuestionPaperExtractor:
 
                 logger.info(f"\n--- 📄 Processing Page {p_num} ---")
 
-                turn_prompt = (
-                    f"=== PAGE {p_num} EXTRACTION ===\n"
-                    f"Process only this page. Extract questions that conclude on Page {p_num}.\n"
-                    f"Attached Diagram Reference IDs on this page: {list(page_data.images.keys())}\n\n"
-                    f"--- PAGE {p_num} OCR MARKDOWN ---\n"
-                    f"{page_data.markdown}\n\n"
-                    "For diagrams, use the attached reference IDs and embed them according to the session contract."
+                turn_prompt = load_prompt_template(
+                    PROMPTS_DIR / "core" / "extraction_page_turn.md",
+                    page_number=str(p_num),
+                    image_ids=str(list(page_data.images.keys())),
+                    ocr_markdown=page_data.markdown,
                 )
 
                 turn_contents: List[Any] = [turn_prompt]
@@ -350,6 +356,39 @@ class QuestionPaperExtractor:
                 if self.rate_limit_delay > 0:
                     time.sleep(self.rate_limit_delay)
         else:
+            if self.output_format == "pdf":
+                prompt_text = load_prompt_template(
+                    PROMPTS_DIR / "extractor" / "extraction_request.md",
+                    ocr_content=ocr_result.full_markdown,
+                    languages=", ".join(self.languages),
+                    standards=self.standards,
+                    global_tags=", ".join(all_tags),
+                    image_ids=str(list(ocr_result.all_images.keys())),
+                    language_instruction=lang_instruction,
+                )
+                contents: List[Any] = [prompt_text]
+                for img_name, filepath in unique_image_items(ocr_result.all_images):
+                    contents.append(f"Diagram reference ID: {img_name}")
+                    try:
+                        contents.append(Image.open(filepath))
+                    except Exception:
+                        pass
+
+                output_stem = pdf_path.stem
+                output_extension = "tex" if self.pdf_engine == "tex" else "html"
+                raw_output = self.communicator.generate(
+                    system_instruction=system_instruction,
+                    contents=contents,
+                    output_filename=f"{output_stem}_extracted.{output_extension}",
+                    prompt_snapshot_path=output_dir / f"{output_stem}_extraction_prompt.md",
+                )
+                return OutputRenderer("pdf", self.pdf_engine).render(
+                    raw_output,
+                    output_dir,
+                    f"{output_stem}_extracted",
+                    ocr_result.all_images,
+                )
+
             # Single-blob processing for Remote Agent Sandbox
             logger.info("Sending full document OCR Markdown in a single payload for remote sandbox execution...")
             prompt_text = (
@@ -526,8 +565,6 @@ class QuestionGenerator:
         )
         all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
 
-        format_instruction = self.renderer.format_instruction()
-
         duration_line = ""
         if paper_metadata is None and self.output_format == "pdf" and self.exam_duration_minutes is not None:
             duration_line = f"- Exam Duration: {self.exam_duration_minutes} minutes\n"
@@ -539,22 +576,20 @@ class QuestionGenerator:
                 f"- Paper Title: {paper_spec.get('paper_title', input_file.stem)}\n\n"
                 f"{PaperGenerator._format_paper_metadata(paper_metadata)}\n\n"
             )
-        prompt_text = (
-            f"### Chapter Content Markdown:\n\n{markdown_text}\n\n"
-            f"{paper_header}"
-            f"{question_type_contract}\n\n"
-            f"### Generation Constraints:\n"
-            f"- Number of Questions: {generation_question_count}\n"
-            f"- Difficulty Breakdown: {self.difficulty_mix}\n"
-            f"- Target Languages: {', '.join(self.languages)}\n"
-            f"- Target Standards: {self.standards}\n"
-            f"- Global Tags: {', '.join(all_tags)}\n"
-            f"- Output Format: {self.output_format.upper()}\n"
-            f"- PDF Engine (if applicable): {self.pdf_engine.upper()}\n"
-            f"{duration_line}"
-            f"\n{lang_instruction}\n"
-            f"{format_instruction}\n"
-            f"Synthesize high quality calibrated questions based strictly on the chapter content."
+        prompt_text = load_prompt_template(
+            PROMPTS_DIR / "generator" / "generation_request.md",
+            chapter_content=markdown_text,
+            paper_header=paper_header,
+            question_type_contract=question_type_contract,
+            question_count=str(generation_question_count),
+            difficulty_mix=self.difficulty_mix,
+            languages=", ".join(self.languages),
+            standards=self.standards,
+            global_tags=", ".join(all_tags),
+            output_format=self.output_format.upper(),
+            pdf_engine=self.pdf_engine.upper(),
+            duration_line=duration_line,
+            language_instruction=lang_instruction,
         )
 
         contents: List[Any] = [prompt_text]
@@ -630,39 +665,21 @@ class PaperGenerator:
     """Synthesizes complete mock exam papers or question banks from syllabi & specs."""
 
     @staticmethod
-    def _build_paper_metadata(
-        spec_data: Dict[str, Any],
-        subjects: List[Dict[str, Any]],
-        duration_override: Optional[int],
-    ) -> Dict[str, Any]:
-        """Backward-compatible wrapper around the shared metadata builder."""
-        return build_paper_metadata(spec_data, subjects, duration_override)
-
-    @staticmethod
     def _format_paper_metadata(metadata: Dict[str, Any]) -> str:
-        """Format normalized metadata as an explicit AI generation contract."""
-        lines = [
-            "### PAPER HEADER CONTRACT",
-            "The following values are authoritative. Do not omit, change, or invent them.",
-            (
-                f"- Time Allowed: {metadata['duration_minutes']} minutes"
-                if metadata["duration_minutes"] is not None
-                else "- Time Allowed: Not specified"
-            ),
-            f"- Total Marks: {metadata['total_marks']:g}",
-            "- Candidate Fields: " + ", ".join(metadata["header_fields"].keys()),
-            "",
-            "### EXAMINATION INSTRUCTIONS",
-        ]
+        """Render normalized metadata using the shared paper contract template."""
+        time_allowed = (
+            f"{metadata['duration_minutes']} minutes"
+            if metadata["duration_minutes"] is not None
+            else "Not specified"
+        )
         instructions = metadata["instructions"] or [
             "Answer each question according to the instructions printed in the paper.",
             "Select the best answer for every multiple-choice question.",
         ]
-        lines.extend(
-            f"{index}. {instruction}"
-            for index, instruction in enumerate(instructions, 1)
+        instruction_lines = "\n".join(
+            f"{index}. {instruction}" for index, instruction in enumerate(instructions, 1)
         )
-        lines.extend(["", "### MARKING SCHEME"])
+        marking_lines = []
         for section in metadata["section_totals"]:
             line = (
                 f"- {section['name']}: {section['questions']} questions x "
@@ -670,16 +687,15 @@ class PaperGenerator:
             )
             if section["negative_marks"] is not None:
                 line += f"; negative marking: {section['negative_marks']}"
-            lines.append(line)
-        lines.extend(
-            [
-                "",
-                "### PAPER HEADER OUTPUT REQUIREMENT",
-                "For PDF output, render the exam name, paper title when provided, time allowed, total marks, candidate fields, and examination instructions before the first question.",
-                "Keep the header visually separate from all questions, solutions, and the final answer key.",
-            ]
+            marking_lines.append(line)
+        return load_prompt_template(
+            PROMPTS_DIR / "generator" / "paper_metadata_contract.md",
+            time_allowed=time_allowed,
+            total_marks=f"{metadata['total_marks']:g}",
+            candidate_fields=", ".join(metadata["header_fields"].keys()),
+            instructions=instruction_lines,
+            marking_scheme="\n".join(marking_lines),
         )
-        return "\n".join(lines)
 
     def __init__(
         self,
@@ -766,12 +782,15 @@ class PaperGenerator:
                 logger.warning(f"  ⚠️ Syllabus file '{s_file}' not found.")
 
             syllabus_blocks.append(
-                f"### SUBJECT: {subj_name.upper()}\n"
-                f"- Total Questions Required: {total_qs}\n"
-                f"Syllabus Scope:\n{content}\n"
+                load_prompt_template(
+                    PROMPTS_DIR / "generator" / "subject_scope.md",
+                    subject_name=subj_name.upper(),
+                    question_count=str(total_qs),
+                    syllabus_content=content,
+                )
             )
 
-        all_syllabi_text = "\n" + "=" * 40 + "\n\n".join(syllabus_blocks)
+        all_syllabi_text = ("\n" + "=" * 40 + "\n").join(syllabus_blocks)
 
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
@@ -786,27 +805,23 @@ class PaperGenerator:
         )
         all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
 
-        format_instruction = self.renderer.format_instruction()
-
         # 3. Build turn content
         paper_header = ""
         if self.output_format == "pdf":
             paper_header = f"- Paper Title: {spec_data.get('paper_title', exam_name)}\n\n{self._format_paper_metadata(metadata)}\n\n"
-        prompt_text = (
-            f"### Exam Spec & Combined Syllabi Scope:\n{all_syllabi_text}\n\n"
-            f"{paper_header}"
-            f"{question_type_contract}\n\n"
-            f"### Global Spec Constraints:\n"
-            f"- Exam Name: {exam_name}\n"
-            f"- Target Standards: {self.standards}\n"
-            f"- Target Languages: {', '.join(self.languages)}\n"
-            f"- Difficulty Breakdown: {self.difficulty_mix}\n"
-            f"- Global Tags: {', '.join(all_tags)}\n"
-            f"- Output Format: {self.output_format.upper()}\n"
-            f"- PDF Engine: {self.pdf_engine.upper()}\n"
-            f"\n{lang_instruction}\n"
-            f"{format_instruction}\n"
-            f"Synthesize the complete exam paper adhering strictly to the spec."
+        prompt_text = load_prompt_template(
+            PROMPTS_DIR / "generator" / "paper_request.md",
+            syllabi_text=all_syllabi_text,
+            paper_header=paper_header,
+            question_type_contract=question_type_contract,
+            exam_name=exam_name,
+            standards=self.standards,
+            languages=", ".join(self.languages),
+            difficulty_mix=self.difficulty_mix,
+            global_tags=", ".join(all_tags),
+            output_format=self.output_format.upper(),
+            pdf_engine=self.pdf_engine.upper(),
+            language_instruction=lang_instruction,
         )
 
         contents: List[Any] = [prompt_text]
