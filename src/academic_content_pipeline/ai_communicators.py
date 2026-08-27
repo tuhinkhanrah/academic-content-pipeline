@@ -404,7 +404,7 @@ with open('/workspace/{output_filename}', 'rb') as f:
     data = f.read()
 resp = requests.post(
     '{bucket_upload_url}',
-    headers={{'Content-Type': 'text/plain', 'Authorization': 'Bearer {gcp_token}'}},
+    headers={{'Content-Type': 'text/plain', 'Cache-Control': 'no-cache, no-store', 'Authorization': 'Bearer {gcp_token}'}},
     data=data
 )
 print('GCS Status:', resp.status_code)

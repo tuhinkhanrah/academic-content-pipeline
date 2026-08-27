@@ -42,3 +42,6 @@ Generate every question, choice, and feedback explanation in a stacked bilingual
 3. Each language version must be a self-contained question unit with its own full set of choices.
 {{font_usage_notes}}
 4. Use native LaTeX and do not use HTML document tags.
+*** CRITICAL BILINGUAL WARNING ***
+EVERY single English word, acronym, label, or unit inside the {{target_secondary}} block MUST be wrapped in \textenglish{...}.
+Do NOT use \text{...} for subscripts or units in math mode; use \mathrm{...} instead!

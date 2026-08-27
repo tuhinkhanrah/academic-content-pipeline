@@ -175,6 +175,7 @@ class MistralOCREngine:
             pages_data: List[OCRPageData] = []
             start_page_offset = page_range[0] if (page_range and len(page_range) >= 1) else 1
 
+            image_counter = 0
             for page_idx, page in enumerate(ocr_response.pages):
                 current_page_num = start_page_offset + page_idx
                 page_markdown = page.markdown or ""
@@ -196,6 +197,7 @@ class MistralOCREngine:
                     # Also register alias without extension
                     extracted_images[clean_id] = file_path
                     page_images[clean_id] = file_path
+                    image_counter += 1
 
                 pages_data.append(OCRPageData(
                     page_num=current_page_num,
@@ -206,7 +208,7 @@ class MistralOCREngine:
             if extracted_images and enhance:
                 self.enhance_extracted_images(img_output_dir)
 
-            logger.info(f"Mistral OCR extracted {len(extracted_images)} image(s) across {len(pages_data)} page(s).")
+            logger.info(f"Mistral OCR extracted {image_counter} image(s) across {len(pages_data)} page(s).")
             return OCRResult(full_markdown.strip(), extracted_images, pages_data)
 
         finally:
