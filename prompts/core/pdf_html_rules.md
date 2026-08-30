@@ -49,9 +49,9 @@ You are an academic typesetter. Produce a clean, single-file UTF-8 HTML paper (`
     </script>
     ```
 
-## II. GRAPHICS & MANDATORY SYNTHETIC SVG RULE
+## II. GRAPHICS & GENERATED SVG RULE
 
-The following synthetic-graphics rules apply to generated-question and generated-paper tasks. Extraction-to-PDF tasks use the source-visual exception in the extraction override below.
+The following generated-graphics rules apply to generated-question and generated-paper tasks. Extraction-to-PDF tasks use the source-visual exception in the extraction override below.
 
 - **Rule A: Mandatory Native Inline SVGs for ALL Subjects:**
   - ALL visual assets—including mathematical coordinate axes, geometric figures, physics vector diagrams, electrical circuits, ray optics, chemical structural formulas, reaction mechanisms, biological cellular structures, anatomical schematics, and organelle representations—MUST be generated from scratch as native inline `<svg>` elements within the HTML body.
@@ -60,7 +60,7 @@ The following synthetic-graphics rules apply to generated-question and generated
 - **Rule B: STRICT PROHIBITION of Extracted/External Images for Generated PDFs:**
   - NEVER link, embed, or reference extracted images from textbooks, chapters, or context attachments (`img-X.jpeg`, `.png`, `.jpg`, `.webp`).
   - DO NOT write `<img>` tags pointing to local raster files or use LaTeX `\includegraphics{}` directives.
-  - If a question requires a visual reference, synthesize a clean, accurately labeled vector schematic in pure SVG code representing the core concept.
+  - If a question requires a visual reference, generate a clean, accurately labeled vector schematic in pure SVG code representing the core concept.
 
 ## III. WORKFLOW
 
@@ -70,7 +70,7 @@ Write the generated markup into `exam_paper.html` inside the sandbox workspace, 
 
 - For extraction tasks, preserve every source diagram or image required to understand an extracted question.
 - Use the exact supplied image filename in a relative HTML `<img src="FILENAME" />` reference.
-- Do not synthesize a replacement SVG for a source-paper visual.
+- Do not generate a replacement SVG for a source-paper visual.
 - The local pipeline copies the supplied image files beside the generated HTML before Chrome compilation.
 
 ## V. REASONING AND SOLUTION RENDERING

@@ -145,7 +145,7 @@ When generating or translating exam documents into target Indic languages, dynam
 
 ## IV. Graphics
 
-The synthetic-graphics requirements below apply to generated-question and generated-paper tasks. Extraction-to-PDF tasks use the source-visual exception in the extraction override below.
+The generated-graphics requirements below apply to generated-question and generated-paper tasks. Extraction-to-PDF tasks use the source-visual exception in the extraction override below.
 
 - **Diagram MCQ selection rule:** when generating a chapter set or mock paper, include at least one diagram-based MCQ if the source or syllabus contains a diagram-suitable concept, the selected exam format permits it, and the available rendering tools can produce it accurately. For a mock paper, apply this independently to each subject with suitable source content. Do not force a diagram question when the source does not support one, the question cap leaves no room, or a faithful diagram cannot be produced.
 - **SVG source default:** for generated circuits, graphs, ray diagrams, geometry, force vectors, simple chemical structures, biological cellular structures, anatomical schematics, and organelles, create an SVG source with a correct `viewBox` and padding. Use TikZ only when it is substantially simpler or more reliable for the required mathematical diagram.

@@ -35,7 +35,7 @@ try:
         QuestionPaperExtractor,
     )
     from .mistral_ocr import MistralOCREngine
-    from .pipeline_utils import load_and_merge_config, setup_logger
+    from .pipeline_utils import setup_logger
 except ImportError:  # pragma: no cover - fallback for direct script execution
     from ai_communicators import (
         AgentSessionBackend,
@@ -49,14 +49,13 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
         QuestionPaperExtractor,
     )
     from mistral_ocr import MistralOCREngine
-    from pipeline_utils import load_and_merge_config, setup_logger
+    from pipeline_utils import setup_logger
 
 logger = logging.getLogger("academic_content_pipeline")
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
     """Adds shared options across all subcommands."""
-    parser.add_argument("--config", type=Path, default=None, help="Path to optional JSON configuration file.")
     parser.add_argument("--languages", default="english", help="Target languages (e.g. english,bengali,hindi).")
     parser.add_argument("--standards", default="general", help="Target standards (e.g. neet_ug, jee_main).")
     parser.add_argument("--tags", default="", help="Global tags (e.g. year:2026,source:allen).")
@@ -85,7 +84,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.json", help="MCQ type registry JSON file.")
 
     # Communicator specific tuning
-    parser.add_argument("--model-name", default="gemini-3.5-flash", help="Gemini model name.")
+    parser.add_argument("--model-name", default="gemini-3.7-flash", help="Gemini model name.")
     parser.add_argument("--agent-name", default="antigravity-preview-05-2026", help="Agent identifier.")
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
@@ -226,12 +225,6 @@ def main():
     else:
         mode = getattr(args, "mode", "context")
         task = args.top_command
-
-    # Merge config file if provided
-    config_dict = load_and_merge_config(vars(args), getattr(args, "config", None))
-    for k, v in config_dict.items():
-        if getattr(args, k, None) is None or getattr(args, k, None) == parser.get_default(k):
-            setattr(args, k, v)
 
     # Setup Logging
     setup_logger(args.log_file, verbose=args.verbose)

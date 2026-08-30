@@ -11,6 +11,7 @@ Classes:
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,29 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
 logger = logging.getLogger("academic_content_pipeline")
 
 PROMPTS_DIR = Path("prompts")
+
+
+def find_existing_output(output_dir: Path, stem: str, output_format: str) -> Optional[Path]:
+    """Return an existing non-empty generated artifact for the same source file, if any."""
+    if output_format == "xml":
+        candidates = [
+            output_dir / f"{stem}.xml",
+        ]
+    else:
+        candidates = [
+            output_dir / f"{stem}.pdf",
+        ]
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def build_generated_output_stem(stem: str) -> str:
+    """Create a versioned output stem for generation tasks to allow multiple variants."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:-3]
+    return f"{stem}_{timestamp}"
 
 
 def build_paper_metadata(
@@ -270,6 +294,11 @@ class QuestionPaperExtractor:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        existing_output = find_existing_output(output_dir, pdf_path.stem, self.output_format)
+        if existing_output is not None:
+            logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
+            return existing_output
+
         logger.info(f"\n{'='*60}\n📄 [EXTRACT] Processing: {pdf_path.name}\n{'='*60}")
         img_output_dir = self.staging_dir / pdf_path.stem / "images"
 
@@ -417,7 +446,7 @@ class QuestionPaperExtractor:
             raw_output = self.communicator.generate(
                 system_instruction=system_instruction,
                 contents=contents,
-                output_filename=f"{pdf_path.stem}_moodle.xml",
+                output_filename=f"{pdf_path.stem}.xml",
                 prompt_snapshot_path=output_dir / f"{pdf_path.stem}_prompt.md",
             )
             valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
@@ -431,7 +460,7 @@ class QuestionPaperExtractor:
         )
 
         final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
-        output_filepath = output_dir / f"{pdf_path.stem}_moodle.xml"
+        output_filepath = output_dir / f"{pdf_path.stem}.xml"
         output_filepath.write_text(final_xml, encoding="utf-8")
 
         logger.info(f"✅ Extracted {len(all_questions_xml)} total question(s) -> {output_filepath}")
@@ -503,7 +532,8 @@ class QuestionGenerator:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()})\n{'='*60}")
+        generation_stem = build_generated_output_stem(input_file.stem)
+        logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}")
 
         paper_spec: Dict[str, Any] = {}
         if self.spec_path is not None:
@@ -602,11 +632,11 @@ class QuestionGenerator:
 
         ext = "pdf" if self.output_format == "pdf" else "xml"
         intermediate_ext = "tex" if self.pdf_engine == "tex" else "html"
-        output_artifact_name = f"{input_file.stem}_synthetic.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
+        output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
         write_prompt_snapshot(
-            output_dir / f"{input_file.stem}_synthetic_prompt.md",
+            output_dir / f"{generation_stem}_prompt.md",
             system_instruction,
             contents,
         )
@@ -614,7 +644,7 @@ class QuestionGenerator:
             system_instruction=system_instruction,
             contents=contents,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=output_dir / f"{input_file.stem}_synthetic_prompt.md",
+            prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
         )
 
         # 5. Render the generated artifact
@@ -622,19 +652,19 @@ class QuestionGenerator:
             final_pdf_path = self.renderer.render(
                 raw_output,
                 output_dir,
-                f"{input_file.stem}_synthetic",
+                generation_stem,
                 image_map,
             )
-            logger.info(f"✨ Compiled Synthetic PDF to: {final_pdf_path}")
+            logger.info(f"✨ Compiled generated PDF to: {final_pdf_path}")
             return final_pdf_path
         else:
             final_xml_path = self.renderer.render(
                 raw_output,
                 output_dir,
-                f"{input_file.stem}_synthetic",
+                generation_stem,
                 image_map,
             )
-            logger.info(f"✅ Saved Synthetic Moodle XML to: {final_xml_path}")
+            logger.info(f"✅ Saved generated Moodle XML to: {final_xml_path}")
             return final_xml_path
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
@@ -734,6 +764,16 @@ class PaperGenerator:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        exam_name = spec_path.stem.upper() if spec_path.suffix.lower() != ".json" else "MOCK_EXAM"
+        if spec_path.suffix.lower() == ".json":
+            try:
+                spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+                exam_name = spec_data.get("exam_name", exam_name)
+            except Exception:
+                pass
+        output_stem = f"mock_{exam_name.lower()}_bank" if self.output_format == "xml" else f"mock_{exam_name.lower()}_paper"
+        generation_stem = build_generated_output_stem(output_stem)
+
         if not spec_path.exists():
             raise FileNotFoundError(f"Spec file not found: {spec_path}")
 
@@ -827,11 +867,11 @@ class PaperGenerator:
         contents: List[Any] = [prompt_text]
 
         intermediate_ext = "tex" if self.pdf_engine == "tex" else "html"
-        output_artifact_name = f"mock_{exam_name.lower()}_bank.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
+        output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
         write_prompt_snapshot(
-            output_dir / f"mock_{exam_name.lower()}_prompt.md",
+            output_dir / f"{generation_stem}_prompt.md",
             system_instruction,
             contents,
         )
@@ -839,7 +879,7 @@ class PaperGenerator:
             system_instruction=system_instruction,
             contents=contents,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=output_dir / f"mock_{exam_name.lower()}_prompt.md",
+            prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
         )
 
         # 5. Render the generated artifact
@@ -847,7 +887,7 @@ class PaperGenerator:
             final_pdf_path = self.renderer.render(
                 raw_output,
                 output_dir,
-                f"mock_{exam_name.lower()}_paper",
+                generation_stem,
             )
             logger.info(f"✨ Compiled Mock Exam PDF to: {final_pdf_path}")
             return final_pdf_path
@@ -855,7 +895,7 @@ class PaperGenerator:
             final_xml_path = self.renderer.render(
                 raw_output,
                 output_dir,
-                f"mock_{exam_name.lower()}_bank",
+                generation_stem,
             )
             logger.info(f"✅ Saved Mock Exam Moodle XML to: {final_xml_path}")
             return final_xml_path

@@ -22,7 +22,7 @@ Construct the question name dynamically using **ONLY** the available metadata to
   * Name: `NEET_PHYSICS_2026_THERMODYNAMICS_MCQ_Q05 - Work done during an isothermal expansion process`
 
 * **When Section, Chapter, and Year are Missing:**
-  * Name: `NEET_BIOLOGY_MCQ_Q01 - Main function of chloroplast in plant cells`  
+  * Name: `NEET_BIOLOGY_MCQ_Q01 - Main function of chloroplast in plant cells`
 
 # Tag Schema Rules
 - Embed taxonomy tags inside a single `<tags>` block placed directly before `</question>`.
@@ -30,6 +30,10 @@ Construct the question name dynamically using **ONLY** the available metadata to
   - standard (MANDATORY)
   - year
   - shift
+  - date
+  - booklet
+  - code
+  - slot
   - lang
   - subject
   - section
@@ -49,7 +53,7 @@ Construct the question name dynamically using **ONLY** the available metadata to
 - Tag values must be lowercase `snake_case` (except numeric year).
 
 ## Mandatory Tag Formatting Laws
-- **CRITICAL:** EVERY single tag MUST follow the `key:value` format. 
+- **CRITICAL:** EVERY single tag MUST follow the `key:value` format.
 - **FORBIDDEN:** NEVER output raw values like `jee_main` or `mathematics`. You MUST output `standard:jee_main` and `subject:mathematics`.
 - Tag keys must be lowercase.
 - Tag values must be lowercase `snake_case` (except numeric year).

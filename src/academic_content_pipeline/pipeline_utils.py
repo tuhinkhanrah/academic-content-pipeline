@@ -663,21 +663,3 @@ def compile_tex_to_pdf(
     return output_pdf_path
 
 
-def load_and_merge_config(cli_args_dict: Dict[str, Any], config_file_path: Optional[Path]) -> Dict[str, Any]:
-    """
-    Merges configuration with precedence:
-      Explicit CLI Argument (not None) --> JSON Config File --> Defaults
-    """
-    merged = {}
-    if config_file_path and Path(config_file_path).exists():
-        try:
-            with open(config_file_path, "r", encoding="utf-8") as f:
-                merged = json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to read config file {config_file_path}: {e}")
-
-    for k, v in cli_args_dict.items():
-        if v is not None:
-            merged[k] = v
-
-    return merged

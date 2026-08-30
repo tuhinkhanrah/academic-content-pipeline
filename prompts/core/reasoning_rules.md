@@ -13,11 +13,11 @@
 
 ## Numerical, Algebraic, and Diagram Questions
 Use these five stages in order:
-1. **Data Inventory and Constraints**: List every given value, symbol, label, unit, condition, and constraint. For a diagram, describe the layout being interpreted.
-2. **Model and Sign Conventions**: State the physical or mathematical model, assumptions, directions, signs, reference points, and diagram interpretation.
-3. **Governing Relations**: Write every equation, formula, theorem, or principle used.
-4. **Micro-Step Solution**: Show substitutions and transformations line by line. Include units and signs. Do not skip algebraic logic or intermediate values.
-5. **Sanity Check and Final Conclusion**: Check units, bounds, signs, limiting behavior, or physical plausibility, then state the final answer clearly.
+1. **Given Data and Conditions**: List every given value, symbol, label, unit, condition, and constraint. For a diagram, describe the layout being interpreted.
+2. **Assumptions and Sign Conventions**: State the physical or mathematical model, assumptions, directions, signs, reference points, and diagram interpretation.
+3. **Relevant Formulae and Principles**: Write every equation, formula, theorem, or principle used.
+4. **Step-by-Step Working**: Show substitutions and transformations line by line. Include units and signs. Do not skip algebraic logic or intermediate values.
+5. **Check and Final Answer**: Check units, bounds, signs, limiting behavior, or physical plausibility, then state the final answer clearly.
 
 ## Conceptual and Qualitative Questions
 - Use sequential steps such as Conceptual Principle, Evaluation, Application, and Final Conclusion as appropriate.

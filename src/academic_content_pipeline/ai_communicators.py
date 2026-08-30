@@ -32,7 +32,7 @@ class BaseAICommunicator(ABC):
     def __init__(
         self,
         client: Optional[genai.Client] = None,
-        model_name: str = "gemini-3.5-flash",
+        model_name: str = "gemini-3.7-flash",
         temperature: float = 0.1,
         verbose: bool = False,
     ):
@@ -77,7 +77,7 @@ class ContextChatBackend(BaseAICommunicator):
     def __init__(
         self,
         client: Optional[genai.Client] = None,
-        model_name: str = "gemini-3.5-flash",
+        model_name: str = "gemini-3.7-flash",
         temperature: float = 0.1,
         memory_span: int = 3,
         attempt_limit: int = 5,
@@ -174,7 +174,7 @@ class AgentSessionBackend(BaseAICommunicator):
         client: Optional[genai.Client] = None,
         agent_name: str = "antigravity-preview-05-2026",
         agent_type: str = "antigravity",
-        model_name: str = "gemini-3.6-flash",
+        model_name: str = "gemini-3.7-flash",
         attempt_limit: int = 5,
         retry_delay: float = 10.0,
         context_reset_interval: int = 7,
