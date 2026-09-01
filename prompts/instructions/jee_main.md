@@ -6,6 +6,7 @@
 - Multiple Choice Questions (MCQs)
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 # Mathematics Section B
 - Number of Questions: 5
@@ -15,6 +16,7 @@
 - Numerical Value Questions
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 # Physics Section A
 - Number of Questions: 20
@@ -24,6 +26,7 @@
 - Multiple Choice Questions (MCQs)
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 # Physics Section B
 - Number of Questions: 5
@@ -33,6 +36,7 @@
 - Numerical Value Questions
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 # Chemistry Section A
 - Number of Questions: 20
@@ -42,6 +46,7 @@
 - Multiple Choice Questions (MCQs)
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 # Chemistry Section B
 - Number of Questions: 5
@@ -51,3 +56,4 @@
 - Numerical Value Questions
 - Each correct answer is awarded +4 marks
 - Each incorrect answer results in −1 mark
+- Defaultgrade : 4.0000000, penalty: 0.2500000

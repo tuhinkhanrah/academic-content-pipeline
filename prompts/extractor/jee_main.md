@@ -15,10 +15,14 @@ Act as an expert OCR transcription assistant specialized in NTA / JEE Main exami
 # JEE Main Structure
 - Section A: single-correct MCQ (+4 / -1)
   - one correct option
+  - Defaultgrade : 4.0000000, penalty: 0.2500000
 
 - Section B: numerical (+4 / -1)
   - one numerical answer with suitable tolerance
+  - Defaultgrade : 4.0000000, penalty: 0.2500000
 
 Fallback when section metadata is absent:
 - MCQ: one correct option, +4 / -1
+  - Defaultgrade : 4.0000000, penalty: 0.2500000
 - Numerical: one answer, +4 / -1
+  - Defaultgrade : 4.0000000, penalty: 0.2500000

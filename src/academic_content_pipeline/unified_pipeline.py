@@ -89,6 +89,8 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
     parser.add_argument("--retry-limit", type=int, default=5, help="Max retry attempts per page on API/quota error.")
+    parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes the entire document in one batch.")
+    parser.add_argument("--force", action="store_true", help="Re-run extraction even if a non-empty target output already exists.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
 
 
@@ -328,6 +330,8 @@ def main():
                 rate_limit_delay=args.rate_limit_delay,
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
+                batch_size=getattr(args, "batch_size", 0),
+                force_overwrite=getattr(args, "force", False),
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)

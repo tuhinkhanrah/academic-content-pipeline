@@ -22,7 +22,7 @@ Applies to standard direct-answer, "best answer", and negative/"NOT"/"EXCEPT" ph
   <questiontext format="html"><text><![CDATA[<p>QUESTION</p>]]></text></questiontext>
   <generalfeedback format="html"><text><![CDATA[<p>EXPLANATION</p>]]></text></generalfeedback>
   <defaultgrade>1.0000000</defaultgrade>
-  <penalty>0.3333333</penalty>
+  <penalty>0.2500000</penalty>
   <hidden>0</hidden>
   <single>true</single>
   <shuffleanswers>true</shuffleanswers>
@@ -54,7 +54,7 @@ Fixed 4-option pattern — always use exactly these option texts in this order:
   ]]></text></questiontext>
   <generalfeedback format="html"><text><![CDATA[<p>EXPLANATION</p>]]></text></generalfeedback>
   <defaultgrade>1.0000000</defaultgrade>
-  <penalty>0.3333333</penalty>
+  <penalty>0.2500000</penalty>
   <single>true</single>
   <shuffleanswers>false</shuffleanswers>
   <answernumbering>abc</answernumbering>
@@ -90,7 +90,7 @@ Use the Section 2 skeleton; put an HTML `<table>` of Column I/II pairs in `quest
   <questiontext format="html"><text><![CDATA[<p>QUESTION</p>]]></text></questiontext>
   <generalfeedback format="html"><text><![CDATA[<p>EXPLANATION</p>]]></text></generalfeedback>
   <defaultgrade>1.0000000</defaultgrade>
-  <penalty>0.3333333</penalty>
+  <penalty>0.2500000</penalty>
   <answer fraction="100" format="moodle_auto_format">
     <text>NUMERIC_ANSWER</text>
     <tolerance>0.5</tolerance>

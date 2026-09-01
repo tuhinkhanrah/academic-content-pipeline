@@ -16,14 +16,142 @@ import time
 import logging
 import subprocess
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 from google import genai
 from google.genai import types
 
 logger = logging.getLogger("academic_content_pipeline")
+
+
+@dataclass
+class ImageAttachment:
+    """Represents an isolated diagram or image attachment for a prompt batch."""
+
+    reference_id: str
+    source: Any  # Path, PIL.Image.Image, or str file path
+    mime_type: str = "image/png"
+
+    def to_pil_image(self) -> Optional[Image.Image]:
+        if isinstance(self.source, Image.Image):
+            return self.source
+        elif isinstance(self.source, (str, Path)):
+            p = Path(self.source)
+            if p.exists():
+                try:
+                    return Image.open(p)
+                except Exception as e:
+                    logger.warning(f"Could not open image {p}: {e}")
+        return None
+
+    def to_bytes(self) -> Optional[bytes]:
+        if isinstance(self.source, Image.Image):
+            buf = io.BytesIO()
+            self.source.save(buf, format="PNG")
+            return buf.getvalue()
+        elif isinstance(self.source, (str, Path)):
+            p = Path(self.source)
+            if p.exists():
+                return p.read_bytes()
+        return None
+
+    def to_base64(self) -> Optional[str]:
+        data = self.to_bytes()
+        if data is not None:
+            return base64.b64encode(data).decode("utf-8")
+        return None
+
+
+@dataclass
+class MultimodalBatch:
+    """
+    Encapsulates a clean, structured payload of text and image attachments
+    for a specific batch of pages or task prompt.
+    """
+
+    text: str = ""
+    images: List[ImageAttachment] = field(default_factory=list)
+    page_range: Optional[Tuple[int, int]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_contents(cls, contents: Any) -> "MultimodalBatch":
+        """Normalizes legacy mixed contents list, string, or existing MultimodalBatch."""
+        if isinstance(contents, MultimodalBatch):
+            return contents
+
+        if isinstance(contents, str):
+            return cls(text=contents)
+
+        if not isinstance(contents, (list, tuple)):
+            return cls(text=str(contents))
+
+        text_parts: List[str] = []
+        images: List[ImageAttachment] = []
+        pending_ref_id: Optional[str] = None
+
+        for item in contents:
+            if isinstance(item, str):
+                if item.startswith("Diagram reference ID: "):
+                    pending_ref_id = item.replace("Diagram reference ID: ", "").strip()
+                else:
+                    text_parts.append(item)
+            elif isinstance(item, (Image.Image, Path)):
+                ref_id = pending_ref_id or f"img-{len(images)}"
+                images.append(ImageAttachment(reference_id=ref_id, source=item))
+                pending_ref_id = None
+            elif isinstance(item, ImageAttachment):
+                images.append(item)
+            elif isinstance(item, dict) and "data" in item:
+                text_parts.append(str(item))
+
+        return cls(
+            text="\n\n".join(text_parts),
+            images=images,
+        )
+
+    def to_chat_contents(self) -> List[Any]:
+        """Converts to the list format expected by Gemini Chat SDK (text + PIL Images)."""
+        chat_contents: List[Any] = []
+        if self.text:
+            chat_contents.append(self.text)
+        for img_att in self.images:
+            chat_contents.append(f"Diagram reference ID: {img_att.reference_id}")
+            pil_img = img_att.to_pil_image()
+            if pil_img is not None:
+                chat_contents.append(pil_img)
+        return chat_contents
+
+    def to_agent_multimodal_input(self) -> List[Dict[str, Any]]:
+        """Converts to the dictionary list expected by Gemini Agent interactions."""
+        multimodal_input: List[Dict[str, Any]] = []
+        for img_att in self.images:
+            b64_img = img_att.to_base64()
+            if b64_img:
+                multimodal_input.append({
+                    "type": "image",
+                    "data": b64_img,
+                    "mime_type": img_att.mime_type or "image/png",
+                })
+        if self.text:
+            multimodal_input.append({"type": "text", "text": self.text})
+        return multimodal_input
+
+    def to_remote_input(self, execution_prompt: str) -> List[Dict[str, Any]]:
+        """Converts to the remote sandbox input format."""
+        remote_input: List[Dict[str, Any]] = [{"type": "text", "text": execution_prompt}]
+        for img_att in self.images:
+            b64_img = img_att.to_base64()
+            if b64_img:
+                remote_input.append({
+                    "type": "image",
+                    "data": b64_img,
+                    "mime_type": img_att.mime_type or "image/png",
+                })
+        return remote_input
 
 
 class BaseAICommunicator(ABC):
@@ -45,7 +173,7 @@ class BaseAICommunicator(ABC):
     def generate(
         self,
         system_instruction: str,
-        contents: List[Any],
+        contents: Union[MultimodalBatch, List[Any], str],
         **kwargs,
     ) -> str:
         """Sends content to the model/agent and returns raw generated response text."""
@@ -123,10 +251,12 @@ class ContextChatBackend(BaseAICommunicator):
     def generate(
         self,
         system_instruction: str,
-        contents: List[Any],
+        contents: Union[MultimodalBatch, List[Any], str],
         reset_session: bool = False,
         **kwargs,
     ) -> str:
+        batch = MultimodalBatch.from_contents(contents)
+
         if reset_session or not self.chat_session or self.active_system_instruction != system_instruction:
             self.active_system_instruction = system_instruction
             self.chat_session = self.client.chats.create(
@@ -136,13 +266,17 @@ class ContextChatBackend(BaseAICommunicator):
 
         self._prune_history_if_needed()
 
+        chat_message = batch.to_chat_contents()
+
         for attempt in range(1, self.attempt_limit + 1):
             try:
                 logger.info(f"💬 Chat generation (attempt {attempt}/{self.attempt_limit})...")
-                response = self.chat_session.send_message(message=contents)
+                response = self.chat_session.send_message(message=chat_message)
                 if response and response.text:
                     return self.strip_code_fences(response.text)
-                logger.warning(f"Empty response received on attempt {attempt}.")
+                else:
+                    logger.warning(f"Empty response received on attempt {attempt}.")
+                    return str()
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
@@ -194,33 +328,18 @@ class AgentSessionBackend(BaseAICommunicator):
     def generate(
         self,
         system_instruction: str,
-        contents: List[Any],
+        contents: Union[MultimodalBatch, List[Any], str],
         reset_session: bool = False,
         **kwargs,
     ) -> str:
+        batch = MultimodalBatch.from_contents(contents)
         self.turn_counter += 1
 
         if reset_session or (self.turn_counter > 1 and (self.turn_counter - 1) % self.context_reset_interval == 0):
             logger.info("🔄 Resetting agent turn history to keep session lean...")
             self.last_interaction_id = None
 
-        text_parts = []
-        multimodal_input = []
-
-        for item in contents:
-            if isinstance(item, str):
-                text_parts.append(item)
-            elif isinstance(item, Image.Image):
-                buf = io.BytesIO()
-                item.save(buf, format="PNG")
-                b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
-                multimodal_input.append({"type": "image", "data": b64_img, "mime_type": "image/png"})
-            elif isinstance(item, Path) and item.exists():
-                b64_img = base64.b64encode(item.read_bytes()).decode("utf-8")
-                multimodal_input.append({"type": "image", "data": b64_img, "mime_type": "image/png"})
-
-        user_text = "\n\n".join(text_parts)
-        multimodal_input.append({"type": "text", "text": user_text})
+        multimodal_input = batch.to_agent_multimodal_input()
 
         agent_config_payload = {
             "type": self.agent_type,
@@ -371,7 +490,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
     def generate(
         self,
         system_instruction: str,
-        contents: List[Any],
+        contents: Union[MultimodalBatch, List[Any], str],
         output_filename: str = "output_artifact.xml",
         **kwargs,
     ) -> str:
@@ -379,6 +498,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
         Runs remote sandbox execution.
         Uploads generated artifact to GCS and downloads to local destination.
         """
+        batch = MultimodalBatch.from_contents(contents)
         gcp_token = self.get_gcloud_access_token()
         api_key = os.environ.get("GEMINI_API_KEY")
         gcs_upload_path = f"output/{output_filename}"
@@ -387,8 +507,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
             f"?uploadType=media&name={gcs_upload_path}"
         )
 
-        prompt_body = "\n\n".join([str(c) for c in contents if isinstance(c, str)])
-        remote_input: List[Any] = [{"type": "text", "text": "PLACEHOLDER"}]
+        prompt_body = batch.text
 
         # Minimal Python execution code in remote sandbox (Requirement 8)
         execution_prompt = fr"""
@@ -412,26 +531,7 @@ if resp.status_code not in [200, 201]:
     raise RuntimeError('GCS Upload failed: ' + resp.text)
 ```
 """
-        remote_input[0]["text"] = execution_prompt
-        for item in contents:
-            if isinstance(item, Image.Image):
-                buffer = io.BytesIO()
-                item.save(buffer, format="PNG")
-                remote_input.append(
-                    {
-                        "type": "image",
-                        "data": base64.b64encode(buffer.getvalue()).decode("utf-8"),
-                        "mime_type": "image/png",
-                    }
-                )
-            elif isinstance(item, Path) and item.exists():
-                remote_input.append(
-                    {
-                        "type": "image",
-                        "data": base64.b64encode(item.read_bytes()).decode("utf-8"),
-                        "mime_type": "image/png",
-                    }
-                )
+        remote_input = batch.to_remote_input(execution_prompt)
 
         prompt_snapshot_path = kwargs.get("prompt_snapshot_path")
         if prompt_snapshot_path:

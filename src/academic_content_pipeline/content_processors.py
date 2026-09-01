@@ -10,6 +10,7 @@ Classes:
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +19,12 @@ from typing import Any, Dict, List, Optional
 from PIL import Image
 
 try:
-    from .ai_communicators import BaseAICommunicator, RemoteSandboxBackend
+    from .ai_communicators import (
+        BaseAICommunicator,
+        ImageAttachment,
+        MultimodalBatch,
+        RemoteSandboxBackend,
+    )
     from .mistral_ocr import MistralOCREngine
     from .output_renderers import OutputRenderer
     from .pipeline_utils import (
@@ -32,7 +38,12 @@ try:
         write_prompt_snapshot,
     )
 except ImportError:  # pragma: no cover - fallback for direct script execution
-    from ai_communicators import BaseAICommunicator, RemoteSandboxBackend
+    from ai_communicators import (
+        BaseAICommunicator,
+        ImageAttachment,
+        MultimodalBatch,
+        RemoteSandboxBackend,
+    )
     from mistral_ocr import MistralOCREngine
     from output_renderers import OutputRenderer
     from pipeline_utils import (
@@ -272,6 +283,8 @@ class QuestionPaperExtractor:
         output_format: str = "xml",
         pdf_engine: str = "html",
         staging_dir: Path = Path("extracted_data"),
+        batch_size: int = 0,
+        force_overwrite: bool = False,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -287,6 +300,82 @@ class QuestionPaperExtractor:
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
         self.staging_dir = Path(staging_dir)
+        self.batch_size = int(batch_size)
+        self.force_overwrite = bool(force_overwrite)
+
+    @staticmethod
+    def parse_instruction_page_summary(response: Optional[str], fallback_text: Optional[str] = None) -> Optional[str]:
+        """Return the full instruction-page text when the page is recognized as an instruction sheet."""
+        if response is None:
+            return fallback_text
+
+        cleaned = BaseAICommunicator.strip_code_fences(response).strip()
+        if not cleaned:
+            return fallback_text
+
+        normalized = cleaned.replace("**", "").replace("`", "").strip()
+        if re.search(r"(?is)^\s*(?:NOT_INSTRUCTION_PAGE|NO_INSTRUCTION_PAGE)\b", normalized):
+            return None
+
+        if re.search(r"(?is)^\s*(?:INSTRUCTION_PAGE|INSTRUCTION\s+PAGE)\b", normalized):
+            return fallback_text or normalized
+
+        return fallback_text or normalized
+
+    @staticmethod
+    def build_instruction_page_block(summary: Optional[str]) -> str:
+        """Format the instruction-page block using the whole page content when applicable."""
+        if not summary:
+            return ""
+
+        return "### INSTRUCTION PAGE\n" + summary.strip() + "\n"
+
+    def _detect_instruction_page_summary(
+        self,
+        page_data: Any,
+        output_dir: Path,
+        pdf_path: Path,
+    ) -> Optional[str]:
+        if page_data is None:
+            return None
+
+        prompt_text = (
+            "Decide if this page is an instruction page for an exam paper.\n"
+            "Return exactly one of these two tokens: INSTRUCTION_PAGE or NOT_INSTRUCTION_PAGE.\n"
+            "Do not summarize the page. Only classify it.\n\n"
+            f"{page_data.markdown}"
+        )
+
+        batch_images = [
+            ImageAttachment(reference_id=img_name, source=filepath)
+            for img_name, filepath in unique_image_items(page_data.images)
+        ]
+        multimodal_batch = MultimodalBatch(
+            text=prompt_text,
+            images=batch_images,
+            page_range=(page_data.page_num, page_data.page_num),
+        )
+
+        snapshot_path = output_dir / f"{pdf_path.stem}_instruction_page_check_prompt.md"
+        raw_response = self.communicator.generate(
+            system_instruction=(
+                "You are a strict exam-paper classifier. Determine whether the supplied page is an instruction page. "
+                "If it's an instruction page, return exactly INSTRUCTION_PAGE; otherwise return exactly NOT_INSTRUCTION_PAGE. "
+                "Do not provide a summary or any extra text."
+            ),
+            contents=multimodal_batch,
+            output_filename=f"{pdf_path.stem}_instruction_page_check.txt",
+            prompt_snapshot_path=snapshot_path,
+        )
+        response = self.parse_instruction_page_summary(raw_response, fallback_text=page_data.markdown)
+        if response is not None and re.search(r"(?is)^\s*(?:INSTRUCTION_PAGE|INSTRUCTION\s+PAGE)\b", raw_response or ""):
+            return page_data.markdown
+        return None
+
+    @staticmethod
+    def _page_batches(pages: List[Any], batch_size: int) -> List[List[Any]]:
+        page_batch_size = len(pages) if batch_size <= 0 else max(1, int(batch_size))
+        return [pages[i : i + page_batch_size] for i in range(0, len(pages), page_batch_size)]
 
     def process_file(self, pdf_path: Path, output_dir: Path) -> Path:
         """Extracts questions from a single PDF and writes Moodle XML."""
@@ -295,9 +384,11 @@ class QuestionPaperExtractor:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         existing_output = find_existing_output(output_dir, pdf_path.stem, self.output_format)
-        if existing_output is not None:
+        if existing_output is not None and not self.force_overwrite:
             logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
             return existing_output
+        if existing_output is not None and self.force_overwrite:
+            logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; existing output at {existing_output} will be overwritten.")
 
         logger.info(f"\n{'='*60}\n📄 [EXTRACT] Processing: {pdf_path.name}\n{'='*60}")
         img_output_dir = self.staging_dir / pdf_path.stem / "images"
@@ -333,54 +424,90 @@ class QuestionPaperExtractor:
             )
 
         all_questions_xml: List[str] = []
-        is_remote_mode = isinstance(self.communicator, RemoteSandboxBackend)
         pages_to_process = ocr_result.pages if hasattr(ocr_result, "pages") and ocr_result.pages else []
+        instruction_page_summary: Optional[str] = None
 
-        # For interactive context/agent sessions: process sequentially per page to avoid token limits
-        # For remote execution mode: send entire document markdown in one single shot to GCS sandbox
-        if self.output_format == "xml" and pages_to_process and not is_remote_mode:
-            logger.info(f"Processing {len(pages_to_process)} page(s) sequentially (with multi-turn context preservation)...")
-            for page_data in pages_to_process:
-                p_num = page_data.page_num
-                if self.no_instruction_page and p_num == self.instruction_page:
-                    logger.info(f"⏩ Skipping instruction page {p_num}...")
+        if pages_to_process:
+            page_index_to_check = max(0, min(self.instruction_page - 1, len(pages_to_process) - 1))
+            page_to_check = pages_to_process[page_index_to_check]
+            instruction_page_summary = self._detect_instruction_page_summary(page_to_check, output_dir, pdf_path)
+            if instruction_page_summary:
+                logger.info(
+                    "Detected front instruction page for %s; adding summary to each combined batch prompt.",
+                    pdf_path.name,
+                )
+
+        if self.output_format == "xml" and pages_to_process:
+            if self.batch_size <= 0:
+                logger.info(
+                    "Processing all %s page(s) in a single batch for %s mode.",
+                    len(pages_to_process),
+                    type(self.communicator).__name__,
+                )
+            else:
+                logger.info(
+                    "Processing %s page(s) in batches of %s for %s mode.",
+                    len(pages_to_process),
+                    self.batch_size,
+                    type(self.communicator).__name__,
+                )
+            for batch_index, batch_pages in enumerate(self._page_batches(pages_to_process, self.batch_size), start=1):
+                filtered_batch = []
+                for page_data in batch_pages:
+                    p_num = page_data.page_num
+                    if self.no_instruction_page and p_num == self.instruction_page:
+                        logger.info(f"⏩ Skipping instruction page {p_num}...")
+                        continue
+                    filtered_batch.append(page_data)
+
+                if not filtered_batch:
                     continue
 
-                logger.info(f"\n--- 📄 Processing Page {p_num} ---")
+                batch_start = filtered_batch[0].page_num
+                batch_end = filtered_batch[-1].page_num
+                logger.info(f"\n--- 📄 Processing Pages {batch_start}-{batch_end} (batch {batch_index}) ---")
 
-                turn_prompt = load_prompt_template(
-                    PROMPTS_DIR / "core" / "extraction_page_turn.md",
-                    page_number=str(p_num),
-                    image_ids=str(list(page_data.images.keys())),
-                    ocr_markdown=page_data.markdown,
+                batch_prompt_parts = []
+                batch_images: List[ImageAttachment] = []
+                instruction_block = self.build_instruction_page_block(instruction_page_summary)
+                if instruction_block:
+                    batch_prompt_parts.append(instruction_block)
+
+                for page_data in filtered_batch:
+                    p_num = page_data.page_num
+                    page_prompt = load_prompt_template(
+                        PROMPTS_DIR / "core" / "extraction_page_turn.md",
+                        page_number=str(p_num),
+                        image_ids=str(list(page_data.images.keys())),
+                        ocr_markdown=page_data.markdown,
+                    )
+                    batch_prompt_parts.append(page_prompt)
+
+                    for img_name, filepath in unique_image_items(page_data.images):
+                        batch_images.append(ImageAttachment(reference_id=img_name, source=filepath))
+
+                combined_prompt = "\n\n".join(batch_prompt_parts)
+                multimodal_batch = MultimodalBatch(
+                    text=combined_prompt,
+                    images=batch_images,
+                    page_range=(batch_start, batch_end),
                 )
 
-                turn_contents: List[Any] = [turn_prompt]
-                for img_name, filepath in unique_image_items(page_data.images):
-                    turn_contents.append(f"Diagram reference ID: {img_name}")
-                    try:
-                        turn_contents.append(Image.open(filepath))
-                    except Exception as e:
-                        logger.warning(f"Could not load image {filepath}: {e}")
-
-                write_prompt_snapshot(
-                    output_dir / f"{pdf_path.stem}_page_{p_num}_prompt.md",
-                    system_instruction,
-                    turn_contents,
-                )
-                raw_turn_output = self.communicator.generate(
+                snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
+                write_prompt_snapshot(output_dir / snapshot_name, system_instruction, multimodal_batch)
+                raw_batch_output = self.communicator.generate(
                     system_instruction=system_instruction,
-                    contents=turn_contents,
-                    output_filename=f"page_{p_num}.xml",
-                    prompt_snapshot_path=output_dir / f"{pdf_path.stem}_page_{p_num}_prompt.md",
+                    contents=multimodal_batch,
+                    output_filename=f"pages_{batch_start}_{batch_end}.xml",
+                    prompt_snapshot_path=output_dir / snapshot_name,
                 )
 
-                valid_nodes, _ = extract_clean_question_nodes_with_status(raw_turn_output)
+                valid_nodes, _ = extract_clean_question_nodes_with_status(raw_batch_output)
                 if valid_nodes:
-                    logger.info(f"  ✓ Page {p_num}: Extracted {len(valid_nodes)} question(s).")
+                    logger.info(f"  ✓ Pages {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
                     all_questions_xml.extend(valid_nodes)
                 else:
-                    logger.info(f"  ℹ Page {p_num}: No complete questions concluded on this page.")
+                    logger.info(f"  ℹ Pages {batch_start}-{batch_end}: No complete questions concluded in this batch.")
 
                 if self.rate_limit_delay > 0:
                     time.sleep(self.rate_limit_delay)
@@ -395,19 +522,20 @@ class QuestionPaperExtractor:
                     image_ids=str(list(ocr_result.all_images.keys())),
                     language_instruction=lang_instruction,
                 )
-                contents: List[Any] = [prompt_text]
-                for img_name, filepath in unique_image_items(ocr_result.all_images):
-                    contents.append(f"Diagram reference ID: {img_name}")
-                    try:
-                        contents.append(Image.open(filepath))
-                    except Exception:
-                        pass
+                batch_images = [
+                    ImageAttachment(reference_id=img_name, source=filepath)
+                    for img_name, filepath in unique_image_items(ocr_result.all_images)
+                ]
+                multimodal_batch = MultimodalBatch(
+                    text=prompt_text,
+                    images=batch_images,
+                )
 
                 output_stem = pdf_path.stem
                 output_extension = "tex" if self.pdf_engine == "tex" else "html"
                 raw_output = self.communicator.generate(
                     system_instruction=system_instruction,
-                    contents=contents,
+                    contents=multimodal_batch,
                     output_filename=f"{output_stem}_extracted.{output_extension}",
                     prompt_snapshot_path=output_dir / f"{output_stem}_extraction_prompt.md",
                 )
@@ -418,39 +546,51 @@ class QuestionPaperExtractor:
                     ocr_result.all_images,
                 )
 
-            # Single-blob processing for Remote Agent Sandbox
-            logger.info("Sending full document OCR Markdown in a single payload for remote sandbox execution...")
-            prompt_text = (
-                f"### Exam Paper OCR Markdown:\n\n{ocr_result.full_markdown}\n\n"
-                f"### Extraction Parameters:\n"
-                f"- Target Languages: {', '.join(self.languages)}\n"
-                f"- Target Standards: {self.standards}\n"
-                f"- Global Tags: {', '.join(all_tags)}\n"
-                f"- Attached Diagram Reference IDs: {list(ocr_result.all_images.keys())}\n\n"
-                f"{lang_instruction}\n"
-                f"Extract all questions into valid Moodle XML format."
-            )
-            contents = [prompt_text]
-            for img_name, filepath in unique_image_items(ocr_result.all_images):
-                contents.append(f"Diagram reference ID: {img_name}")
-                try:
-                    contents.append(Image.open(filepath))
-                except Exception:
-                    pass
+            if self.batch_size <= 0:
+                logger.info("Sending full document OCR Markdown in a single batch for XML extraction...")
+            else:
+                logger.info("Sending full document OCR Markdown in batches of %s for XML extraction...", self.batch_size)
+            for batch_index, batch_pages in enumerate(self._page_batches(pages_to_process, self.batch_size), start=1):
+                if not batch_pages:
+                    continue
+                batch_start = batch_pages[0].page_num
+                batch_end = batch_pages[-1].page_num
+                batch_markdown = "\n\n".join(page_data.markdown for page_data in batch_pages)
+                instruction_block = self.build_instruction_page_block(instruction_page_summary)
+                prompt_text = (
+                    f"{instruction_block}\n\n" if instruction_block else ""
+                ) + (
+                    f"### Exam Paper OCR Markdown (Pages {batch_start}-{batch_end}):\n\n{batch_markdown}\n\n"
+                    f"### Extraction Parameters:\n"
+                    f"- Target Languages: {', '.join(self.languages)}\n"
+                    f"- Target Standards: {self.standards}\n"
+                    f"- Global Tags: {', '.join(all_tags)}\n"
+                    f"- Attached Diagram Reference IDs: {list(ocr_result.all_images.keys())}\n\n"
+                    f"{lang_instruction}\n"
+                    f"Extract all complete questions from these pages into valid Moodle XML format."
+                )
+                batch_images = []
+                for page_data in batch_pages:
+                    for img_name, filepath in unique_image_items(page_data.images):
+                        batch_images.append(ImageAttachment(reference_id=img_name, source=filepath))
 
-            write_prompt_snapshot(
-                output_dir / f"{pdf_path.stem}_prompt.md",
-                system_instruction,
-                contents,
-            )
-            raw_output = self.communicator.generate(
-                system_instruction=system_instruction,
-                contents=contents,
-                output_filename=f"{pdf_path.stem}.xml",
-                prompt_snapshot_path=output_dir / f"{pdf_path.stem}_prompt.md",
-            )
-            valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
-            all_questions_xml.extend(valid_nodes)
+                multimodal_batch = MultimodalBatch(
+                    text=prompt_text,
+                    images=batch_images,
+                    page_range=(batch_start, batch_end),
+                )
+
+                snapshot_name = f"{pdf_path.stem}_batch_{batch_start}_{batch_end}_prompt.md"
+                write_prompt_snapshot(output_dir / snapshot_name, system_instruction, multimodal_batch)
+                raw_output = self.communicator.generate(
+                    system_instruction=system_instruction,
+                    contents=multimodal_batch,
+                    output_filename=f"{pdf_path.stem}_pages_{batch_start}_{batch_end}.xml",
+                    prompt_snapshot_path=output_dir / snapshot_name,
+                )
+                valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
+                logger.info(f"  ✓ Batch {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
+                all_questions_xml.extend(valid_nodes)
 
         combined_xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -622,13 +762,14 @@ class QuestionGenerator:
             language_instruction=lang_instruction,
         )
 
-        contents: List[Any] = [prompt_text]
-        for img_name, filepath in unique_image_items(image_map):
-            contents.append(f"Diagram reference ID: {img_name}")
-            try:
-                contents.append(Image.open(filepath))
-            except Exception:
-                pass
+        batch_images = [
+            ImageAttachment(reference_id=img_name, source=filepath)
+            for img_name, filepath in unique_image_items(image_map)
+        ]
+        multimodal_batch = MultimodalBatch(
+            text=prompt_text,
+            images=batch_images,
+        )
 
         ext = "pdf" if self.output_format == "pdf" else "xml"
         intermediate_ext = "tex" if self.pdf_engine == "tex" else "html"
@@ -638,11 +779,11 @@ class QuestionGenerator:
         write_prompt_snapshot(
             output_dir / f"{generation_stem}_prompt.md",
             system_instruction,
-            contents,
+            multimodal_batch,
         )
         raw_output = self.communicator.generate(
             system_instruction=system_instruction,
-            contents=contents,
+            contents=multimodal_batch,
             output_filename=output_artifact_name,
             prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
         )
@@ -864,7 +1005,7 @@ class PaperGenerator:
             language_instruction=lang_instruction,
         )
 
-        contents: List[Any] = [prompt_text]
+        multimodal_batch = MultimodalBatch(text=prompt_text)
 
         intermediate_ext = "tex" if self.pdf_engine == "tex" else "html"
         output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
@@ -873,11 +1014,11 @@ class PaperGenerator:
         write_prompt_snapshot(
             output_dir / f"{generation_stem}_prompt.md",
             system_instruction,
-            contents,
+            multimodal_batch,
         )
         raw_output = self.communicator.generate(
             system_instruction=system_instruction,
-            contents=contents,
+            contents=multimodal_batch,
             output_filename=output_artifact_name,
             prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
         )

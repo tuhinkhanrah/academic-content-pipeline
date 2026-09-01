@@ -11,5 +11,6 @@ From the current exam page image/text context, extract complete questions that c
 # NEET Structure
 - Only single-correct MCQs are allowed.
 - Marking: +4 / -1
+- Defaultgrade : 4.0000000, penalty: 0.2500000
 
 If explicit section instructions differ, follow the visible paper instruction; otherwise keep NEET defaults.

@@ -204,7 +204,7 @@ def format_instruction_profile(profile: Dict[str, Any]) -> str:
 def write_prompt_snapshot(
     snapshot_path: Path,
     system_instruction: str,
-    contents: List[Any],
+    contents: Any,
 ) -> Path:
     """Write the exact textual AI inputs and attachment references to Markdown."""
     sections = [
@@ -215,17 +215,37 @@ def write_prompt_snapshot(
         "",
         "## User Prompt and Attachments",
     ]
-    for index, content in enumerate(contents, 1):
-        if isinstance(content, str):
-            sections.extend([f"### Content {index} (text)", content, ""])
-        else:
+    if hasattr(contents, "images") and hasattr(contents, "text"):
+        if getattr(contents, "page_range", None):
+            start_p, end_p = contents.page_range
+            sections.extend([f"### Page Range: {start_p} - {end_p}", ""])
+        if contents.text:
+            sections.extend(["### User Content (text)", contents.text, ""])
+        for idx, img_att in enumerate(contents.images, start=1):
+            ref_id = getattr(img_att, "reference_id", f"img-{idx}")
+            src_name = getattr(img_att.source, "name", str(type(img_att.source).__name__))
             sections.extend(
                 [
-                    f"### Content {index} (attachment)",
-                    f"```text\n{type(content).__name__}\n{getattr(content, 'filename', '')}\n```",
+                    f"### Attachment {idx} ({ref_id})",
+                    f"```text\nImageAttachment(reference_id={ref_id}, source={src_name})\n```",
                     "",
                 ]
             )
+    elif isinstance(contents, list):
+        for index, content in enumerate(contents, 1):
+            if isinstance(content, str):
+                sections.extend([f"### Content {index} (text)", content, ""])
+            else:
+                sections.extend(
+                    [
+                        f"### Content {index} (attachment)",
+                        f"```text\n{type(content).__name__}\n{getattr(content, 'filename', '')}\n```",
+                        "",
+                    ]
+                )
+    else:
+        sections.extend(["### Content 1 (text)", str(contents), ""])
+
     snapshot_path = Path(snapshot_path)
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text("\n".join(sections), encoding="utf-8")
@@ -279,6 +299,19 @@ def assemble_prompt_files(
         ordered_names.extend(["tags_rules", "templates"])
     ordered_names.extend(name for name in rule_files if name not in ordered_names)
 
+    purpose_labels = {
+        "main_prompt": "Main prompt",
+        "instruction_file": "Instruction profile",
+        "xml_rules": "Moodle XML rules",
+        "xml_extraction_rules": "XML extraction rules",
+        "tags_rules": "Naming and Tagging rules",
+        "templates": "Moodle XML templates",
+        "pdf_rules": "PDF rules",
+        "pdf_rules_html": "HTML PDF rules",
+        "pdf_rules_tex": "LaTeX PDF rules",
+        "reasoning_rules": "Reasoning rules",
+    }
+
     seen_rule_paths = set()
     for name in ordered_names:
         filepath = rule_files.get(name)
@@ -293,7 +326,9 @@ def assemble_prompt_files(
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-                content_blocks.append(f"## File: {path.name}\n\n{content}\n\n---\n")
+            label = purpose_labels.get(name, "Prompt file")
+            rel_path = path.as_posix()
+            content_blocks.append(f"## {label}: {rel_path}\n\n{content}\n\n---\n")
         else:
             logger.warning(f"Prompt file '{filepath}' not found. Skipping.")
 
@@ -661,5 +696,3 @@ def compile_tex_to_pdf(
     ]
     subprocess.run(cmd, check=True, cwd=str(output_pdf_path.parent))
     return output_pdf_path
-
-
