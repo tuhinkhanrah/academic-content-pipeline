@@ -28,6 +28,7 @@ try:
         BaseAICommunicator,
         ContextChatBackend,
         RemoteSandboxBackend,
+        SingleShotBackend,
     )
     from .content_processors import (
         PaperGenerator,
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
         BaseAICommunicator,
         ContextChatBackend,
         RemoteSandboxBackend,
+        SingleShotBackend,
     )
     from content_processors import (
         PaperGenerator,
@@ -52,6 +54,31 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
     from pipeline_utils import setup_logger
 
 logger = logging.getLogger("academic_content_pipeline")
+
+
+def resolve_default_extractor_prompt(standards: str, output_format: str, pdf_engine: str) -> Path:
+    """Return the correct built-in extractor prompt for the selected standard and output format."""
+    standard_name = str(standards or "general").strip().lower().replace("_", " ")
+    if output_format != "xml":
+        return Path("prompts/extractor") / pdf_engine / "extractor.md"
+
+    prompt_map = {
+        "neet": Path("prompts/extractor/neet.md"),
+        "wbjee": Path("prompts/extractor/wbjee.md"),
+        "jee main": Path("prompts/extractor/jee_main.md"),
+        "jee advanced": Path("prompts/extractor/jee_advanced.md"),
+    }
+
+    candidates = [standard_name, standard_name.replace(" ", "_")]
+    for candidate in candidates:
+        if candidate in prompt_map:
+            return prompt_map[candidate]
+
+    for key, path in prompt_map.items():
+        if key in standard_name or standard_name in key:
+            return path
+
+    return Path("prompts/extractor/neet.md")
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -279,9 +306,7 @@ def main():
     # Auto-resolve default prompt if not provided by user
     if args.prompt is None:
         if task == "extract":
-            args.prompt = Path("prompts/extractor") / (
-                 "neet.md" if args.output_format == "xml" else f"{args.pdf_engine}/extractor.md"
-            )
+            args.prompt = resolve_default_extractor_prompt(args.standards, args.output_format, args.pdf_engine)
         elif task == "generate-questions":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/question_generator.md")
@@ -316,8 +341,16 @@ def main():
     # Execute Functional Task
     try:
         if task == "extract":
+            page_check_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            page_check_communicator = SingleShotBackend(
+                client=page_check_client,
+                model_name=args.model_name,
+                attempt_limit=args.retry_limit,
+                verbose=args.verbose,
+            )
             extractor = QuestionPaperExtractor(
                 communicator=communicator,
+                page_check_communicator=page_check_communicator,
                 ocr_engine=ocr_engine,
                 rules_dict=rules_dict,
                 languages=languages_list,

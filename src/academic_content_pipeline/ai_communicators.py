@@ -297,6 +297,63 @@ class ContextChatBackend(BaseAICommunicator):
 # 2. Mode: With Agent (Managed Environment Session)
 # =======================================================================
 
+class SingleShotBackend(BaseAICommunicator):
+    """Runs a single, stateless multimodal generation call without chat history."""
+
+    def __init__(
+        self,
+        client: Optional[genai.Client] = None,
+        model_name: str = "gemini-3.7-flash",
+        temperature: float = 0.1,
+        attempt_limit: int = 5,
+        retry_delay: float = 4.0,
+        verbose: bool = False,
+    ):
+        super().__init__(client=client, model_name=model_name, temperature=temperature, verbose=verbose)
+        self.attempt_limit = attempt_limit
+        self.retry_delay = retry_delay
+
+    def generate(
+        self,
+        system_instruction: str,
+        contents: Union[MultimodalBatch, List[Any], str],
+        **kwargs,
+    ) -> str:
+        batch = MultimodalBatch.from_contents(contents)
+        prompt_contents = batch.to_chat_contents()
+
+        for attempt in range(1, self.attempt_limit + 1):
+            try:
+                logger.info(f"⚡ Single-shot generation (attempt {attempt}/{self.attempt_limit})...")
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt_contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=self.temperature,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    ),
+                )
+                if response and getattr(response, "text", None):
+                    return self.strip_code_fences(response.text)
+                logger.warning(f"Empty response received on attempt {attempt}.")
+                return str()
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
+                    match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
+                    suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_delay * (2 ** (attempt - 1)), 25.0)
+                    logger.warning(f"⚠️ Rate/Quota limit hit. Sleeping {suggested_delay:.1f}s before retry (attempt {attempt}/{self.attempt_limit})...")
+                    time.sleep(suggested_delay)
+                elif attempt < self.attempt_limit:
+                    logger.warning(f"Single-shot generation error (attempt {attempt}/{self.attempt_limit}): {e}")
+                    time.sleep(self.retry_delay * attempt)
+                else:
+                    raise
+
+        raise RuntimeError("Single-shot generation failed after reaching max attempts.")
+
+
 class AgentSessionBackend(BaseAICommunicator):
     """
     Manages a Gemini Agent Session that maintains state across interactions
@@ -335,9 +392,11 @@ class AgentSessionBackend(BaseAICommunicator):
         batch = MultimodalBatch.from_contents(contents)
         self.turn_counter += 1
 
-        if reset_session or (self.turn_counter > 1 and (self.turn_counter - 1) % self.context_reset_interval == 0):
-            logger.info("🔄 Resetting agent turn history to keep session lean...")
+        system_changed = getattr(self, "active_system_instruction", None) != system_instruction
+        if reset_session or system_changed or (self.turn_counter > 1 and (self.turn_counter - 1) % self.context_reset_interval == 0):
+            logger.info("🔄 Resetting agent turn history to keep session aligned with the current system prompt...")
             self.last_interaction_id = None
+            self.active_system_instruction = system_instruction
 
         multimodal_input = batch.to_agent_multimodal_input()
 

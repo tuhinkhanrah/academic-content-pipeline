@@ -259,6 +259,7 @@ def assemble_prompt_files(
     output_format: str = "xml",
     pdf_engine: str = "html",
     verify_online: bool = False,
+    instruction_page_summary: Optional[str] = None,
 ) -> str:
     """Combines specified prompt markdown files into a single context string."""
     engine_name = "LaTeX (XeLaTeX)" if pdf_engine == "tex" else "HTML5 (KaTeX)"
@@ -328,7 +329,12 @@ def assemble_prompt_files(
 
             label = purpose_labels.get(name, "Prompt file")
             rel_path = path.as_posix()
-            content_blocks.append(f"## {label}: {rel_path}\n\n{content}\n\n---\n")
+            if name == "main_prompt":
+                content_blocks.append(f"## {label}: {rel_path}\n\n{content}\n\n---\n")
+                if instruction_page_summary:
+                    content_blocks.append("### INSTRUCTION PAGE\n" + instruction_page_summary.strip() + "\n\n---\n")
+            else:
+                content_blocks.append(f"## {label}: {rel_path}\n\n{content}\n\n---\n")
         else:
             logger.warning(f"Prompt file '{filepath}' not found. Skipping.")
 

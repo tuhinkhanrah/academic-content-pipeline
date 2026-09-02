@@ -285,8 +285,10 @@ class QuestionPaperExtractor:
         staging_dir: Path = Path("extracted_data"),
         batch_size: int = 0,
         force_overwrite: bool = False,
+        page_check_communicator: Optional[BaseAICommunicator] = None,
     ):
         self.communicator = communicator
+        self.page_check_communicator = page_check_communicator or communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
         self.rules_dict = rules_dict or {}
         self.languages = languages or ["english"]
@@ -305,13 +307,27 @@ class QuestionPaperExtractor:
 
     @staticmethod
     def parse_instruction_page_summary(response: Optional[str], fallback_text: Optional[str] = None) -> Optional[str]:
-        """Return the full instruction-page text when the page is recognized as an instruction sheet."""
+        """Parse either a legacy token response or a single-call JSON response."""
         if response is None:
             return fallback_text
 
         cleaned = BaseAICommunicator.strip_code_fences(response).strip()
         if not cleaned:
             return fallback_text
+
+        try:
+            payload = json.loads(cleaned)
+            if isinstance(payload, dict):
+                is_instruction = bool(payload.get("is_instruction_page"))
+                summary = payload.get("summary")
+                if not is_instruction:
+                    return None
+                summary_text = str(summary or "").strip()
+                if summary_text:
+                    return summary_text
+                return fallback_text
+        except json.JSONDecodeError:
+            pass
 
         normalized = cleaned.replace("**", "").replace("`", "").strip()
         if re.search(r"(?is)^\s*(?:NOT_INSTRUCTION_PAGE|NO_INSTRUCTION_PAGE)\b", normalized):
@@ -321,14 +337,6 @@ class QuestionPaperExtractor:
             return fallback_text or normalized
 
         return fallback_text or normalized
-
-    @staticmethod
-    def build_instruction_page_block(summary: Optional[str]) -> str:
-        """Format the instruction-page block using the whole page content when applicable."""
-        if not summary:
-            return ""
-
-        return "### INSTRUCTION PAGE\n" + summary.strip() + "\n"
 
     def _detect_instruction_page_summary(
         self,
@@ -340,9 +348,11 @@ class QuestionPaperExtractor:
             return None
 
         prompt_text = (
-            "Decide if this page is an instruction page for an exam paper.\n"
-            "Return exactly one of these two tokens: INSTRUCTION_PAGE or NOT_INSTRUCTION_PAGE.\n"
-            "Do not summarize the page. Only classify it.\n\n"
+            "Determine whether this page is an exam instruction page.\n"
+            "Return valid JSON only with exactly these fields:\n"
+            "{\"is_instruction_page\": true|false, \"summary\": \"<markdown summary only if it is an instruction page, otherwise empty string>\"}\n"
+            "If the page is not an instruction page, set is_instruction_page to false and summary to an empty string.\n"
+            "If it is an instruction page, provide a concise Markdown summary of the header and key instructions relevant to answering the paper.\n\n"
             f"{page_data.markdown}"
         )
 
@@ -357,20 +367,33 @@ class QuestionPaperExtractor:
         )
 
         snapshot_path = output_dir / f"{pdf_path.stem}_instruction_page_check_prompt.md"
-        raw_response = self.communicator.generate(
+        raw_response = self.page_check_communicator.generate(
             system_instruction=(
                 "You are a strict exam-paper classifier. Determine whether the supplied page is an instruction page. "
-                "If it's an instruction page, return exactly INSTRUCTION_PAGE; otherwise return exactly NOT_INSTRUCTION_PAGE. "
-                "Do not provide a summary or any extra text."
+                "Return valid JSON only with the fields is_instruction_page and summary. "
+                "When the page is not an instruction page, set is_instruction_page to false and summary to an empty string."
             ),
             contents=multimodal_batch,
-            output_filename=f"{pdf_path.stem}_instruction_page_check.txt",
+            output_filename=f"{pdf_path.stem}_instruction_page_check.json",
             prompt_snapshot_path=snapshot_path,
         )
-        response = self.parse_instruction_page_summary(raw_response, fallback_text=page_data.markdown)
-        if response is not None and re.search(r"(?is)^\s*(?:INSTRUCTION_PAGE|INSTRUCTION\s+PAGE)\b", raw_response or ""):
-            return page_data.markdown
-        return None
+        parsed_summary = self.parse_instruction_page_summary(raw_response, fallback_text=page_data.markdown)
+        try:
+            payload = json.loads(BaseAICommunicator.strip_code_fences(raw_response or "")) if raw_response else None
+            is_instruction_page = bool(payload.get("is_instruction_page")) if isinstance(payload, dict) else False
+        except Exception:
+            is_instruction_page = parsed_summary is not None
+
+        if is_instruction_page:
+            logger.info(
+                "📄 AI classified page %s as an instruction page. Summary: %s",
+                page_data.page_num,
+                (parsed_summary or "").strip()[:300],
+            )
+        else:
+            logger.info("📄 AI classified page %s as NOT an instruction page.", page_data.page_num)
+
+        return parsed_summary
 
     @staticmethod
     def _page_batches(pages: List[Any], batch_size: int) -> List[List[Any]]:
@@ -400,6 +423,15 @@ class QuestionPaperExtractor:
             page_range=self.page_range,
         )
 
+        instruction_page_summary = None
+        if getattr(ocr_result, "pages", None):
+            target_page_num = self.instruction_page
+            instruction_page = next(
+                (page for page in ocr_result.pages if getattr(page, "page_num", None) == target_page_num),
+                ocr_result.pages[0],
+            )
+            instruction_page_summary = self._detect_instruction_page_summary(instruction_page, output_dir, pdf_path)
+
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
             self.rules_dict,
@@ -407,6 +439,7 @@ class QuestionPaperExtractor:
             output_format="xml" if self.output_format == "xml" else "pdf",
             pdf_engine=self.pdf_engine,
             verify_online=self.verify_online,
+            instruction_page_summary=instruction_page_summary,
         )
 
         lang_instruction, lang_tags = build_language_instructions(
@@ -425,17 +458,6 @@ class QuestionPaperExtractor:
 
         all_questions_xml: List[str] = []
         pages_to_process = ocr_result.pages if hasattr(ocr_result, "pages") and ocr_result.pages else []
-        instruction_page_summary: Optional[str] = None
-
-        if pages_to_process:
-            page_index_to_check = max(0, min(self.instruction_page - 1, len(pages_to_process) - 1))
-            page_to_check = pages_to_process[page_index_to_check]
-            instruction_page_summary = self._detect_instruction_page_summary(page_to_check, output_dir, pdf_path)
-            if instruction_page_summary:
-                logger.info(
-                    "Detected front instruction page for %s; adding summary to each combined batch prompt.",
-                    pdf_path.name,
-                )
 
         if self.output_format == "xml" and pages_to_process:
             if self.batch_size <= 0:
@@ -469,9 +491,6 @@ class QuestionPaperExtractor:
 
                 batch_prompt_parts = []
                 batch_images: List[ImageAttachment] = []
-                instruction_block = self.build_instruction_page_block(instruction_page_summary)
-                if instruction_block:
-                    batch_prompt_parts.append(instruction_block)
 
                 for page_data in filtered_batch:
                     p_num = page_data.page_num
@@ -556,10 +575,7 @@ class QuestionPaperExtractor:
                 batch_start = batch_pages[0].page_num
                 batch_end = batch_pages[-1].page_num
                 batch_markdown = "\n\n".join(page_data.markdown for page_data in batch_pages)
-                instruction_block = self.build_instruction_page_block(instruction_page_summary)
                 prompt_text = (
-                    f"{instruction_block}\n\n" if instruction_block else ""
-                ) + (
                     f"### Exam Paper OCR Markdown (Pages {batch_start}-{batch_end}):\n\n{batch_markdown}\n\n"
                     f"### Extraction Parameters:\n"
                     f"- Target Languages: {', '.join(self.languages)}\n"
