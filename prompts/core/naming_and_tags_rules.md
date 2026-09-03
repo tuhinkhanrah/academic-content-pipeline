@@ -41,6 +41,7 @@ Construct the question name dynamically using **ONLY** the available metadata to
   - topic
   - chapter
   - typology
+  - category
   - difficulty
   - blooms
   - calculation

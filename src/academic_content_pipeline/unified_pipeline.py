@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +112,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.json", help="MCQ type registry JSON file.")
 
     # Communicator specific tuning
-    parser.add_argument("--model-name", default="gemini-3.7-flash", help="Gemini model name.")
+    parser.add_argument("--model-name", default="gemini-flash-latest", help="Gemini model name.")
     parser.add_argument("--agent-name", default="antigravity-preview-05-2026", help="Agent identifier.")
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
@@ -339,6 +340,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Execute Functional Task
+    start_time = time.perf_counter()
     try:
         if task == "extract":
             page_check_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -419,8 +421,12 @@ def main():
                 mcq_types_path=args.mcq_types,
             )
             mock_generator.process_spec(args.spec, args.output_dir)
+
+        elapsed = time.perf_counter() - start_time
+        logger.info("⏱️ Total operation time: %.2f seconds (%.2f minutes)", elapsed, elapsed / 60.0)
     except Exception:
-        logger.exception("Pipeline command failed.")
+        elapsed = time.perf_counter() - start_time
+        logger.exception("Pipeline command failed after %.2f seconds (%.2f minutes).", elapsed, elapsed / 60.0)
         raise
     finally:
         if hasattr(communicator, "close"):

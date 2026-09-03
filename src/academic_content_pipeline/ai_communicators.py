@@ -160,7 +160,7 @@ class BaseAICommunicator(ABC):
     def __init__(
         self,
         client: Optional[genai.Client] = None,
-        model_name: str = "gemini-3.7-flash",
+        model_name: str = "gemini-flash-latest",
         temperature: float = 0.1,
         verbose: bool = False,
     ):
@@ -205,7 +205,7 @@ class ContextChatBackend(BaseAICommunicator):
     def __init__(
         self,
         client: Optional[genai.Client] = None,
-        model_name: str = "gemini-3.7-flash",
+        model_name: str = "gemini-flash-latest",
         temperature: float = 0.1,
         memory_span: int = 3,
         attempt_limit: int = 5,
@@ -282,7 +282,13 @@ class ContextChatBackend(BaseAICommunicator):
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
                     suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_delay * (2 ** (attempt - 1)), 25.0)
-                    logger.warning(f"⚠️ Rate/Quota limit hit. Sleeping {suggested_delay:.1f}s before retry (attempt {attempt}/{self.attempt_limit})...")
+                    logger.warning(
+                        "⚠️ Rate/Quota limit hit. Raw Gemini error: %s. Sleeping %.1fs before retry (attempt %s/%s)...",
+                        err_str,
+                        suggested_delay,
+                        attempt,
+                        self.attempt_limit,
+                    )
                     time.sleep(suggested_delay)
                 elif attempt < self.attempt_limit:
                     logger.warning(f"Chat API error (attempt {attempt}/{self.attempt_limit}): {e}")
@@ -303,7 +309,7 @@ class SingleShotBackend(BaseAICommunicator):
     def __init__(
         self,
         client: Optional[genai.Client] = None,
-        model_name: str = "gemini-3.7-flash",
+        model_name: str = "gemini-flash-latest",
         temperature: float = 0.1,
         attempt_limit: int = 5,
         retry_delay: float = 4.0,
@@ -343,7 +349,13 @@ class SingleShotBackend(BaseAICommunicator):
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
                     suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_delay * (2 ** (attempt - 1)), 25.0)
-                    logger.warning(f"⚠️ Rate/Quota limit hit. Sleeping {suggested_delay:.1f}s before retry (attempt {attempt}/{self.attempt_limit})...")
+                    logger.warning(
+                        "⚠️ Rate/Quota limit hit. Raw Gemini error: %s. Sleeping %.1fs before retry (attempt %s/%s)...",
+                        err_str,
+                        suggested_delay,
+                        attempt,
+                        self.attempt_limit,
+                    )
                     time.sleep(suggested_delay)
                 elif attempt < self.attempt_limit:
                     logger.warning(f"Single-shot generation error (attempt {attempt}/{self.attempt_limit}): {e}")
@@ -365,7 +377,7 @@ class AgentSessionBackend(BaseAICommunicator):
         client: Optional[genai.Client] = None,
         agent_name: str = "antigravity-preview-05-2026",
         agent_type: str = "antigravity",
-        model_name: str = "gemini-3.7-flash",
+        model_name: str = "gemini-flash-latest",
         attempt_limit: int = 5,
         retry_delay: float = 10.0,
         context_reset_interval: int = 7,
@@ -445,7 +457,13 @@ class AgentSessionBackend(BaseAICommunicator):
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
                     suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_delay * (2 ** (attempt - 1)), 35.0)
-                    logger.warning(f"⚠️ Rate/Quota limit hit. Sleeping {suggested_delay:.1f}s before retry (attempt {attempt}/{self.attempt_limit})...")
+                    logger.warning(
+                        "⚠️ Rate/Quota limit hit. Raw Gemini error: %s. Sleeping %.1fs before retry (attempt %s/%s)...",
+                        err_str,
+                        suggested_delay,
+                        attempt,
+                        self.attempt_limit,
+                    )
                     time.sleep(suggested_delay)
                 elif attempt < self.attempt_limit:
                     logger.warning(f"Agent API error (attempt {attempt}/{self.attempt_limit}): {e}")
@@ -645,7 +663,7 @@ if resp.status_code not in [200, 201]:
 
                 self.last_environment_id = getattr(interaction, "environment_id", None)
 
-                local_dest = Path("extracted_data") / "remote_downloads" / output_filename
+                local_dest = Path("output") / "remote_downloads" / output_filename
                 self.download_from_gcs(gcs_upload_path, local_dest)
                 if local_dest.exists():
                     return local_dest.read_text(encoding="utf-8")

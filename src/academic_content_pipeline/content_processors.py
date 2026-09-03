@@ -62,6 +62,33 @@ logger = logging.getLogger("academic_content_pipeline")
 PROMPTS_DIR = Path("prompts")
 
 
+def resolve_output_layout(
+    input_root: Optional[Path],
+    file_path: Path,
+    output_dir: Path,
+) -> tuple[Path, Path, Path, Path]:
+    """Resolve the mirrored final-output directory and the per-paper work folder.
+
+    Final XML/PDF artifacts are written beside the mirrored input directory layout.
+    Temporary OCR and prompt markdown files live underneath a per-paper work folder
+    named after the source file stem.
+    """
+    input_root = Path(input_root).resolve() if input_root is not None else None
+    file_path = Path(file_path).resolve()
+    output_root = Path(output_dir).resolve()
+
+    if input_root is not None and file_path.is_relative_to(input_root):
+        paper_dir = output_root / file_path.relative_to(input_root).parent
+    else:
+        paper_dir = output_root
+
+    work_dir = paper_dir / file_path.stem
+    markdown_dir = work_dir / "markdown"
+    img_output_dir = work_dir / "ocr"
+    temp_dir = img_output_dir / "temp_sliced"
+    return paper_dir, markdown_dir, img_output_dir, temp_dir
+
+
 def find_existing_output(output_dir: Path, stem: str, output_format: str) -> Optional[Path]:
     """Return an existing non-empty generated artifact for the same source file, if any."""
     if output_format == "xml":
@@ -282,7 +309,7 @@ class QuestionPaperExtractor:
         rate_limit_delay: float = 4.0,
         output_format: str = "xml",
         pdf_engine: str = "html",
-        staging_dir: Path = Path("extracted_data"),
+        staging_dir: Path = Path("output"),
         batch_size: int = 0,
         force_overwrite: bool = False,
         page_check_communicator: Optional[BaseAICommunicator] = None,
@@ -341,7 +368,7 @@ class QuestionPaperExtractor:
     def _detect_instruction_page_summary(
         self,
         page_data: Any,
-        output_dir: Path,
+        markdown_dir: Path,
         pdf_path: Path,
     ) -> Optional[str]:
         if page_data is None:
@@ -366,7 +393,7 @@ class QuestionPaperExtractor:
             page_range=(page_data.page_num, page_data.page_num),
         )
 
-        snapshot_path = output_dir / f"{pdf_path.stem}_instruction_page_check_prompt.md"
+        snapshot_path = markdown_dir / f"{pdf_path.stem}_instruction_page_check_prompt.md"
         raw_response = self.page_check_communicator.generate(
             system_instruction=(
                 "You are a strict exam-paper classifier. Determine whether the supplied page is an instruction page. "
@@ -400,13 +427,22 @@ class QuestionPaperExtractor:
         page_batch_size = len(pages) if batch_size <= 0 else max(1, int(batch_size))
         return [pages[i : i + page_batch_size] for i in range(0, len(pages), page_batch_size)]
 
-    def process_file(self, pdf_path: Path, output_dir: Path) -> Path:
+    def process_file(self, pdf_path: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Extracts questions from a single PDF and writes Moodle XML."""
         pdf_path = Path(pdf_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        item_start = time.perf_counter()
 
-        existing_output = find_existing_output(output_dir, pdf_path.stem, self.output_format)
+        paper_dir, markdown_dir, img_output_dir, temp_dir = resolve_output_layout(
+            input_root=input_root,
+            file_path=pdf_path,
+            output_dir=output_dir,
+        )
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        markdown_dir.mkdir(parents=True, exist_ok=True)
+
+        existing_output = find_existing_output(paper_dir, pdf_path.stem, self.output_format)
         if existing_output is not None and not self.force_overwrite:
             logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
             return existing_output
@@ -414,13 +450,13 @@ class QuestionPaperExtractor:
             logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; existing output at {existing_output} will be overwritten.")
 
         logger.info(f"\n{'='*60}\n📄 [EXTRACT] Processing: {pdf_path.name}\n{'='*60}")
-        img_output_dir = self.staging_dir / pdf_path.stem / "images"
 
         # 1. Convert PDF to Markdown & extract isolated diagrams via Mistral OCR
         ocr_result = self.ocr_engine.process_pdf(
             pdf_path=pdf_path,
             img_output_dir=img_output_dir,
             page_range=self.page_range,
+            temp_dir=temp_dir,
         )
 
         instruction_page_summary = None
@@ -430,7 +466,7 @@ class QuestionPaperExtractor:
                 (page for page in ocr_result.pages if getattr(page, "page_num", None) == target_page_num),
                 ocr_result.pages[0],
             )
-            instruction_page_summary = self._detect_instruction_page_summary(instruction_page, output_dir, pdf_path)
+            instruction_page_summary = self._detect_instruction_page_summary(instruction_page, markdown_dir, pdf_path)
 
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
@@ -513,12 +549,12 @@ class QuestionPaperExtractor:
                 )
 
                 snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(output_dir / snapshot_name, system_instruction, multimodal_batch)
+                write_prompt_snapshot(markdown_dir / snapshot_name, system_instruction, multimodal_batch)
                 raw_batch_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=output_dir / snapshot_name,
+                    prompt_snapshot_path=markdown_dir / snapshot_name,
                 )
 
                 valid_nodes, _ = extract_clean_question_nodes_with_status(raw_batch_output)
@@ -556,11 +592,11 @@ class QuestionPaperExtractor:
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"{output_stem}_extracted.{output_extension}",
-                    prompt_snapshot_path=output_dir / f"{output_stem}_extraction_prompt.md",
+                    prompt_snapshot_path=markdown_dir / f"{output_stem}_extraction_prompt.md",
                 )
                 return OutputRenderer("pdf", self.pdf_engine).render(
                     raw_output,
-                    output_dir,
+                    paper_dir,
                     f"{output_stem}_extracted",
                     ocr_result.all_images,
                 )
@@ -597,12 +633,12 @@ class QuestionPaperExtractor:
                 )
 
                 snapshot_name = f"{pdf_path.stem}_batch_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(output_dir / snapshot_name, system_instruction, multimodal_batch)
+                write_prompt_snapshot(markdown_dir / snapshot_name, system_instruction, multimodal_batch)
                 raw_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"{pdf_path.stem}_pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=output_dir / snapshot_name,
+                    prompt_snapshot_path=markdown_dir / snapshot_name,
                 )
                 valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
                 logger.info(f"  ✓ Batch {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
@@ -616,10 +652,12 @@ class QuestionPaperExtractor:
         )
 
         final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
-        output_filepath = output_dir / f"{pdf_path.stem}.xml"
+        output_filepath = paper_dir / f"{pdf_path.stem}.xml"
         output_filepath.write_text(final_xml, encoding="utf-8")
 
         logger.info(f"✅ Extracted {len(all_questions_xml)} total question(s) -> {output_filepath}")
+        elapsed = time.perf_counter() - item_start
+        logger.info("⏱️ [EXTRACT] %s completed in %.2f seconds (%.2f minutes)", pdf_path.name, elapsed, elapsed / 60.0)
         return output_filepath
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
@@ -633,10 +671,13 @@ class QuestionPaperExtractor:
             logger.warning(f"No PDF files found in {input_dir}")
             return []
 
+        directory_start = time.perf_counter()
         results = []
         for pdf_path in pdf_files:
-            out_file = self.process_file(pdf_path, output_dir)
+            out_file = self.process_file(pdf_path, output_dir, input_root=input_dir)
             results.append(out_file)
+        directory_elapsed = time.perf_counter() - directory_start
+        logger.info("⏱️ [EXTRACT DIRECTORY] Processed %d PDF(s) in %.2f seconds (%.2f minutes)", len(pdf_files), directory_elapsed, directory_elapsed / 60.0)
         return results
 
 
@@ -660,7 +701,7 @@ class QuestionGenerator:
         output_format: str = "xml",
         pdf_engine: str = "html",
         page_range: Optional[List[int]] = None,
-        staging_dir: Path = Path("extracted_data"),
+        staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
         spec_path: Optional[Path] = None,
         mcq_types_path: Path = Path("prompts/generator/mcq_types.json"),
@@ -682,11 +723,20 @@ class QuestionGenerator:
         self.spec_path = Path(spec_path).resolve() if spec_path else None
         self.mcq_types_path = Path(mcq_types_path)
 
-    def process_file(self, input_file: Path, output_dir: Path) -> Path:
+    def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Synthesizes questions from a chapter file (.pdf or .md)."""
         input_file = Path(input_file).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        item_start = time.perf_counter()
+
+        paper_dir, markdown_dir, img_output_dir, temp_dir = resolve_output_layout(
+            input_root=input_root,
+            file_path=input_file,
+            output_dir=output_dir,
+        )
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        markdown_dir.mkdir(parents=True, exist_ok=True)
 
         generation_stem = build_generated_output_stem(input_file.stem)
         logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}")
@@ -729,11 +779,11 @@ class QuestionGenerator:
         # 1. Read or OCR source content
         image_map: Dict[str, str] = {}
         if input_file.suffix.lower() == ".pdf":
-            img_output_dir = self.staging_dir / input_file.stem / "images"
             markdown_text, image_map = self.ocr_engine.process_pdf(
                 pdf_path=input_file,
                 img_output_dir=img_output_dir,
                 page_range=self.page_range,
+                temp_dir=temp_dir,
             )
         else:
             markdown_text = load_file_content(input_file)
@@ -792,8 +842,10 @@ class QuestionGenerator:
         output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
+        prompt_dir = markdown_dir
+        prompt_dir.mkdir(parents=True, exist_ok=True)
         write_prompt_snapshot(
-            output_dir / f"{generation_stem}_prompt.md",
+            prompt_dir / f"{generation_stem}_prompt.md",
             system_instruction,
             multimodal_batch,
         )
@@ -801,27 +853,31 @@ class QuestionGenerator:
             system_instruction=system_instruction,
             contents=multimodal_batch,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
+            prompt_snapshot_path=prompt_dir / f"{generation_stem}_prompt.md",
         )
 
         # 5. Render the generated artifact
         if self.output_format == "pdf":
             final_pdf_path = self.renderer.render(
                 raw_output,
-                output_dir,
+                paper_dir,
                 generation_stem,
                 image_map,
             )
             logger.info(f"✨ Compiled generated PDF to: {final_pdf_path}")
+            elapsed = time.perf_counter() - item_start
+            logger.info("⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
             return final_pdf_path
         else:
             final_xml_path = self.renderer.render(
                 raw_output,
-                output_dir,
+                paper_dir,
                 generation_stem,
                 image_map,
             )
             logger.info(f"✅ Saved generated Moodle XML to: {final_xml_path}")
+            elapsed = time.perf_counter() - item_start
+            logger.info("⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
             return final_xml_path
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
@@ -837,10 +893,13 @@ class QuestionGenerator:
             logger.warning(f"No valid chapter files (.pdf, .md) found in {input_dir}")
             return []
 
+        directory_start = time.perf_counter()
         results = []
         for file_path in source_files:
-            out_path = self.process_file(file_path, output_dir)
+            out_path = self.process_file(file_path, output_dir, input_root=input_dir)
             results.append(out_path)
+        directory_elapsed = time.perf_counter() - directory_start
+        logger.info("⏱️ [GENERATE-QUESTIONS DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
         return results
 
 
@@ -896,7 +955,7 @@ class PaperGenerator:
         output_format: str = "xml",
         pdf_engine: str = "html",
         sample_pdf: Optional[Path] = None,
-        staging_dir: Path = Path("extracted_data"),
+        staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
         mcq_types_path: Path = Path("prompts/generator/mcq_types.json"),
     ):
@@ -920,6 +979,7 @@ class PaperGenerator:
         spec_path = Path(spec_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        item_start = time.perf_counter()
 
         exam_name = spec_path.stem.upper() if spec_path.suffix.lower() != ".json" else "MOCK_EXAM"
         if spec_path.suffix.lower() == ".json":
@@ -961,12 +1021,16 @@ class PaperGenerator:
 
         logger.info(f"\n{'='*60}\n🎓 [GENERATE-PAPER] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
 
+        markdown_dir = output_dir / "markdown"
+        markdown_dir.mkdir(parents=True, exist_ok=True)
+
         # 1. Aggregate syllabi
         syllabus_blocks = []
         for subj in subjects:
             subj_name = subj.get("name", "Subject")
             total_qs = subj.get("total_questions", 0)
             s_file = Path(subj.get("syllabus_file", ""))
+            syllabus_start = time.perf_counter()
 
             content = ""
             if s_file.exists():
@@ -986,6 +1050,8 @@ class PaperGenerator:
                     syllabus_content=content,
                 )
             )
+            syllabus_elapsed = time.perf_counter() - syllabus_start
+            logger.info("⏱️ [GENERATE-PAPER SYLLABUS] %s completed in %.2f seconds (%.2f minutes)", s_file.name or subj_name, syllabus_elapsed, syllabus_elapsed / 60.0)
 
         all_syllabi_text = ("\n" + "=" * 40 + "\n").join(syllabus_blocks)
 
@@ -1028,7 +1094,7 @@ class PaperGenerator:
 
         # 4. Dispatch to communicator
         write_prompt_snapshot(
-            output_dir / f"{generation_stem}_prompt.md",
+            markdown_dir / f"{generation_stem}_prompt.md",
             system_instruction,
             multimodal_batch,
         )
@@ -1036,7 +1102,7 @@ class PaperGenerator:
             system_instruction=system_instruction,
             contents=multimodal_batch,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=output_dir / f"{generation_stem}_prompt.md",
+            prompt_snapshot_path=markdown_dir / f"{generation_stem}_prompt.md",
         )
 
         # 5. Render the generated artifact
@@ -1047,6 +1113,8 @@ class PaperGenerator:
                 generation_stem,
             )
             logger.info(f"✨ Compiled Mock Exam PDF to: {final_pdf_path}")
+            elapsed = time.perf_counter() - item_start
+            logger.info("⏱️ [GENERATE-PAPER] %s completed in %.2f seconds (%.2f minutes)", spec_path.name, elapsed, elapsed / 60.0)
             return final_pdf_path
         else:
             final_xml_path = self.renderer.render(
@@ -1055,4 +1123,6 @@ class PaperGenerator:
                 generation_stem,
             )
             logger.info(f"✅ Saved Mock Exam Moodle XML to: {final_xml_path}")
+            elapsed = time.perf_counter() - item_start
+            logger.info("⏱️ [GENERATE-PAPER] %s completed in %.2f seconds (%.2f minutes)", spec_path.name, elapsed, elapsed / 60.0)
             return final_xml_path

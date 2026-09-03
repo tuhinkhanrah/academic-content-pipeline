@@ -68,7 +68,7 @@ class MistralOCREngine:
     def slice_pdf_pages(
         pdf_path: Path,
         page_range: Optional[List[int]],
-        temp_dir: Path = Path("extracted_data/temp_sliced"),
+        temp_dir: Path = Path("output/ocr/temp_sliced"),
     ) -> Tuple[Path, bool]:
         """Extracts the specified page range [start, end] (1-based) from a PDF into a temporary file."""
         if not page_range or len(page_range) < 2:
@@ -133,6 +133,7 @@ class MistralOCREngine:
         img_output_dir: Path,
         page_range: Optional[List[int]] = None,
         enhance: bool = True,
+        temp_dir: Optional[Path] = None,
     ) -> Tuple[str, Dict[str, str]]:
         """
         Converts a PDF (or sliced range) to Markdown and extracts isolated diagram images.
@@ -142,7 +143,8 @@ class MistralOCREngine:
         """
         img_output_dir.mkdir(parents=True, exist_ok=True)
 
-        sliced_pdf, is_temp = self.slice_pdf_pages(pdf_path, page_range)
+        slice_dir = Path(temp_dir) if temp_dir is not None else Path("output/ocr/temp_sliced")
+        sliced_pdf, is_temp = self.slice_pdf_pages(pdf_path, page_range, temp_dir=slice_dir)
 
         try:
             file_hash = self.get_file_hash(sliced_pdf)

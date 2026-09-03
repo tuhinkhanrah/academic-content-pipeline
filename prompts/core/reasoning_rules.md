@@ -6,12 +6,13 @@
 - Do not provide an answer-only response or skip reasoning because the question appears simple.
 - Use only Class 11/12 (NCERT / Pre-Medical / Pre-Engineering) concepts and methods unless the source explicitly requires otherwise.
 
-## Concept-First Explanation
+## HARD STOP: Concept-First Explanation
 - Explain by concept, value, relationship, or result rather than by answer-option position.
 - Do not make the solution depend on option letters, option positions, statement numbers, graph numbers, figure numbers, table rows, or columns.
 - NEVER mention option labels or positional references in the reasoning/explanation, such as "Option (2)", "Choice B", "(A) is true", "Statement 1 is correct", "Graph 3", "Figure (2)", "Table II", or "Column I".
 - ALWAYS describe the concept or the correct relationship instead, for example: "The graph rises from zero at ... and peaks at ..." or "Both statements are incorrect because ...".
 - State the final conceptual answer clearly after the reasoning.
+- THIS IS A HARD STOP: If you mention an option label, option position, or a positional reference in the reasoning, the output is invalid.
 
 ## Numerical, Algebraic, and Diagram Questions
 Use these five stages in order:
