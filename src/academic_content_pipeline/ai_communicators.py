@@ -501,6 +501,157 @@ class AgentSessionBackend(BaseAICommunicator):
 # 3. Mode: With Remote Agent (Remote Sandbox + GCS Staging)
 # =======================================================================
 
+class BatchAPIBackend(BaseAICommunicator):
+    """Runs a single request through the Gemini Batch API and returns the generated text."""
+
+    def __init__(
+        self,
+        client: Optional[genai.Client] = None,
+        model_name: str = "gemini-flash-latest",
+        temperature: float = 0.1,
+        attempt_limit: int = 5,
+        retry_delay: float = 10.0,
+        verbose: bool = False,
+    ):
+        super().__init__(client=client, model_name=model_name, temperature=temperature, verbose=verbose)
+        self.attempt_limit = attempt_limit
+        self.retry_delay = retry_delay
+
+    @staticmethod
+    def _extract_text_from_batch_response(response_obj: Any) -> str:
+        """Normalize a batch response object/dict into a plain text string."""
+        if response_obj is None:
+            return ""
+
+        response = response_obj
+        if isinstance(response_obj, dict):
+            response = response_obj.get("response")
+        elif hasattr(response_obj, "response"):
+            response = response_obj.response
+
+        if response is None:
+            return ""
+
+        if isinstance(response, dict):
+            candidates = response.get("candidates", [])
+            if not candidates:
+                return str(response).strip()
+        else:
+            candidates = getattr(response, "candidates", []) or []
+
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+            else:
+                content = getattr(candidate, "content", None)
+                parts = getattr(content, "parts", []) if content is not None else []
+
+            for part in parts:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                else:
+                    text = getattr(part, "text", None)
+                if text:
+                    return text.strip()
+
+        if isinstance(response, dict):
+            text = response.get("text")
+            if text:
+                return str(text).strip()
+        else:
+            text = getattr(response, "text", None)
+            if text:
+                return str(text).strip()
+
+        return ""
+
+    def generate(
+        self,
+        system_instruction: str,
+        contents: Union[MultimodalBatch, List[Any], str],
+        **kwargs,
+    ) -> str:
+        batch = MultimodalBatch.from_contents(contents)
+        batch_contents = batch.to_chat_contents()
+
+        request = types.InlinedRequest(
+            model=self.model_name,
+            contents=batch_contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=self.temperature,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            ),
+        )
+
+        job_name = None
+        for attempt in range(1, self.attempt_limit + 1):
+            try:
+                logger.info(f"📦 Batch API request (attempt {attempt}/{self.attempt_limit})...")
+                job = self.client.batches.create(
+                    model=self.model_name,
+                    src=[request],
+                    config=types.CreateBatchJobConfig(display_name=f"academic_pipeline_batch_{int(time.time())}"),
+                )
+                job_name = getattr(job, "name", None)
+                if not job_name:
+                    raise ValueError("Batch job returned without a name.")
+
+                while True:
+                    current_job = self.client.batches.get(name=job_name)
+                    state = getattr(current_job, "state", None)
+                    if state is None:
+                        break
+
+                    state_name = state.name if hasattr(state, "name") else str(state)
+                    logger.info("⏳ Batch job state: %s", state_name)
+                    if state_name in {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}:
+                        break
+                    time.sleep(10)
+
+                if getattr(current_job, "state", None) is not None:
+                    current_state = current_job.state.name if hasattr(current_job.state, "name") else str(current_job.state)
+                    if current_state == "JOB_STATE_FAILED":
+                        raise RuntimeError(f"Batch job failed: {getattr(current_job, 'error', None)}")
+                    if current_state in {"JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}:
+                        raise RuntimeError(f"Batch job ended in non-success state: {current_state}")
+
+                dest = getattr(current_job, "dest", None)
+                if getattr(dest, "inlined_responses", None):
+                    for item in dest.inlined_responses:
+                        text = self._extract_text_from_batch_response(item)
+                        if text:
+                            return text
+                elif getattr(dest, "gcs_uri", None):
+                    logger.warning("Batch job output is GCS-backed; direct inline response extraction is unavailable.")
+
+                if getattr(current_job, "state", None) is None:
+                    logger.warning("Batch job state was unavailable; returning empty response.")
+                return ""
+
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
+                    match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
+                    suggested_delay = float(match.group(1)) + 2.0 if match else max(self.retry_delay * (2 ** (attempt - 1)), 25.0)
+                    logger.warning(
+                        "⚠️ Rate/Quota limit hit. Raw Gemini error: %s. Sleeping %.1fs before retry (attempt %s/%s)...",
+                        err_str,
+                        suggested_delay,
+                        attempt,
+                        self.attempt_limit,
+                    )
+                    time.sleep(suggested_delay)
+                elif attempt < self.attempt_limit:
+                    logger.warning(f"Batch API error (attempt {attempt}/{self.attempt_limit}): {e}")
+                    time.sleep(self.retry_delay)
+                else:
+                    raise
+
+        raise RuntimeError("Batch API generation failed after reaching max attempts.")
+
+
 class RemoteSandboxBackend(BaseAICommunicator):
     """
     Executes in a Google Cloud remote sandbox environment.

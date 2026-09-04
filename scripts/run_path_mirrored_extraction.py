@@ -9,7 +9,7 @@ Example:
     python scripts/run_path_mirrored_extraction.py \
         --source-root /data/pdfs \
         --output-root /workspace/output \
-        --mode context
+        --mode batch
 
 The inferred metadata may look like:
     standards = NEET
@@ -148,7 +148,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Mirror a PDF vault and infer metadata from source paths.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root directory containing PDFs.")
     parser.add_argument("--output-root", type=Path, required=True, help="Root directory where mirrored XML outputs are written.")
-    parser.add_argument("--mode", choices=["context", "agent", "remote"], default="context", help="Pipeline communication mode.")
+    parser.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context", help="Pipeline communication mode.")
     parser.add_argument("--languages", default="english", help="Target languages for extraction (comma-separated, e.g. english,hindi).")
     parser.add_argument("--model-name", default=None, help="Gemini model override. If omitted, the pipeline default is used.")
     parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes all pages in one request.")

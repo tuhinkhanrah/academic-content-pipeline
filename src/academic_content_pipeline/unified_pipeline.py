@@ -27,6 +27,7 @@ try:
     from .ai_communicators import (
         AgentSessionBackend,
         BaseAICommunicator,
+        BatchAPIBackend,
         ContextChatBackend,
         RemoteSandboxBackend,
         SingleShotBackend,
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
     from ai_communicators import (
         AgentSessionBackend,
         BaseAICommunicator,
+        BatchAPIBackend,
         ContextChatBackend,
         RemoteSandboxBackend,
         SingleShotBackend,
@@ -190,6 +192,13 @@ def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicato
             attempt_limit=args.retry_limit,
             verbose=args.verbose,
         )
+    elif mode == "batch":
+        return BatchAPIBackend(
+            client=genai_client,
+            model_name=args.model_name,
+            attempt_limit=args.retry_limit,
+            verbose=args.verbose,
+        )
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -216,9 +225,13 @@ def main():
     remote_sub = p_remote.add_subparsers(dest="task", required=True)
     add_task_subparsers(remote_sub)
 
+    p_batch = top_subparsers.add_parser("batch", help="Execute using Gemini Batch API requests.")
+    batch_sub = p_batch.add_subparsers(dest="task", required=True)
+    add_task_subparsers(batch_sub)
+
     # 2. Task-first direct syntax: `pipeline.py extract --mode ...`
     p_direct_ext = top_subparsers.add_parser("extract", help="Extract questions from PDF question papers.")
-    p_direct_ext.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
+    p_direct_ext.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_ext)
     p_direct_ext.add_argument("--input-dir", type=Path, default=None)
     p_direct_ext.add_argument("--input-file", type=Path, default=None)
@@ -228,7 +241,7 @@ def main():
     p_direct_ext.add_argument("--verify-online", action="store_true")
 
     p_direct_chap = top_subparsers.add_parser("generate-questions", help="Synthesize questions from chapter documents.")
-    p_direct_chap.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
+    p_direct_chap.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
@@ -239,7 +252,7 @@ def main():
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
     p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
-    p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote"], default="context")
+    p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
     p_direct_syl.add_argument("--sample-pdf", type=Path, default=None)
@@ -249,7 +262,7 @@ def main():
     args = parser.parse_args()
 
     # Determine mode and task based on syntax used
-    if args.top_command in ["context", "agent", "remote"]:
+    if args.top_command in ["context", "agent", "remote", "batch"]:
         mode = args.top_command
         task = args.task
     else:
