@@ -121,6 +121,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--retry-limit", type=int, default=5, help="Max retry attempts per page on API/quota error.")
     parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes the entire document in one batch.")
     parser.add_argument("--force", action="store_true", help="Re-run extraction even if a non-empty target output already exists.")
+    parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache and force a fresh Mistral OCR run.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
 
 
@@ -159,7 +160,14 @@ def add_task_subparsers(subparser_dest: Any) -> None:
 
 def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicator:
     """Builds the AI communication backend matching the selected mode."""
-    genai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    genai_client = None
+    if os.environ.get("GEMINI_API_KEY"):
+        genai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    else:
+        logger.warning(
+            "GEMINI_API_KEY is not set. The communicator object is created without a client; "
+            "real generation calls will fail until the key is configured."
+        )
 
     if mode == "context":
         return ContextChatBackend(
@@ -285,7 +293,7 @@ def main():
 
     # Initialize communication backend & OCR engine
     communicator = build_communicator(mode, args)
-    ocr_engine = MistralOCREngine()
+    ocr_engine = MistralOCREngine(enable_cache=not getattr(args, "disable_ocr_cache", False))
 
     # Auto-infer PDF engine and prompt defaults if not explicitly set
     if getattr(args, "output_format", "xml") == "pdf":
@@ -437,6 +445,7 @@ def main():
 
         elapsed = time.perf_counter() - start_time
         logger.info("⏱️ Total operation time: %.2f seconds (%.2f minutes)", elapsed, elapsed / 60.0)
+        ocr_engine.log_cache_summary()
     except Exception:
         elapsed = time.perf_counter() - start_time
         logger.exception("Pipeline command failed after %.2f seconds (%.2f minutes).", elapsed, elapsed / 60.0)

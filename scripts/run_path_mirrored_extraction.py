@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, List
 
@@ -144,7 +145,17 @@ def command_for_pdf(
     return cmd
 
 
-def main() -> int:
+def execute_pdf_command(cmd: List[str], pdf_path: Path) -> int:
+    env = os.environ.copy()
+    env.setdefault("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        print(f"Failed for {pdf_path}: exit code {result.returncode}", file=sys.stderr)
+        return result.returncode
+    return 0
+
+
+def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mirror a PDF vault and infer metadata from source paths.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root directory containing PDFs.")
     parser.add_argument("--output-root", type=Path, required=True, help="Root directory where mirrored XML outputs are written.")
@@ -152,12 +163,15 @@ def main() -> int:
     parser.add_argument("--languages", default="english", help="Target languages for extraction (comma-separated, e.g. english,hindi).")
     parser.add_argument("--model-name", default=None, help="Gemini model override. If omitted, the pipeline default is used.")
     parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes all pages in one request.")
+    parser.add_argument("--parallel-workers", type=int, default=1, help="Maximum number of PDFs to process concurrently. Use 1 for serial execution.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote mode.")
     parser.add_argument("--instruction-file", type=Path, default=None, help="Optional instruction file to pass to extraction.")
     parser.add_argument("--dry-run", action="store_true", help="Only print the commands without executing them.")
     parser.add_argument("--force", action="store_true", help="Re-run extraction even when the target XML already exists.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    max_workers = max(1, int(args.parallel_workers)) if args.parallel_workers is not None else 1
+    args.parallel_workers = max_workers
 
     source_root = args.source_root.resolve()
     output_root = args.output_root.resolve()
@@ -169,6 +183,7 @@ def main() -> int:
     processed = 0
     skipped = 0
     skipped_files = []
+    pending_jobs = []
 
     for pdf_path in iter_pdfs(source_root):
         rel = pdf_path.relative_to(source_root)
@@ -203,15 +218,56 @@ def main() -> int:
         )
         if args.dry_run:
             print(" ".join(cmd))
-        else:
-            env = os.environ.copy()
-            env.setdefault("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
-            result = subprocess.run(cmd, env=env)
-            if result.returncode != 0:
-                print(f"Failed for {pdf_path}: exit code {result.returncode}", file=sys.stderr)
-                return result.returncode
+            processed += 1
+            continue
 
-        processed += 1
+        pending_jobs.append((pdf_path, cmd))
+
+    if args.dry_run:
+        if processed == 0 and skipped > 0:
+            print(f"Skipped {skipped} PDF(s) because their outputs already exist. Use --force to overwrite:")
+            for input_pdf, output_xml in skipped_files:
+                print(f"  - Input: {input_pdf}")
+                print(f"    Output: {output_xml}")
+        else:
+            print(f"Processed {processed} PDF(s).")
+            if skipped > 0:
+                print(f"Skipped {skipped} PDF(s):")
+                for input_pdf, output_xml in skipped_files:
+                    print(f"  - Input: {input_pdf}")
+                    print(f"    Output: {output_xml}")
+        return 0
+
+    if not pending_jobs:
+        if processed == 0 and skipped > 0:
+            print(f"Skipped {skipped} PDF(s) because their outputs already exist. Use --force to overwrite:")
+            for input_pdf, output_xml in skipped_files:
+                print(f"  - Input: {input_pdf}")
+                print(f"    Output: {output_xml}")
+        else:
+            print(f"Processed {processed} PDF(s).")
+            if skipped > 0:
+                print(f"Skipped {skipped} PDF(s):")
+                for input_pdf, output_xml in skipped_files:
+                    print(f"  - Input: {input_pdf}")
+                    print(f"    Output: {output_xml}")
+        return 0
+
+    with ThreadPoolExecutor(max_workers=args.parallel_workers) as executor:
+        future_to_pdf = {
+            executor.submit(execute_pdf_command, cmd, pdf_path): pdf_path
+            for pdf_path, cmd in pending_jobs
+        }
+        for future in as_completed(future_to_pdf):
+            pdf_path = future_to_pdf[future]
+            try:
+                result_code = future.result()
+            except Exception as exc:
+                print(f"Failed for {pdf_path}: {exc}", file=sys.stderr)
+                return 1
+            if result_code != 0:
+                return result_code
+            processed += 1
 
     if processed == 0 and skipped > 0:
         print(f"Skipped {skipped} PDF(s) because their outputs already exist. Use --force to overwrite:")

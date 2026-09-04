@@ -678,6 +678,7 @@ class QuestionPaperExtractor:
             results.append(out_file)
         directory_elapsed = time.perf_counter() - directory_start
         logger.info("⏱️ [EXTRACT DIRECTORY] Processed %d PDF(s) in %.2f seconds (%.2f minutes)", len(pdf_files), directory_elapsed, directory_elapsed / 60.0)
+        self.ocr_engine.log_cache_summary()
         return results
 
 
@@ -900,6 +901,7 @@ class QuestionGenerator:
             results.append(out_path)
         directory_elapsed = time.perf_counter() - directory_start
         logger.info("⏱️ [GENERATE-QUESTIONS DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
+        self.ocr_engine.log_cache_summary()
         return results
 
 

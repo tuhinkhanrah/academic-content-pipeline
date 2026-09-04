@@ -27,6 +27,18 @@ from google.genai import types
 logger = logging.getLogger("academic_content_pipeline")
 
 
+def create_genai_client(api_key: Optional[str] = None) -> Optional[genai.Client]:
+    """Create a client only when a real API key is available.
+
+    A missing key is valid during object construction for tests or dry runs, but
+    real generation must fail with a clear error when the backend is used.
+    """
+    resolved_api_key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not resolved_api_key:
+        return None
+    return genai.Client(api_key=resolved_api_key)
+
+
 @dataclass
 class ImageAttachment:
     """Represents an isolated diagram or image attachment for a prompt batch."""
@@ -164,7 +176,7 @@ class BaseAICommunicator(ABC):
         temperature: float = 0.1,
         verbose: bool = False,
     ):
-        self.client = client or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        self.client = client if client is not None else create_genai_client()
         self.model_name = model_name
         self.temperature = temperature
         self.verbose = verbose
