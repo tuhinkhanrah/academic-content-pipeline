@@ -104,8 +104,10 @@ def command_for_pdf(
     mode: str,
     languages: str,
     model_name: str | None = None,
+    ocr_model: str | None = None,
     batch_size: int = 0,
     force: bool = False,
+    disable_ocr_cache: bool = False,
     bucket_name: str | None = None,
     instruction_file: Path | None = None,
 ) -> List[str]:
@@ -132,10 +134,14 @@ def command_for_pdf(
     ]
     if model_name:
         cmd.extend(["--model-name", model_name])
+    if ocr_model:
+        cmd.extend(["--ocr-model", ocr_model])
     if batch_size is not None:
         cmd.extend(["--batch-size", str(int(batch_size))])
     if force:
         cmd.append("--force")
+    if disable_ocr_cache:
+        cmd.append("--disable-ocr-cache")
     if instruction_file is not None:
         cmd.extend(["--instruction-file", str(instruction_file)])
     if mode == "remote":
@@ -159,17 +165,21 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mirror a PDF vault and infer metadata from source paths.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root directory containing PDFs.")
     parser.add_argument("--output-root", type=Path, required=True, help="Root directory where mirrored XML outputs are written.")
-    parser.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context", help="Pipeline communication mode.")
+    parser.add_argument("--mode", choices=["context", "agent", "remote", "batch", "sequential"], default="context", help="Pipeline communication mode.")
     parser.add_argument("--languages", default="english", help="Target languages for extraction (comma-separated, e.g. english,hindi).")
     parser.add_argument("--model-name", default=None, help="Gemini model override. If omitted, the pipeline default is used.")
+    parser.add_argument("--model", "--ocr-model", dest="ocr_model", default=os.environ.get("MISTRAL_OCR_MODEL", "mistral-ocr-latest"), help="Mistral OCR model name to use.")
     parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes all pages in one request.")
     parser.add_argument("--parallel-workers", type=int, default=1, help="Maximum number of PDFs to process concurrently. Use 1 for serial execution.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote mode.")
     parser.add_argument("--instruction-file", type=Path, default=None, help="Optional instruction file to pass to extraction.")
     parser.add_argument("--dry-run", action="store_true", help="Only print the commands without executing them.")
     parser.add_argument("--force", action="store_true", help="Re-run extraction even when the target XML already exists.")
+    parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the extraction run.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
     args = parser.parse_args(argv)
+    if args.mode == "sequential":
+        args.mode = "context"
     max_workers = max(1, int(args.parallel_workers)) if args.parallel_workers is not None else 1
     args.parallel_workers = max_workers
 
@@ -211,8 +221,10 @@ def main(argv: List[str] | None = None) -> int:
             args.mode,
             args.languages,
             model_name=args.model_name,
+            ocr_model=args.ocr_model,
             batch_size=args.batch_size,
             force=args.force,
+            disable_ocr_cache=args.disable_ocr_cache,
             bucket_name=args.bucket_name,
             instruction_file=args.instruction_file,
         )

@@ -56,6 +56,8 @@ Construct the question name dynamically using **ONLY** the available metadata to
 ## Mandatory Tag Formatting Laws
 - **CRITICAL:** EVERY single tag MUST follow the `key:value` format.
 - **FORBIDDEN:** NEVER output raw values like `jee_main` or `mathematics`. You MUST output `standard:jee_main` and `subject:mathematics`.
+- **FORBIDDEN:** NEVER emit placeholder values such as `none`, `n/a`, `unknown`, `not_available`, or `calculation:none`.
+- **HARD RULE:** If a tag is not explicitly available or inferable from the source, omit that entire tag. Do not invent a value, do not substitute `none`, and do not emit a tag with a placeholder.
 - Tag keys must be lowercase.
 - Tag values must be lowercase `snake_case` (except numeric year).
 - Tag text format: `<tag><text>key:value</text></tag>`

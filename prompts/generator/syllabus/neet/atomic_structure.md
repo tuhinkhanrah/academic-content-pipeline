@@ -1,0 +1,6 @@
+# NEET (UG) Chemistry Syllabus
+
+## PHYSICAL CHEMISTRY
+
+### UNIT 2: ATOMIC STRUCTURE
+Nature of electromagnetic radiation, photoelectric effect; Spectrum of the hydrogen atom. Bohr model of a hydrogen atom - its postulates, derivation of the relations for the energy of the electron and radii of the different orbits, limitations of Bohr's model; Dual nature of matter, de Broglie's relationship. Heisenberg uncertainty principle. Elementary ideas of quantum mechanics, the quantum mechanical model of the atom, its important features. Concept of atomic orbitals as one-electron wave functions; Variation of $\Psi$ and $\Psi^2$ with r for 1s and 2s orbitals; various quantum numbers (principal, angular momentum, and magnetic quantum numbers) and their significance; shapes of s, p, and d orbitals, electron spin and spin quantum number: Rules for filling electrons in orbitals - Aufbau principle, Pauli's exclusion principle and Hund's rule, electronic configuration of elements, extra stability of half-filled and completely filled orbitals.

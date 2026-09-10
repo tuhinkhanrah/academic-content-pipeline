@@ -36,6 +36,7 @@ try:
         PaperGenerator,
         QuestionGenerator,
         QuestionPaperExtractor,
+        SummaryGenerator,
     )
     from .mistral_ocr import MistralOCREngine
     from .pipeline_utils import setup_logger
@@ -52,6 +53,7 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
         PaperGenerator,
         QuestionGenerator,
         QuestionPaperExtractor,
+        SummaryGenerator,
     )
     from mistral_ocr import MistralOCREngine
     from pipeline_utils import setup_logger
@@ -115,6 +117,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-flash-latest", help="Gemini model name.")
+    parser.add_argument("--ocr-model", "--model", dest="ocr_model", default=os.environ.get("MISTRAL_OCR_MODEL", "mistral-ocr-latest"), help="Mistral OCR model name to use.")
     parser.add_argument("--agent-name", default="antigravity-preview-05-2026", help="Agent identifier.")
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
@@ -149,7 +152,15 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
 
-    # 3. generate-paper
+    # 3. generate-summary
+    p_summary = subparser_dest.add_parser("generate-summary", help="Generate a chapter or syllabus summary into HTML and PDF.")
+    add_common_options(p_summary)
+    p_summary.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
+    p_summary.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
+    p_summary.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
+    p_summary.add_argument("--title", default=None, help="Optional title for the generated summary document.")
+
+    # 4. generate-paper
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to JSON spec or syllabus markdown/pdf.")
@@ -259,6 +270,14 @@ def main():
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
+    p_direct_summary = top_subparsers.add_parser("generate-summary", help="Generate a chapter summary to HTML and PDF.")
+    p_direct_summary.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
+    add_common_options(p_direct_summary)
+    p_direct_summary.add_argument("--input-dir", type=Path, default=None)
+    p_direct_summary.add_argument("--input-file", type=Path, default=None)
+    p_direct_summary.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
+    p_direct_summary.add_argument("--title", default=None)
+
     p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_syl)
@@ -293,7 +312,10 @@ def main():
 
     # Initialize communication backend & OCR engine
     communicator = build_communicator(mode, args)
-    ocr_engine = MistralOCREngine(enable_cache=not getattr(args, "disable_ocr_cache", False))
+    ocr_engine = MistralOCREngine(
+        model_name=getattr(args, "ocr_model", None),
+        enable_cache=not getattr(args, "disable_ocr_cache", False),
+    )
 
     # Auto-infer PDF engine and prompt defaults if not explicitly set
     if getattr(args, "output_format", "xml") == "pdf":
@@ -334,6 +356,9 @@ def main():
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/question_generator.md")
             else:
                 args.prompt = Path("prompts/generator/xml/question_generator.md")
+        elif task == "generate-summary":
+            args.output_format = "pdf"
+            args.prompt = Path("prompts/generator/summary_request.md")
         elif task == "generate-paper":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/paper_generator.md")
@@ -420,6 +445,28 @@ def main():
                 generator.process_directory(args.input_dir, args.output_dir)
             else:
                 logger.error("Please specify --input-dir or --input-file for chapter generation.")
+                sys.exit(1)
+
+        elif task == "generate-summary":
+            args.output_format = "pdf"
+            summary_generator = SummaryGenerator(
+                communicator=communicator,
+                ocr_engine=ocr_engine,
+                rules_dict=rules_dict,
+                languages=languages_list,
+                standards=args.standards,
+                tags=args.tags,
+                output_format="pdf",
+                pdf_engine=args.pdf_engine,
+                page_range=args.page_range,
+                summary_title=getattr(args, "title", None),
+            )
+            if args.input_file:
+                summary_generator.process_file(args.input_file, args.output_dir)
+            elif args.input_dir:
+                summary_generator.process_directory(args.input_dir, args.output_dir)
+            else:
+                logger.error("Please specify --input-dir or --input-file for summary generation.")
                 sys.exit(1)
 
         elif task == "generate-paper":

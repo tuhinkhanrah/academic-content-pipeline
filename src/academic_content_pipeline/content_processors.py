@@ -62,16 +62,207 @@ logger = logging.getLogger("academic_content_pipeline")
 PROMPTS_DIR = Path("prompts")
 
 
+def build_summary_system_instruction() -> str:
+    """Load the summary-specific system instruction from the markdown prompt file."""
+    return (PROMPTS_DIR / "generator" / "summary_system.md").read_text(encoding="utf-8").strip()
+
+
+def build_summary_language_instruction(languages: List[str]) -> str:
+    """Build summary-specific language guidance from the markdown rules file."""
+    clean_langs = [lang.strip().lower() for lang in languages if lang and lang.strip()]
+    if not clean_langs:
+        clean_langs = ["english"]
+
+    if len(clean_langs) == 1 and clean_langs[0] != "english":
+        target_lang = clean_langs[0].capitalize()
+        return (
+            f"Write the entire summary in {target_lang} only. Use clear academic {target_lang} terminology, preserve the chapter structure, "
+            "and keep all mathematical equations, notation, variables, scientific names, and SVG labels unchanged. "
+            "Do not add any English summary text, English section labels, or exam-style answer formatting."
+        )
+
+    primary_lang = "english" if "english" in clean_langs else clean_langs[0]
+    secondary_langs = [lang for lang in clean_langs if lang != primary_lang]
+
+    if not secondary_langs:
+        return (
+            "Write the summary in English only. Keep the final document in one language, maintain a clear academic tone, "
+            "and do not output questions, answer options, or exam-style formatting."
+        )
+
+    summary_rules = (PROMPTS_DIR / "generator" / "summary_language_rules.md").read_text(encoding="utf-8").strip()
+    summary_rules = summary_rules.replace("{{languages}}", ", ".join(clean_langs))
+    if len(clean_langs) > 1:
+        target_lang = secondary_langs[0].capitalize()
+        summary_rules = summary_rules.replace("target-language", target_lang)
+        summary_rules = summary_rules.replace("requested language", f"{target_lang} language")
+    elif clean_langs[0] != "english":
+        target_lang = clean_langs[0].capitalize()
+        summary_rules = summary_rules.replace("target-language", target_lang)
+        summary_rules = summary_rules.replace("requested language", f"{target_lang} language")
+    return summary_rules
+
+
+class SummaryGenerator:
+    """Generates chapter summaries from PDFs or Markdown files and renders them as HTML/PDF."""
+
+    def __init__(
+        self,
+        communicator: BaseAICommunicator,
+        ocr_engine: Optional[MistralOCREngine] = None,
+        rules_dict: Optional[Dict[str, Any]] = None,
+        languages: Optional[List[str]] = None,
+        standards: str = "General",
+        tags: str = "",
+        output_format: str = "pdf",
+        pdf_engine: str = "html",
+        page_range: Optional[List[int]] = None,
+        staging_dir: Path = Path("output"),
+        summary_title: Optional[str] = None,
+    ):
+        self.communicator = communicator
+        self.ocr_engine = ocr_engine or MistralOCREngine()
+        self.rules_dict = rules_dict or {}
+        self.languages = languages or ["english"]
+        self.standards = standards
+        self.tags = tags
+        self.output_format = "pdf"
+        self.pdf_engine = pdf_engine.lower()
+        self.renderer = OutputRenderer(self.output_format, self.pdf_engine)
+        self.page_range = page_range
+        self.staging_dir = Path(staging_dir)
+        self.summary_title = summary_title
+
+    def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
+        """Summarizes a chapter file (.pdf or .md) and writes a final HTML/PDF artifact."""
+        input_file = Path(input_file)
+        if not input_file.exists():
+            raise FileNotFoundError(f"Summary input file does not exist: {input_file}")
+
+        input_file = input_file.resolve()
+        output_dir = Path(output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        item_start = time.perf_counter()
+
+        paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir = resolve_output_layout(
+            input_root=input_root,
+            file_path=input_file,
+            output_dir=output_dir,
+        )
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        markdown_dir.mkdir(parents=True, exist_ok=True)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+
+        generation_stem = build_generated_output_stem(input_file.stem)
+        logger.info(
+            f"\n{'='*60}\n📘 [GENERATE-SUMMARY] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}"
+        )
+
+        image_map: Dict[str, str] = {}
+        if input_file.suffix.lower() == ".pdf":
+            markdown_text, image_map = self.ocr_engine.process_pdf(
+                pdf_path=input_file,
+                img_output_dir=img_output_dir,
+                page_range=self.page_range,
+                temp_dir=temp_dir,
+            )
+        else:
+            markdown_text = load_file_content(input_file)
+
+        system_instruction = build_summary_system_instruction()
+        lang_instruction, lang_tags = build_language_instructions(
+            self.languages,
+            output_format=self.output_format,
+            pdf_engine=self.pdf_engine,
+        )
+        lang_instruction = build_summary_language_instruction(self.languages)
+        all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
+
+        summary_title = self.summary_title or input_file.stem.replace("_", " ").replace("-", " ").title()
+        prompt_text = load_prompt_template(
+            PROMPTS_DIR / "generator" / "summary_request.md",
+            title=summary_title,
+            chapter_content=markdown_text,
+            languages=", ".join(self.languages),
+            standards=self.standards,
+            global_tags=", ".join(all_tags),
+            output_format=self.output_format.upper(),
+            pdf_engine=self.pdf_engine.upper(),
+            language_instruction=lang_instruction,
+        )
+
+        batch_images = [
+            ImageAttachment(reference_id=img_name, source=filepath)
+            for img_name, filepath in unique_image_items(image_map)
+        ]
+        multimodal_batch = MultimodalBatch(
+            text=prompt_text,
+            images=batch_images,
+        )
+
+        output_artifact_name = f"{generation_stem}.html"
+        snapshot_path = prompt_dir / f"{generation_stem}_summary_prompt.md"
+        write_prompt_snapshot(
+            snapshot_path,
+            system_instruction,
+            multimodal_batch,
+        )
+
+        raw_output = self.communicator.generate(
+            system_instruction=system_instruction,
+            contents=multimodal_batch,
+            output_filename=output_artifact_name,
+            prompt_snapshot_path=snapshot_path,
+        )
+
+        final_pdf_path = self.renderer.render(
+            raw_output,
+            paper_dir,
+            generation_stem,
+            image_map,
+        )
+        logger.info(f"✨ Compiled summary PDF to: {final_pdf_path}")
+        elapsed = time.perf_counter() - item_start
+        logger.info("⏱️ [GENERATE-SUMMARY] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
+        return final_pdf_path
+
+    def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
+        """Processes all chapter PDFs and MDs in an input directory."""
+        input_dir = Path(input_dir).resolve()
+        source_files = [
+            f for f in input_dir.rglob("*")
+            if f.suffix.lower() in [".pdf", ".md"]
+            and not f.name.startswith("sliced_")
+            and not f.name.startswith("temp_")
+        ]
+        if not source_files:
+            logger.warning(f"No valid chapter files (.pdf, .md) found in {input_dir}")
+            return []
+
+        directory_start = time.perf_counter()
+        results = []
+        for file_path in source_files:
+            out_path = self.process_file(file_path, output_dir, input_root=input_dir)
+            results.append(out_path)
+        directory_elapsed = time.perf_counter() - directory_start
+        logger.info("⏱️ [GENERATE-SUMMARY DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
+        self.ocr_engine.log_cache_summary()
+        return results
+
+
+
+
 def resolve_output_layout(
     input_root: Optional[Path],
     file_path: Path,
     output_dir: Path,
-) -> tuple[Path, Path, Path, Path]:
-    """Resolve the mirrored final-output directory and the per-paper work folder.
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Resolve the mirrored final-output directory and the per-paper work folders.
 
-    Final XML/PDF artifacts are written beside the mirrored input directory layout.
-    Temporary OCR and prompt markdown files live underneath a per-paper work folder
-    named after the source file stem.
+    Final XML/PDF artifacts live beside the mirrored source path.
+    Persistent OCR outputs live under the per-paper markdown/ and ocr/ folders.
+    Temporary prompt snapshots live under a separate .tmp/prompts directory so they
+    do not pollute the reusable artifact tree.
     """
     input_root = Path(input_root).resolve() if input_root is not None else None
     file_path = Path(file_path).resolve()
@@ -86,7 +277,8 @@ def resolve_output_layout(
     markdown_dir = work_dir / "markdown"
     img_output_dir = work_dir / "ocr"
     temp_dir = img_output_dir / "temp_sliced"
-    return paper_dir, markdown_dir, img_output_dir, temp_dir
+    prompt_dir = work_dir / ".tmp" / "prompts"
+    return paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir
 
 
 def find_existing_output(output_dir: Path, stem: str, output_format: str) -> Optional[Path]:
@@ -434,13 +626,14 @@ class QuestionPaperExtractor:
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
 
-        paper_dir, markdown_dir, img_output_dir, temp_dir = resolve_output_layout(
+        paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir = resolve_output_layout(
             input_root=input_root,
             file_path=pdf_path,
             output_dir=output_dir,
         )
         paper_dir.mkdir(parents=True, exist_ok=True)
         markdown_dir.mkdir(parents=True, exist_ok=True)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
 
         existing_output = find_existing_output(paper_dir, pdf_path.stem, self.output_format)
         if existing_output is not None and not self.force_overwrite:
@@ -549,12 +742,12 @@ class QuestionPaperExtractor:
                 )
 
                 snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(markdown_dir / snapshot_name, system_instruction, multimodal_batch)
+                write_prompt_snapshot(prompt_dir / snapshot_name, system_instruction, multimodal_batch)
                 raw_batch_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=markdown_dir / snapshot_name,
+                    prompt_snapshot_path=prompt_dir / snapshot_name,
                 )
 
                 valid_nodes, _ = extract_clean_question_nodes_with_status(raw_batch_output)
@@ -588,11 +781,13 @@ class QuestionPaperExtractor:
 
                 output_stem = pdf_path.stem
                 output_extension = "tex" if self.pdf_engine == "tex" else "html"
+                snapshot_path = prompt_dir / f"{output_stem}_extraction_prompt.md"
+                write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
                 raw_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"{output_stem}_extracted.{output_extension}",
-                    prompt_snapshot_path=markdown_dir / f"{output_stem}_extraction_prompt.md",
+                    prompt_snapshot_path=snapshot_path,
                 )
                 return OutputRenderer("pdf", self.pdf_engine).render(
                     raw_output,
@@ -633,12 +828,12 @@ class QuestionPaperExtractor:
                 )
 
                 snapshot_name = f"{pdf_path.stem}_batch_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(markdown_dir / snapshot_name, system_instruction, multimodal_batch)
+                write_prompt_snapshot(prompt_dir / snapshot_name, system_instruction, multimodal_batch)
                 raw_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
                     output_filename=f"{pdf_path.stem}_pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=markdown_dir / snapshot_name,
+                    prompt_snapshot_path=prompt_dir / snapshot_name,
                 )
                 valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
                 logger.info(f"  ✓ Batch {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
@@ -731,13 +926,14 @@ class QuestionGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
 
-        paper_dir, markdown_dir, img_output_dir, temp_dir = resolve_output_layout(
+        paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir = resolve_output_layout(
             input_root=input_root,
             file_path=input_file,
             output_dir=output_dir,
         )
         paper_dir.mkdir(parents=True, exist_ok=True)
         markdown_dir.mkdir(parents=True, exist_ok=True)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
 
         generation_stem = build_generated_output_stem(input_file.stem)
         logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}")
@@ -843,10 +1039,10 @@ class QuestionGenerator:
         output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
-        prompt_dir = markdown_dir
         prompt_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = prompt_dir / f"{generation_stem}_prompt.md"
         write_prompt_snapshot(
-            prompt_dir / f"{generation_stem}_prompt.md",
+            snapshot_path,
             system_instruction,
             multimodal_batch,
         )
@@ -854,7 +1050,7 @@ class QuestionGenerator:
             system_instruction=system_instruction,
             contents=multimodal_batch,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=prompt_dir / f"{generation_stem}_prompt.md",
+            prompt_snapshot_path=snapshot_path,
         )
 
         # 5. Render the generated artifact
@@ -1024,7 +1220,9 @@ class PaperGenerator:
         logger.info(f"\n{'='*60}\n🎓 [GENERATE-PAPER] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
 
         markdown_dir = output_dir / "markdown"
+        prompt_dir = output_dir / ".tmp" / "prompts"
         markdown_dir.mkdir(parents=True, exist_ok=True)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Aggregate syllabi
         syllabus_blocks = []
@@ -1095,8 +1293,9 @@ class PaperGenerator:
         output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
+        snapshot_path = prompt_dir / f"{generation_stem}_prompt.md"
         write_prompt_snapshot(
-            markdown_dir / f"{generation_stem}_prompt.md",
+            snapshot_path,
             system_instruction,
             multimodal_batch,
         )
@@ -1104,7 +1303,7 @@ class PaperGenerator:
             system_instruction=system_instruction,
             contents=multimodal_batch,
             output_filename=output_artifact_name,
-            prompt_snapshot_path=markdown_dir / f"{generation_stem}_prompt.md",
+            prompt_snapshot_path=snapshot_path,
         )
 
         # 5. Render the generated artifact

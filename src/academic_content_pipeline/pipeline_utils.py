@@ -134,6 +134,7 @@ def normalize_html_math_source(html_content: str) -> str:
     return html_content
 
 
+
 def format_instruction_profile(profile: Dict[str, Any]) -> str:
     """Render a structured exam profile as a readable AI instruction contract."""
     lines = ["## STRUCTURED EXAM PROFILE"]
@@ -651,15 +652,17 @@ def compile_html_to_pdf(
     logger.info(f"Compiling HTML to PDF via Headless Chrome -> {output_pdf_path}...")
     cmd = [
         "google-chrome",
-        "--headless",
+        "--headless=new",  # Use the modern Chrome headless engine
         "--disable-gpu",
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--run-all-compositor-stages-before-draw",
-        "--virtual-time-budget=5000",
+        "--virtual-time-budget=10000",  # Increased budget to allow webfonts & MathJax to load
+        "--enable-font-antialiasing",
+        "--font-render-hinting=full",
         "--no-pdf-header-footer",
-        f"--print-to-pdf={output_pdf_path}",
-        str(html_file),
+        f"--print-to-pdf={output_pdf_path.resolve()}",
+        str(html_file.resolve()),
     ]
     try:
         subprocess.run(cmd, check=True, cwd=str(output_pdf_path.parent))

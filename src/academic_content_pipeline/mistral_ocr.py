@@ -48,12 +48,18 @@ class OCRResult:
 class MistralOCREngine:
     """Encapsulates Mistral OCR processing, PDF slicing, and diagram extraction."""
 
-    def __init__(self, api_key: Optional[str] = None, cache_dir: Optional[Path] = None, enable_cache: bool = True):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        cache_dir: Optional[Path] = None,
+        enable_cache: bool = True,
+        model_name: Optional[str] = None,
+    ):
         self.api_key = api_key or os.environ.get("MISTRAL_API_KEY")
         if not self.api_key:
             raise ValueError("MISTRAL_API_KEY environment variable or argument must be set.")
 
-        self.model_name = "mistral-ocr-latest"
+        self.model_name = model_name or os.environ.get("MISTRAL_OCR_MODEL") or "mistral-ocr-latest"
         self.cache_version = "ocr-v1"
         self.cache_dir = Path(cache_dir) if cache_dir is not None else Path("output/ocr/cache")
         self.enable_cache = bool(enable_cache)
@@ -62,8 +68,8 @@ class MistralOCREngine:
         self.client = Mistral(api_key=self.api_key, client=self.http_client)
 
     def _ensure_cache_defaults(self) -> None:
-        if not hasattr(self, "model_name"):
-            self.model_name = "mistral-ocr-latest"
+        if not hasattr(self, "model_name") or not self.model_name:
+            self.model_name = os.environ.get("MISTRAL_OCR_MODEL") or "mistral-ocr-latest"
         if not hasattr(self, "cache_version"):
             self.cache_version = "ocr-v1"
         if not hasattr(self, "cache_dir"):
@@ -124,7 +130,11 @@ class MistralOCREngine:
         return start, end
 
     def build_cache_key(self, pdf_path: Path, page_range: Optional[List[int]] = None) -> str:
-        """Create a stable local cache key from the original PDF content and the requested page range."""
+        """Create a stable local cache key from the original PDF content and the requested page range.
+
+        The OCR cache is intentionally model-agnostic. A given PDF and page range should resolve to
+        the same local cache entry regardless of which Mistral OCR model variant is used.
+        """
         self._ensure_cache_defaults()
         file_hash = self.get_file_hash(pdf_path)
         normalized_range = self.normalize_page_range(page_range)
@@ -132,12 +142,50 @@ class MistralOCREngine:
             range_token = "full"
         else:
             range_token = f"{normalized_range[0]}-{normalized_range[1]}"
-        return f"{file_hash}:{range_token}:{self.model_name}:{self.cache_version}"
+        return f"{file_hash}:{range_token}:{self.cache_version}"
 
     def _cache_path_for_key(self, cache_key: str, cache_dir: Path) -> Path:
         cache_dir.mkdir(parents=True, exist_ok=True)
         key_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
         return cache_dir / f"{key_hash}.json"
+
+    def _find_legacy_cache_path(
+        self,
+        pdf_path: Path,
+        page_range: Optional[List[int]],
+        cache_dir: Path,
+    ) -> Optional[Path]:
+        """Locate a legacy cache file when the PDF hash matches but the file name uses the older model-aware key format."""
+        cache_dir = Path(cache_dir)
+        if not cache_dir.exists():
+            return None
+
+        requested_range = self.normalize_page_range(page_range)
+        file_hash = self.get_file_hash(pdf_path)
+
+        for cache_file in sorted(cache_dir.glob("*.json")):
+            try:
+                payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            if payload.get("pdf_hash") != file_hash:
+                continue
+
+            payload_range = payload.get("page_range")
+            if requested_range is None:
+                if payload_range in (None, [], [0, 0], "full"):
+                    return cache_file
+                continue
+
+            if isinstance(payload_range, list) and len(payload_range) >= 2:
+                if tuple(payload_range[:2]) == requested_range:
+                    return cache_file
+            elif isinstance(payload_range, str):
+                if payload_range == f"{requested_range[0]}-{requested_range[1]}":
+                    return cache_file
+
+        return None
 
     def _build_ocr_process_kwargs(
         self,
@@ -153,13 +201,41 @@ class MistralOCREngine:
             "include_image_base64": include_image_base64,
         }
 
+    @staticmethod
+    def _serialize_cache_path(path_value: str, base_dir: Path) -> str:
+        """Convert an absolute image path to a portable relative path for the cache file."""
+        if path_value is None:
+            return ""
+        candidate = Path(str(path_value))
+        if candidate.is_absolute():
+            try:
+                return str(candidate.relative_to(base_dir))
+            except ValueError:
+                return os.path.relpath(candidate, base_dir)
+        return str(candidate)
+
+    @staticmethod
+    def _deserialize_cache_path(path_value: str, base_dir: Path) -> str:
+        """Convert a cached relative image path back to the current machine's absolute path."""
+        if path_value is None:
+            return ""
+        candidate = Path(str(path_value))
+        if candidate.is_absolute():
+            return str(candidate)
+        return str((base_dir / candidate).resolve())
+
     def load_cached_result(self, pdf_path: Path, page_range: Optional[List[int]] = None, cache_dir: Optional[Path] = None) -> Optional[OCRResult]:
         """Return a cached OCR result if one exists for the source PDF and page range."""
         target_cache_dir = Path(cache_dir) if cache_dir is not None else self.cache_dir
+        base_dir = target_cache_dir.parent
         cache_key = self.build_cache_key(pdf_path, page_range=page_range)
         cache_path = self._cache_path_for_key(cache_key, target_cache_dir)
+
         if not cache_path.exists():
-            return None
+            legacy_cache_path = self._find_legacy_cache_path(pdf_path, page_range, target_cache_dir)
+            if legacy_cache_path is None:
+                return None
+            cache_path = legacy_cache_path
 
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -168,13 +244,19 @@ class MistralOCREngine:
                 OCRPageData(
                     page_num=int(page.get("page_num", 0)),
                     markdown=str(page.get("markdown", "")),
-                    images={str(k): str(v) for k, v in (page.get("images") or {}).items()},
+                    images={
+                        str(k): self._deserialize_cache_path(str(v), base_dir)
+                        for k, v in (page.get("images") or {}).items()
+                    },
                 )
                 for page in pages_payload
             ]
             return OCRResult(
                 full_markdown=str(payload.get("full_markdown", "")),
-                all_images={str(k): str(v) for k, v in (payload.get("images") or {}).items()},
+                all_images={
+                    str(k): self._deserialize_cache_path(str(v), base_dir)
+                    for k, v in (payload.get("images") or {}).items()
+                },
                 pages=pages,
             )
         except Exception as exc:
@@ -190,6 +272,7 @@ class MistralOCREngine:
     ) -> None:
         """Persist OCR results to a stable local cache keyed by the original PDF and page range."""
         target_cache_dir = Path(cache_dir) if cache_dir is not None else self.cache_dir
+        base_dir = target_cache_dir.parent
         cache_key = self.build_cache_key(pdf_path, page_range=page_range)
         cache_path = self._cache_path_for_key(cache_key, target_cache_dir)
         payload = {
@@ -199,12 +282,18 @@ class MistralOCREngine:
             "model_name": self.model_name,
             "cache_version": self.cache_version,
             "full_markdown": result.full_markdown,
-            "images": {str(k): str(v) for k, v in result.all_images.items()},
+            "images": {
+                str(k): self._serialize_cache_path(str(v), base_dir)
+                for k, v in result.all_images.items()
+            },
             "pages": [
                 {
                     "page_num": page.page_num,
                     "markdown": page.markdown,
-                    "images": {str(k): str(v) for k, v in page.images.items()},
+                    "images": {
+                        str(k): self._serialize_cache_path(str(v), base_dir)
+                        for k, v in page.images.items()
+                    },
                 }
                 for page in result.pages
             ],
