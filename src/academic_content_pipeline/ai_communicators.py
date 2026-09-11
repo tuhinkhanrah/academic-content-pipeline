@@ -91,7 +91,7 @@ class MultimodalBatch:
 
     @classmethod
     def from_contents(cls, contents: Any) -> "MultimodalBatch":
-        """Normalizes legacy mixed contents list, string, or existing MultimodalBatch."""
+        """Normalizes mixed content input into a structured multimodal batch."""
         if isinstance(contents, MultimodalBatch):
             return contents
 

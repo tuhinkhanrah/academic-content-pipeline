@@ -4,8 +4,12 @@ pipeline_utils.py - Shared utilities for question generation, XML/HTML/LaTeX/PDF
 """
 
 import base64
+import html
 import json
 import logging
+from importlib import resources
+
+import yaml
 from logging.handlers import RotatingFileHandler
 import os
 import re
@@ -19,7 +23,7 @@ import xml.etree.ElementTree as ET
 logger = logging.getLogger("academic_content_pipeline")
 
 PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts"
-LANGUAGE_CATALOG_PATH = PROMPT_ROOT / "core" / "languages.json"
+LANGUAGE_CATALOG_PATH = PROMPT_ROOT / "core" / "languages.yaml"
 LANGUAGE_RULES_PATH = PROMPT_ROOT / "core" / "language_rules.md"
 
 
@@ -50,8 +54,12 @@ def load_prompt_section(template_path: Union[Path, str], heading: str, **values:
 def _load_language_catalog() -> Dict[str, Dict[str, str]]:
     """Load language metadata used to build runtime language instructions."""
     try:
-        return json.loads(LANGUAGE_CATALOG_PATH.read_text(encoding="utf-8"))["languages"]
-    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        catalog = yaml.safe_load(LANGUAGE_CATALOG_PATH.read_text(encoding="utf-8")) or {}
+        languages = catalog.get("languages", {})
+        if not isinstance(languages, dict):
+            raise ValueError("Language catalog root must contain a 'languages' mapping.")
+        return languages
+    except (OSError, yaml.YAMLError, ValueError, TypeError, KeyError) as exc:
         raise RuntimeError(f"Unable to load language catalog: {LANGUAGE_CATALOG_PATH}") from exc
 
 
@@ -133,6 +141,93 @@ def normalize_html_math_source(html_content: str) -> str:
     html_content = re.sub(r"\t(?=(?:ext|imes|heta|ag|op)(?:\W|$))", r"\\t", html_content)
     return html_content
 
+
+def load_shared_pdf_stylesheet() -> str:
+    """Load the common PDF print stylesheet shipped with the package."""
+    css_file = Path(__file__).with_name("pdf_print_styles.css")
+    if css_file.exists():
+        return css_file.read_text(encoding="utf-8").strip()
+
+    try:
+        return resources.files("academic_content_pipeline").joinpath("pdf_print_styles.css").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def ensure_html_print_safe_styles(html_content: str) -> str:
+    """Inject the shared PDF print CSS so HTML stays compact and print-safe in Chrome."""
+    page_css = load_shared_pdf_stylesheet()
+    if not page_css:
+        page_css = """
+        @page {
+          size: A4 portrait;
+          margin: 8mm 10mm 8mm 10mm !important;
+        }
+        html, body {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          overflow-x: hidden !important;
+        }
+        """
+
+    if page_css and page_css in html_content:
+        return html_content
+
+    page_style = f"\n<style>\n{page_css}\n</style>\n"
+
+    if "<style" in html_content.lower() and "</style>" in html_content.lower():
+        return re.sub(
+            r"(<style\b[^>]*>)(.*?)(</style>)",
+            lambda match: f"{match.group(1)}{match.group(2)}\n{page_css}\n{match.group(3)}",
+            html_content,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    if "</head>" in html_content.lower():
+        return html_content.replace("</head>", f"{page_style}\n</head>", 1)
+    return f"{page_style}\n{html_content}"
+
+
+def inject_html_watermark(html_content: str, watermark_text: Optional[str]) -> str:
+    """Add a translucent diagonal watermark to the HTML before PDF print conversion."""
+    watermark_text = (watermark_text or "").strip()
+    if not watermark_text:
+        return html_content
+
+    safe_text = html.escape(watermark_text, quote=True)
+    watermark_css = f"""
+    <style>
+      body {{
+        position: relative;
+      }}
+      body::before {{
+        content: "{safe_text}";
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: clamp(28px, 4vw, 64px);
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        color: rgba(0, 0, 0, 0.08);
+        transform: rotate(-45deg);
+        pointer-events: none;
+        z-index: 9999;
+        white-space: nowrap;
+        text-transform: uppercase;
+      }}
+    </style>
+    """
+
+    style_match = re.search(r"<style\b[^>]*>.*?</style>", html_content, flags=re.IGNORECASE | re.DOTALL)
+    if style_match:
+        return html_content[: style_match.end()] + "\n" + watermark_css + html_content[style_match.end() :]
+
+    if "</head>" in html_content.lower():
+        return html_content.replace("</head>", f"{watermark_css}\n</head>", 1)
+    return f"{watermark_css}\n{html_content}"
 
 
 def format_instruction_profile(profile: Dict[str, Any]) -> str:
@@ -629,10 +724,15 @@ def fix_and_inject_moodle_xml(raw_xml: str, image_map: Dict[str, str]) -> str:
 # =======================================================================
 
 def compile_html_to_pdf(
-    html_content: str, output_pdf_path: Path, image_map: Optional[Dict[str, str]] = None
+    html_content: str,
+    output_pdf_path: Path,
+    image_map: Optional[Dict[str, str]] = None,
+    watermark_text: Optional[str] = None,
 ) -> Path:
     """Compiles HTML string to PDF locally via Headless Chrome."""
     html_content = normalize_html_math_source(html_content)
+    html_content = ensure_html_print_safe_styles(html_content)
+    html_content = inject_html_watermark(html_content, watermark_text)
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
     html_file = output_pdf_path.with_suffix(".html")
     html_file.write_text(html_content, encoding="utf-8")
@@ -657,9 +757,10 @@ def compile_html_to_pdf(
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--run-all-compositor-stages-before-draw",
-        "--virtual-time-budget=10000",  # Increased budget to allow webfonts & MathJax to load
+        "--virtual-time-budget=60000",  # Increased budget to allow webfonts & MathJax to load
         "--enable-font-antialiasing",
         "--font-render-hinting=full",
+        "--prefer-page-size-by-style",
         "--no-pdf-header-footer",
         f"--print-to-pdf={output_pdf_path.resolve()}",
         str(html_file.resolve()),

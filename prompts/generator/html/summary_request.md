@@ -29,14 +29,14 @@ Create a clear, accurate, and visually polished academic summary of the provided
 
 # Content Structure
 Structure the HTML document body with the following sequence:
-1. **Title & Syllabus Banner:** Clear document title, target subject, and metadata tags.
-2. **Overview:** High-level summary of the core subject matter.
-3. **Key Concepts:** Itemized breakdown of fundamental principles.
-4. **Important Definitions & Formulas:** Formula cards with LaTeX equations and variable definitions.
-5. **Main Arguments or Procedures:** Core theoretical derivations, step-by-step processes, or comparison tables.
-6. **Important Examples or Applications:** Worked numerical problems, practical case studies, or exceptional cases.
-7. **Revision Points / Quick Takeaways:** High-impact grid or key points for rapid review.
-8. **Final Summary:** A concluding synthesis of the topic.
+1. Title & Syllabus Banner
+2. Overview
+3. Key Concepts
+4. Important Definitions & Formulas
+5. Main Arguments or Procedures
+6. Important Examples or Applications
+7. Revision Points / Quick Takeaways
+8. Final Summary
 
 # Source Content
 {{chapter_content}}

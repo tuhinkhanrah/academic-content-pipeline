@@ -3,26 +3,20 @@
 from pathlib import Path
 from typing import Dict, Optional
 
-try:
-    from .pipeline_utils import (
-        compile_html_to_pdf,
-        compile_tex_to_pdf,
-        fix_and_inject_moodle_xml,
-    )
-except ImportError:  # pragma: no cover - fallback for direct script execution
-    from pipeline_utils import (
-        compile_html_to_pdf,
-        compile_tex_to_pdf,
-        fix_and_inject_moodle_xml,
-    )
+from .pipeline_utils import (
+    compile_html_to_pdf,
+    compile_tex_to_pdf,
+    fix_and_inject_moodle_xml,
+)
 
 
 class OutputRenderer:
     """Renders generated content as Moodle XML or a compiled PDF."""
 
-    def __init__(self, output_format: str, pdf_engine: str = "html"):
+    def __init__(self, output_format: str, pdf_engine: str = "html", watermark_text: str = ""):
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
+        self.watermark_text = watermark_text or ""
         self._validate_configuration()
 
     def _validate_configuration(self) -> None:
@@ -53,5 +47,5 @@ class OutputRenderer:
         if self.pdf_engine == "tex":
             compile_tex_to_pdf(raw_output, final_path, image_map=image_map)
         else:
-            compile_html_to_pdf(raw_output, final_path, image_map=image_map)
+            compile_html_to_pdf(raw_output, final_path, image_map=image_map, watermark_text=self.watermark_text)
         return final_path

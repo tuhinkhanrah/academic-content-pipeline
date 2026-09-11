@@ -10,7 +10,7 @@ Modes of Communication:
 Functionalities:
   1. extract               : Extract questions from PDF question papers via Mistral OCR
   2. generate-questions     : Synthesize questions from chapter PDFs/MDs
-  3. generate-paper         : Synthesize full mock exams from JSON specs / syllabi
+  3. generate-paper         : Synthesize full mock exams from YAML specs / syllabi
 """
 
 import argparse
@@ -21,44 +21,45 @@ import time
 from pathlib import Path
 from typing import Any
 
+if __package__ in (None, ""):
+    src_root = Path(__file__).resolve().parents[1]
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+
 from google import genai
 
-try:
-    from .ai_communicators import (
-        AgentSessionBackend,
-        BaseAICommunicator,
-        BatchAPIBackend,
-        ContextChatBackend,
-        RemoteSandboxBackend,
-        SingleShotBackend,
-    )
-    from .content_processors import (
-        PaperGenerator,
-        QuestionGenerator,
-        QuestionPaperExtractor,
-        SummaryGenerator,
-    )
-    from .mistral_ocr import MistralOCREngine
-    from .pipeline_utils import setup_logger
-except ImportError:  # pragma: no cover - fallback for direct script execution
-    from ai_communicators import (
-        AgentSessionBackend,
-        BaseAICommunicator,
-        BatchAPIBackend,
-        ContextChatBackend,
-        RemoteSandboxBackend,
-        SingleShotBackend,
-    )
-    from content_processors import (
-        PaperGenerator,
-        QuestionGenerator,
-        QuestionPaperExtractor,
-        SummaryGenerator,
-    )
-    from mistral_ocr import MistralOCREngine
-    from pipeline_utils import setup_logger
+from academic_content_pipeline.ai_communicators import (
+    AgentSessionBackend,
+    BaseAICommunicator,
+    BatchAPIBackend,
+    ContextChatBackend,
+    RemoteSandboxBackend,
+    SingleShotBackend,
+)
+from academic_content_pipeline.content_processors import (
+    PaperGenerator,
+    QuestionGenerator,
+    QuestionPaperExtractor,
+    SummaryGenerator,
+)
+from academic_content_pipeline.mistral_ocr import MistralOCREngine
+from academic_content_pipeline.pipeline_utils import setup_logger
 
 logger = logging.getLogger("academic_content_pipeline")
+
+
+class GeneratorPromptResolver:
+    """Resolve built-in generator prompts for a single engine without fallback logic."""
+
+    def __init__(self, prompt_root: Path):
+        self.prompt_root = Path(prompt_root)
+
+    def resolve(self, template_name: str, *, output_format: str, pdf_engine: str) -> Path:
+        engine_dir = "xml" if output_format == "xml" else pdf_engine
+        prompt_path = self.prompt_root / engine_dir / f"{template_name}.md"
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Generator prompt '{template_name}' not found for engine '{engine_dir}'.")
+        return prompt_path
 
 
 def resolve_default_extractor_prompt(standards: str, output_format: str, pdf_engine: str) -> Path:
@@ -113,7 +114,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         default="prompts/core/reasoning_rules.md",
         help="Shared step-by-step reasoning and solution rules.",
     )
-    parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.json", help="MCQ type registry JSON file.")
+    parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.yaml", help="MCQ type registry YAML file.")
 
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-flash-latest", help="Gemini model name.")
@@ -126,6 +127,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--force", action="store_true", help="Re-run extraction even if a non-empty target output already exists.")
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache and force a fresh Mistral OCR run.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
+    parser.add_argument("--watermark-text", default="", help="Optional text overlay added to generated PDF pages.")
 
 
 def add_task_subparsers(subparser_dest: Any) -> None:
@@ -146,7 +148,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     add_common_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
-    p_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON paper spec for a formal PDF header.")
+    p_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_chap.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
@@ -163,7 +165,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     # 4. generate-paper
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
-    p_syl.add_argument("--spec", type=Path, default=None, help="Path to JSON spec or syllabus markdown/pdf.")
+    p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
     p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
     p_syl.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
@@ -264,7 +266,7 @@ def main():
     add_common_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
-    p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional JSON paper spec for a formal PDF header.")
+    p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_direct_chap.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
@@ -325,26 +327,24 @@ def main():
                 args.pdf_engine = "tex"
 
     def resolve_format_prompt(prompt_path: Path) -> Path:
-        """Route known built-in prompts to the requested task/output format."""
+        """Route built-in prompts to the requested output engine without any fallback path."""
         prompt_path = Path(prompt_path)
         parts = prompt_path.parts
         if "generator" in parts:
             stem = prompt_path.stem
-            if stem in {"question_generator", "paper_generator"}:
-                candidate = Path("prompts/generator") / (
-                    "xml" if args.output_format == "xml" else args.pdf_engine
-                ) / f"{stem}.md"
-                if candidate.exists():
-                    return candidate
+            if stem in {"question_generator", "paper_generator", "summary_request"}:
+                return GeneratorPromptResolver(Path("prompts/generator")).resolve(
+                    stem,
+                    output_format=args.output_format,
+                    pdf_engine=args.pdf_engine,
+                )
         if "extractor" in parts:
             if args.output_format == "xml":
-                candidate = prompt_path
-            else:
-                candidate = Path("prompts/extractor") / args.pdf_engine / "extractor.md"
-                if not candidate.exists():
-                    candidate = Path("prompts/extractor") / args.pdf_engine / "base.md"
-            if candidate.exists():
-                return candidate
+                return prompt_path
+            extractor_prompt = Path("prompts/extractor") / args.pdf_engine / "extractor.md"
+            if not extractor_prompt.exists():
+                raise FileNotFoundError(f"Extractor prompt not found for PDF engine '{args.pdf_engine}'.")
+            return extractor_prompt
         return prompt_path
 
     # Auto-resolve default prompt if not provided by user
@@ -358,7 +358,7 @@ def main():
                 args.prompt = Path("prompts/generator/xml/question_generator.md")
         elif task == "generate-summary":
             args.output_format = "pdf"
-            args.prompt = Path("prompts/generator/summary_request.md")
+            args.prompt = Path(f"prompts/generator/{args.pdf_engine}/summary_request.md")
         elif task == "generate-paper":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/paper_generator.md")
@@ -438,6 +438,7 @@ def main():
                 exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
                 spec_path=getattr(args, "spec", None),
                 mcq_types_path=args.mcq_types,
+                watermark_text=getattr(args, "watermark_text", ""),
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -460,6 +461,7 @@ def main():
                 pdf_engine=args.pdf_engine,
                 page_range=args.page_range,
                 summary_title=getattr(args, "title", None),
+                watermark_text=getattr(args, "watermark_text", ""),
             )
             if args.input_file:
                 summary_generator.process_file(args.input_file, args.output_dir)
@@ -471,7 +473,7 @@ def main():
 
         elif task == "generate-paper":
             if not args.spec:
-                logger.error("Please specify --spec (JSON spec or syllabus markdown/pdf).")
+                logger.error("Please specify --spec (YAML spec or syllabus markdown/pdf).")
                 sys.exit(1)
 
             mock_generator = PaperGenerator(
@@ -487,6 +489,7 @@ def main():
                 sample_pdf=args.sample_pdf,
                 exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
                 mcq_types_path=args.mcq_types,
+                watermark_text=getattr(args, "watermark_text", ""),
             )
             mock_generator.process_spec(args.spec, args.output_dir)
 

@@ -12,59 +12,94 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
+
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
-try:
-    from .ai_communicators import (
-        BaseAICommunicator,
-        ImageAttachment,
-        MultimodalBatch,
-        RemoteSandboxBackend,
-    )
-    from .mistral_ocr import MistralOCREngine
-    from .output_renderers import OutputRenderer
-    from .pipeline_utils import (
-        assemble_prompt_files,
-        build_language_instructions,
-        extract_clean_question_nodes_with_status,
-        load_prompt_template,
-        load_file_content,
-        fix_and_inject_moodle_xml,
-        unique_image_items,
-        write_prompt_snapshot,
-    )
-except ImportError:  # pragma: no cover - fallback for direct script execution
-    from ai_communicators import (
-        BaseAICommunicator,
-        ImageAttachment,
-        MultimodalBatch,
-        RemoteSandboxBackend,
-    )
-    from mistral_ocr import MistralOCREngine
-    from output_renderers import OutputRenderer
-    from pipeline_utils import (
-        assemble_prompt_files,
-        build_language_instructions,
-        extract_clean_question_nodes_with_status,
-        load_prompt_template,
-        load_file_content,
-        fix_and_inject_moodle_xml,
-        unique_image_items,
-        write_prompt_snapshot,
-    )
+from .ai_communicators import (
+    BaseAICommunicator,
+    ImageAttachment,
+    MultimodalBatch,
+    RemoteSandboxBackend,
+)
+from .mistral_ocr import MistralOCREngine
+from .output_renderers import OutputRenderer
+from .pipeline_utils import (
+    assemble_prompt_files,
+    build_language_instructions,
+    extract_clean_question_nodes_with_status,
+    load_prompt_template,
+    load_file_content,
+    fix_and_inject_moodle_xml,
+    unique_image_items,
+    write_prompt_snapshot,
+)
 
 logger = logging.getLogger("academic_content_pipeline")
 
 PROMPTS_DIR = Path("prompts")
 
 
-def build_summary_system_instruction() -> str:
-    """Load the summary-specific system instruction from the markdown prompt file."""
-    return (PROMPTS_DIR / "generator" / "summary_system.md").read_text(encoding="utf-8").strip()
+def load_yaml_or_json_file(path: Path) -> Any:
+    """Load a YAML or legacy JSON data file into Python objects."""
+    candidate = Path(path)
+    raw = candidate.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {}
+    try:
+        if candidate.suffix.lower() in {".yaml", ".yml"}:
+            return yaml.safe_load(raw)
+        return json.loads(raw)
+    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"Unable to parse config file: {candidate}") from exc
+
+
+@dataclass(frozen=True)
+class SummaryPromptSpec:
+    prompt_path: Path
+    intermediate_extension: str
+
+
+class SummaryPromptResolver:
+    """Resolve the summary prompt for a specific engine without any fallback path."""
+
+    def __init__(self, prompt_root: Path):
+        self.prompt_root = Path(prompt_root)
+
+    def resolve(self, pdf_engine: str) -> SummaryPromptSpec:
+        engine_name = str(pdf_engine).lower().strip()
+        prompt_path = self.prompt_root / engine_name / "summary_request.md"
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Summary prompt not found for PDF engine '{engine_name}'.")
+        return SummaryPromptSpec(
+            prompt_path=prompt_path,
+            intermediate_extension="tex" if engine_name == "tex" else "html",
+        )
+
+
+class SummarySystemPromptResolver:
+    """Resolve the summary system prompt for the selected engine without fallback behavior."""
+
+    def __init__(self, prompt_root: Path):
+        self.prompt_root = Path(prompt_root)
+
+    def resolve(self, pdf_engine: str) -> Path:
+        engine_name = str(pdf_engine).lower().strip()
+        prompt_path = self.prompt_root / engine_name / "summary_system.md"
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Summary system prompt not found for PDF engine '{engine_name}'.")
+        return prompt_path
+
+
+def build_summary_system_instruction(pdf_engine: str = "html") -> str:
+    """Load the engine-specific summary system instruction from the markdown prompt file."""
+    resolver = SummarySystemPromptResolver(PROMPTS_DIR / "generator")
+    return resolver.resolve(pdf_engine).read_text(encoding="utf-8").strip()
 
 
 def build_summary_language_instruction(languages: List[str]) -> str:
@@ -119,19 +154,29 @@ class SummaryGenerator:
         page_range: Optional[List[int]] = None,
         staging_dir: Path = Path("output"),
         summary_title: Optional[str] = None,
+        watermark_text: str = "",
     ):
         self.communicator = communicator
-        self.ocr_engine = ocr_engine or MistralOCREngine()
+        self.ocr_engine = ocr_engine
         self.rules_dict = rules_dict or {}
         self.languages = languages or ["english"]
         self.standards = standards
         self.tags = tags
-        self.output_format = "pdf"
+        self.output_format = output_format.lower()
+        if self.output_format not in {"pdf"}:
+            raise ValueError("SummaryGenerator currently supports only PDF output mode.")
         self.pdf_engine = pdf_engine.lower()
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine)
+        self.watermark_text = watermark_text or ""
+        self.summary_prompt_resolver = SummaryPromptResolver(PROMPTS_DIR / "generator")
+        self.summary_spec = self.summary_prompt_resolver.resolve(self.pdf_engine)
+        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
         self.page_range = page_range
         self.staging_dir = Path(staging_dir)
         self.summary_title = summary_title
+
+    def _resolve_summary_prompt_path(self) -> Path:
+        """Resolve the engine-specific summary prompt and fail fast if it is missing."""
+        return self.summary_prompt_resolver.resolve(self.pdf_engine).prompt_path
 
     def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Summarizes a chapter file (.pdf or .md) and writes a final HTML/PDF artifact."""
@@ -160,6 +205,8 @@ class SummaryGenerator:
 
         image_map: Dict[str, str] = {}
         if input_file.suffix.lower() == ".pdf":
+            if self.ocr_engine is None:
+                self.ocr_engine = MistralOCREngine()
             markdown_text, image_map = self.ocr_engine.process_pdf(
                 pdf_path=input_file,
                 img_output_dir=img_output_dir,
@@ -169,18 +216,20 @@ class SummaryGenerator:
         else:
             markdown_text = load_file_content(input_file)
 
-        system_instruction = build_summary_system_instruction()
+        system_instruction = build_summary_system_instruction(self.pdf_engine)
         lang_instruction, lang_tags = build_language_instructions(
             self.languages,
             output_format=self.output_format,
             pdf_engine=self.pdf_engine,
         )
-        lang_instruction = build_summary_language_instruction(self.languages)
+        summary_lang_instruction = build_summary_language_instruction(self.languages)
+        language_instruction = "\n\n".join(part for part in [lang_instruction, summary_lang_instruction] if part and part.strip())
         all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
 
         summary_title = self.summary_title or input_file.stem.replace("_", " ").replace("-", " ").title()
+        prompt_path = self._resolve_summary_prompt_path()
         prompt_text = load_prompt_template(
-            PROMPTS_DIR / "generator" / "summary_request.md",
+            prompt_path,
             title=summary_title,
             chapter_content=markdown_text,
             languages=", ".join(self.languages),
@@ -188,7 +237,7 @@ class SummaryGenerator:
             global_tags=", ".join(all_tags),
             output_format=self.output_format.upper(),
             pdf_engine=self.pdf_engine.upper(),
-            language_instruction=lang_instruction,
+            language_instruction=language_instruction,
         )
 
         batch_images = [
@@ -200,7 +249,7 @@ class SummaryGenerator:
             images=batch_images,
         )
 
-        output_artifact_name = f"{generation_stem}.html"
+        output_artifact_name = f"{generation_stem}.{self.summary_spec.intermediate_extension}"
         snapshot_path = prompt_dir / f"{generation_stem}_summary_prompt.md"
         write_prompt_snapshot(
             snapshot_path,
@@ -387,13 +436,115 @@ def build_paper_metadata(
     }
 
 
+def _normalize_subject_key(subject_name: str) -> str:
+    """Normalize subject names for matching difficulty config keys."""
+    return re.sub(r"[^a-z0-9]+", "_", str(subject_name).lower()).strip("_")
+
+
+def _parse_difficulty_mix(mix_value: str) -> Dict[str, float]:
+    """Parse a string like 'easy:0.2,medium:0.5,hard:0.3' into ratios."""
+    parsed: Dict[str, float] = {}
+    if not mix_value:
+        return parsed
+    for part in str(mix_value).split(","):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        parsed[key.strip().lower()] = float(value.strip())
+    return parsed
+
+
+def _allocate_subject_difficulty_counts(total_questions: int, ratio: Dict[str, float]) -> Dict[str, int]:
+    """Allocate a subject total into easy/medium/hard counts while preserving the total."""
+    if total_questions <= 0:
+        return {"easy": 0, "medium": 0, "hard": 0}
+
+    labels = ["easy", "medium", "hard"]
+    normalized = {label: float(ratio.get(label, 0.0)) for label in labels}
+    if sum(normalized.values()) <= 0:
+        normalized = {"easy": 0.2, "medium": 0.5, "hard": 0.3}
+
+    raw = {label: total_questions * normalized[label] for label in labels}
+    counts = {label: int(raw[label]) for label in labels}
+    remainder = total_questions - sum(counts.values())
+    if remainder != 0:
+        order = sorted(labels, key=lambda label: raw[label] - counts[label], reverse=True)
+        for label in order[: abs(remainder)]:
+            counts[label] += 1 if remainder > 0 else -1
+
+    return counts
+
+
+def build_global_difficulty_hint(spec_data: Dict[str, Any]) -> str:
+    """Return a non-conflicting difficulty summary with clear precedence rules."""
+    fallback_mix = _parse_difficulty_mix(
+        spec_data.get("difficulty_mix", "easy:0.2,medium:0.5,hard:0.3")
+    )
+    if spec_data.get("difficulty_by_subject"):
+        return (
+            "LEGACY GLOBAL MIX ONLY: ignored when subject-specific difficulty is present; "
+            "subject-specific counts are authoritative. "
+            f"Fallback values for single-subject papers only: easy:{fallback_mix.get('easy', 0.2)},"
+            f"medium:{fallback_mix.get('medium', 0.5)},hard:{fallback_mix.get('hard', 0.3)}"
+        )
+    return (
+        f"easy:{fallback_mix.get('easy', 0.2)},medium:{fallback_mix.get('medium', 0.5)},"
+        f"hard:{fallback_mix.get('hard', 0.3)}"
+    )
+
+
+def build_subject_difficulty_contract(
+    spec_data: Dict[str, Any],
+    subjects: List[Dict[str, Any]],
+) -> str:
+    """Build a subject-aware difficulty contract for multi-subject exam generation."""
+    difficulty_by_subject = spec_data.get("difficulty_by_subject") or {}
+    fallback_mix = _parse_difficulty_mix(
+        spec_data.get("difficulty_mix", "easy:0.2,medium:0.5,hard:0.3")
+    )
+
+    if not difficulty_by_subject:
+        return (
+            "Subject-specific difficulty allocation is mandatory for multi-subject papers. "
+            "Do not rely on a single paper-wide mix when per-subject totals exist. "
+            f"Fallback mix: easy:{fallback_mix.get('easy', 0.2)},medium:{fallback_mix.get('medium', 0.5)},hard:{fallback_mix.get('hard', 0.3)}"
+        )
+
+    lines = [
+        "Subject-specific difficulty allocation is authoritative. "
+        "Use the counts below for each subject; ignore the legacy paper-wide mix completely when this contract is present."
+    ]
+    for subject in subjects:
+        subject_name = str(subject.get("name", "Subject"))
+        total_questions = int(subject.get("total_questions", 0))
+        subject_key = _normalize_subject_key(subject_name)
+        config = (
+            difficulty_by_subject.get(subject_key)
+            or difficulty_by_subject.get(subject_name.lower())
+            or difficulty_by_subject.get(subject_name)
+            or fallback_mix
+        )
+        ratio = {
+            "easy": float(config.get("easy", config.get("Easy", fallback_mix.get("easy", 0.2)))),
+            "medium": float(config.get("medium", config.get("Medium", fallback_mix.get("medium", 0.5)))),
+            "hard": float(config.get("hard", config.get("Hard", fallback_mix.get("hard", 0.3)))),
+        }
+        counts = _allocate_subject_difficulty_counts(total_questions, ratio)
+        lines.append(
+            f"- {subject_name}: easy: {counts['easy']}, medium: {counts['medium']}, hard: {counts['hard']} "
+            f"(target ratios easy:{ratio['easy']},medium:{ratio['medium']},hard:{ratio['hard']})"
+        )
+
+    return "\n".join(lines)
+
+
 def build_question_type_contract(
     spec_data: Dict[str, Any],
     registry_path: Path,
     max_questions: int,
 ) -> str:
     """Resolve question-type configuration into an explicit AI contract."""
-    registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+    registry = load_yaml_or_json_file(Path(registry_path))
     entries = registry.get("mcq_types", [])
     by_key = {entry["id"]: entry for entry in entries}
     by_key.update({entry["name"]: entry for entry in entries})
@@ -525,26 +676,26 @@ class QuestionPaperExtractor:
         self.force_overwrite = bool(force_overwrite)
 
     @staticmethod
-    def parse_instruction_page_summary(response: Optional[str], fallback_text: Optional[str] = None) -> Optional[str]:
-        """Parse either a legacy token response or a single-call JSON response."""
+    def parse_instruction_page_summary(response: Optional[str]) -> Optional[str]:
+        """Parse the instruction-page JSON response into a summary string."""
         if response is None:
-            return fallback_text
+            return None
 
         cleaned = BaseAICommunicator.strip_code_fences(response).strip()
         if not cleaned:
-            return fallback_text
+            return None
 
         try:
             payload = json.loads(cleaned)
             if isinstance(payload, dict):
                 is_instruction = bool(payload.get("is_instruction_page"))
-                summary = payload.get("summary")
                 if not is_instruction:
                     return None
+                summary = payload.get("summary")
                 summary_text = str(summary or "").strip()
                 if summary_text:
                     return summary_text
-                return fallback_text
+                return ""
         except json.JSONDecodeError:
             pass
 
@@ -553,9 +704,9 @@ class QuestionPaperExtractor:
             return None
 
         if re.search(r"(?is)^\s*(?:INSTRUCTION_PAGE|INSTRUCTION\s+PAGE)\b", normalized):
-            return fallback_text or normalized
+            return normalized
 
-        return fallback_text or normalized
+        return normalized
 
     def _detect_instruction_page_summary(
         self,
@@ -596,7 +747,7 @@ class QuestionPaperExtractor:
             output_filename=f"{pdf_path.stem}_instruction_page_check.json",
             prompt_snapshot_path=snapshot_path,
         )
-        parsed_summary = self.parse_instruction_page_summary(raw_response, fallback_text=page_data.markdown)
+        parsed_summary = self.parse_instruction_page_summary(raw_response)
         try:
             payload = json.loads(BaseAICommunicator.strip_code_fences(raw_response or "")) if raw_response else None
             is_instruction_page = bool(payload.get("is_instruction_page")) if isinstance(payload, dict) else False
@@ -900,7 +1051,8 @@ class QuestionGenerator:
         staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
         spec_path: Optional[Path] = None,
-        mcq_types_path: Path = Path("prompts/generator/mcq_types.json"),
+        mcq_types_path: Path = Path("prompts/generator/mcq_types.yaml"),
+        watermark_text: str = "",
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -912,7 +1064,8 @@ class QuestionGenerator:
         self.num_questions = num_questions
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine)
+        self.watermark_text = watermark_text or ""
+        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
         self.page_range = page_range
         self.staging_dir = Path(staging_dir)
         self.exam_duration_minutes = exam_duration_minutes
@@ -942,9 +1095,9 @@ class QuestionGenerator:
         if self.spec_path is not None:
             if not self.spec_path.exists():
                 raise FileNotFoundError(f"Paper spec file not found: {self.spec_path}")
-            if self.spec_path.suffix.lower() != ".json":
-                raise ValueError("generate-questions --spec must point to a JSON paper spec")
-            paper_spec = json.loads(self.spec_path.read_text(encoding="utf-8"))
+            if self.spec_path.suffix.lower() not in {".yaml", ".yml", ".json"}:
+                raise ValueError("generate-questions --spec must point to a YAML paper spec")
+            paper_spec = load_yaml_or_json_file(self.spec_path)
             spec_subjects = paper_spec.get("subjects") or [
                 {
                     "name": paper_spec.get("paper_title", input_file.stem),
@@ -1155,7 +1308,8 @@ class PaperGenerator:
         sample_pdf: Optional[Path] = None,
         staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
-        mcq_types_path: Path = Path("prompts/generator/mcq_types.json"),
+        mcq_types_path: Path = Path("prompts/generator/mcq_types.yaml"),
+        watermark_text: str = "",
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -1166,7 +1320,8 @@ class PaperGenerator:
         self.difficulty_mix = difficulty_mix
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine)
+        self.watermark_text = watermark_text or ""
+        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
         self.sample_pdf = sample_pdf
         self.staging_dir = Path(staging_dir)
         self.exam_duration_minutes = exam_duration_minutes
@@ -1179,10 +1334,10 @@ class PaperGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
 
-        exam_name = spec_path.stem.upper() if spec_path.suffix.lower() != ".json" else "MOCK_EXAM"
-        if spec_path.suffix.lower() == ".json":
+        exam_name = spec_path.stem.upper() if spec_path.suffix.lower() not in {".yaml", ".yml", ".json"} else "MOCK_EXAM"
+        if spec_path.suffix.lower() in {".yaml", ".yml", ".json"}:
             try:
-                spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+                spec_data = load_yaml_or_json_file(spec_path)
                 exam_name = spec_data.get("exam_name", exam_name)
             except Exception:
                 pass
@@ -1193,8 +1348,8 @@ class PaperGenerator:
             raise FileNotFoundError(f"Spec file not found: {spec_path}")
 
         spec_data = {}
-        if spec_path.suffix.lower() == ".json":
-            spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+        if spec_path.suffix.lower() in {".yaml", ".yml", ".json"}:
+            spec_data = load_yaml_or_json_file(spec_path)
         else:
             spec_data = {
                 "exam_name": spec_path.stem.upper(),
@@ -1216,6 +1371,8 @@ class PaperGenerator:
             self.mcq_types_path,
             sum(int(subject.get("total_questions", 0)) for subject in subjects),
         )
+        difficulty_contract = build_subject_difficulty_contract(spec_data, subjects)
+        global_difficulty_hint = build_global_difficulty_hint(spec_data)
 
         logger.info(f"\n{'='*60}\n🎓 [GENERATE-PAPER] Exam: {exam_name} ({self.output_format.upper()})\n{'='*60}")
 
@@ -1280,7 +1437,8 @@ class PaperGenerator:
             exam_name=exam_name,
             standards=self.standards,
             languages=", ".join(self.languages),
-            difficulty_mix=self.difficulty_mix,
+            difficulty_mix=global_difficulty_hint,
+            difficulty_contract=difficulty_contract,
             global_tags=", ".join(all_tags),
             output_format=self.output_format.upper(),
             pdf_engine=self.pdf_engine.upper(),

@@ -8,6 +8,9 @@
 - Target Standards: {{standards}}
 - Target Languages: {{languages}}
 - Difficulty Breakdown: {{difficulty_mix}}
+- Subject-Specific Difficulty Contract:
+{{difficulty_contract}}
+- Precedence Rule: If subject-specific counts are present, they are authoritative and supersede the legacy global difficulty mix.
 - Global Tags: {{global_tags}}
 - Output Format: {{output_format}}
 - PDF Engine: {{pdf_engine}}

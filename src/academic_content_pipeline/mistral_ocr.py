@@ -40,9 +40,6 @@ class OCRResult:
         self.images = all_images  # alias
         self.pages = pages
 
-    def __iter__(self):
-        # Enables backward-compatible tuple unpacking: full_markdown, image_map = result
-        return iter((self.full_markdown, self.all_images))
 
 
 class MistralOCREngine:
@@ -149,44 +146,6 @@ class MistralOCREngine:
         key_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
         return cache_dir / f"{key_hash}.json"
 
-    def _find_legacy_cache_path(
-        self,
-        pdf_path: Path,
-        page_range: Optional[List[int]],
-        cache_dir: Path,
-    ) -> Optional[Path]:
-        """Locate a legacy cache file when the PDF hash matches but the file name uses the older model-aware key format."""
-        cache_dir = Path(cache_dir)
-        if not cache_dir.exists():
-            return None
-
-        requested_range = self.normalize_page_range(page_range)
-        file_hash = self.get_file_hash(pdf_path)
-
-        for cache_file in sorted(cache_dir.glob("*.json")):
-            try:
-                payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-
-            if payload.get("pdf_hash") != file_hash:
-                continue
-
-            payload_range = payload.get("page_range")
-            if requested_range is None:
-                if payload_range in (None, [], [0, 0], "full"):
-                    return cache_file
-                continue
-
-            if isinstance(payload_range, list) and len(payload_range) >= 2:
-                if tuple(payload_range[:2]) == requested_range:
-                    return cache_file
-            elif isinstance(payload_range, str):
-                if payload_range == f"{requested_range[0]}-{requested_range[1]}":
-                    return cache_file
-
-        return None
-
     def _build_ocr_process_kwargs(
         self,
         *,
@@ -232,10 +191,7 @@ class MistralOCREngine:
         cache_path = self._cache_path_for_key(cache_key, target_cache_dir)
 
         if not cache_path.exists():
-            legacy_cache_path = self._find_legacy_cache_path(pdf_path, page_range, target_cache_dir)
-            if legacy_cache_path is None:
-                return None
-            cache_path = legacy_cache_path
+            return None
 
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))

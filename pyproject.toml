@@ -16,11 +16,15 @@ dependencies = [
     "httpx",
     "mistralai",
     "requests",
+    "PyYAML",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["academic_content_pipeline"]
+
+[tool.setuptools.package-data]
+academic_content_pipeline = ["*.css"]
 
 [project.scripts]
 academic-content-pipeline = "academic_content_pipeline.unified_pipeline:main"
