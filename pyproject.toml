@@ -24,7 +24,15 @@ package-dir = {"" = "src"}
 packages = ["academic_content_pipeline"]
 
 [tool.setuptools.package-data]
-academic_content_pipeline = ["*.css"]
+academic_content_pipeline = [
+    "*.css",
+    "resources/README.md",
+    "resources/catalogs/*.yaml",
+    "resources/schemas/*.yaml",
+    "resources/spec_templates/*.yaml",
+    "resources/spec_templates/jee_advanced/*.yaml",
+    "resources/spec_templates/wbjee/*.yaml",
+]
 
 [project.scripts]
 academic-content-pipeline = "academic_content_pipeline.unified_pipeline:main"

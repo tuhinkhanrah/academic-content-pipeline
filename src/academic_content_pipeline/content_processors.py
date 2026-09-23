@@ -29,6 +29,7 @@ from .ai_communicators import (
 )
 from .mistral_ocr import MistralOCREngine
 from .output_renderers import OutputRenderer
+from .resource_paths import resource_path
 from .pipeline_utils import (
     assemble_prompt_files,
     build_language_instructions,
@@ -1051,7 +1052,7 @@ class QuestionGenerator:
         staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
         spec_path: Optional[Path] = None,
-        mcq_types_path: Path = Path("prompts/generator/mcq_types.yaml"),
+        mcq_types_path: Path = resource_path("catalogs/mcq_types.yaml"),
         watermark_text: str = "",
     ):
         self.communicator = communicator
@@ -1308,7 +1309,7 @@ class PaperGenerator:
         sample_pdf: Optional[Path] = None,
         staging_dir: Path = Path("output"),
         exam_duration_minutes: Optional[int] = None,
-        mcq_types_path: Path = Path("prompts/generator/mcq_types.yaml"),
+        mcq_types_path: Path = resource_path("catalogs/mcq_types.yaml"),
         watermark_text: str = "",
     ):
         self.communicator = communicator

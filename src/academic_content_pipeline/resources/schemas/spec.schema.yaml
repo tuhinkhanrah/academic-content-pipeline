@@ -1,8 +1,8 @@
 $schema: https://json-schema.org/draft/2020-12/schema
 $id: https://example.invalid/academic-content-pipeline/spec.schema.json
 title: Academic Content Generation Specification
-description: Reference schema for generate-questions and generate-paper JSON specifications.
-  MCQ type values refer to names or IDs in ../mcq_types.json. Tags use the form namespace:value,
+description: Reference schema for generate-questions and generate-paper YAML specifications.
+  MCQ type values refer to names or IDs in ../catalogs/mcq_types.yaml. Tags use the form namespace:value,
   for example year:2026 or lang:bn.
 type: object
 additionalProperties: false

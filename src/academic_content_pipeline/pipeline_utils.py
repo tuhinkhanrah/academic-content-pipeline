@@ -20,10 +20,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 
+from .resource_paths import resource_path
+
 logger = logging.getLogger("academic_content_pipeline")
 
 PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts"
-LANGUAGE_CATALOG_PATH = PROMPT_ROOT / "core" / "languages.yaml"
+LANGUAGE_CATALOG_PATH = resource_path("catalogs/languages.yaml")
 LANGUAGE_RULES_PATH = PROMPT_ROOT / "core" / "language_rules.md"
 
 

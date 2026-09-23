@@ -44,6 +44,7 @@ from academic_content_pipeline.content_processors import (
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
 from academic_content_pipeline.pipeline_utils import setup_logger
+from academic_content_pipeline.resource_paths import resource_path
 
 logger = logging.getLogger("academic_content_pipeline")
 
@@ -114,7 +115,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         default="prompts/core/reasoning_rules.md",
         help="Shared step-by-step reasoning and solution rules.",
     )
-    parser.add_argument("--mcq-types", type=Path, default="prompts/generator/mcq_types.yaml", help="MCQ type registry YAML file.")
+    parser.add_argument("--mcq-types", type=Path, default=resource_path("catalogs/mcq_types.yaml"), help="MCQ type registry YAML file.")
 
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-flash-latest", help="Gemini model name.")
