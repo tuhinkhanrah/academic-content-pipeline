@@ -34,8 +34,9 @@ Given textbook/chapter content, generate high-quality practice questions in vali
 
 # Generation Rules
 - Follow runtime constraints from user prompt (question count, grade, penalty, tags).
-- Treat runtime question count as a maximum cap, not a mandatory fixed count.
-- Choose the actual number dynamically from 0..max based on concept quality, novelty, and solvability in the current page/content block.
+- If runtime constraints specify an exact total question count, generate exactly that many parseable question nodes. Do not stop early or return fewer questions.
+- If runtime constraints specify exact difficulty counts, meet each difficulty count exactly and track the allocation while generating.
+- Otherwise, treat runtime question count as a maximum cap and choose the actual number dynamically from 0..max based on concept quality, novelty, and solvability in the current page/content block.
 - Prefer fewer high-quality questions over filler; output 0 questions when the source block is weak or non-assessable.
 - Use only question formats permitted by the selected exam's instructions and runtime constraints.
 - Vary concepts, skills, and contexts only within the permitted format.

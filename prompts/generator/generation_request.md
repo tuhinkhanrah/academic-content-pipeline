@@ -6,7 +6,9 @@
 
 ### Generation Constraints:
 - Number of Questions: {{question_count}}
+{{question_count_contract}}
 - Difficulty Breakdown: {{difficulty_mix}}
+{{difficulty_count_contract}}
 - Target Languages: {{languages}}
 - Target Standards: {{standards}}
 - Global Tags: {{global_tags}}

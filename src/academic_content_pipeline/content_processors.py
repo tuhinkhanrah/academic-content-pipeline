@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 import yaml
@@ -1036,6 +1037,25 @@ class QuestionPaperExtractor:
 class QuestionGenerator:
     """Synthesizes questions from source PDFs or Markdown files."""
 
+    @staticmethod
+    def split_xml_papers(raw_output: str, question_count: int, num_papers: int) -> List[str]:
+        if num_papers < 1 or question_count < num_papers:
+            raise ValueError("Number of papers must be positive and cannot exceed the requested question count")
+        quiz = ET.fromstring(fix_and_inject_moodle_xml(raw_output, {}))
+        questions = [node for node in quiz if node.tag == "question" and node.get("type") != "category"]
+        if len(questions) < question_count:
+            raise ValueError(f"Requested {question_count} questions, but AI returned only {len(questions)} parseable questions")
+        papers = []
+        offset = 0
+        base_size, extra = divmod(question_count, num_papers)
+        for index in range(num_papers):
+            size = base_size + (index < extra)
+            paper = ET.Element("quiz")
+            paper.extend(questions[offset:offset + size])
+            papers.append(ET.tostring(paper, encoding="unicode"))
+            offset += size
+        return papers
+
     def __init__(
         self,
         communicator: BaseAICommunicator,
@@ -1054,6 +1074,7 @@ class QuestionGenerator:
         spec_path: Optional[Path] = None,
         mcq_types_path: Path = resource_path("catalogs/mcq_types.yaml"),
         watermark_text: str = "",
+        num_papers: int = 1,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -1063,7 +1084,12 @@ class QuestionGenerator:
         self.tags = tags
         self.difficulty_mix = difficulty_mix
         self.num_questions = num_questions
+        self.num_papers = num_papers
         self.output_format = output_format.lower()
+        if self.num_papers < 1:
+            raise ValueError("--num-papers must be at least 1")
+        if self.num_papers > 1 and self.output_format != "xml":
+            raise ValueError("--num-papers greater than 1 currently requires --output-format xml")
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
         self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
@@ -1073,9 +1099,11 @@ class QuestionGenerator:
         self.spec_path = Path(spec_path).resolve() if spec_path else None
         self.mcq_types_path = Path(mcq_types_path)
 
-    def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
+    def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path | List[Path]:
         """Synthesizes questions from a chapter file (.pdf or .md)."""
         input_file = Path(input_file).resolve()
+        if not input_file.is_file():
+            raise FileNotFoundError(f"Chapter input file not found: {input_file}")
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
@@ -1121,6 +1149,24 @@ class QuestionGenerator:
             if paper_spec
             else self.num_questions
         )
+        if self.num_papers > 1 and generation_question_count < self.num_papers:
+            raise ValueError("Number of papers cannot exceed the requested question count")
+        question_count_contract = ""
+        difficulty_count_contract = ""
+        if self.num_papers > 1:
+            question_count_contract = (
+                f"- Exact total question count (required): {generation_question_count}\n"
+            )
+            difficulty_counts = _allocate_subject_difficulty_counts(
+                generation_question_count,
+                _parse_difficulty_mix(self.difficulty_mix),
+            )
+            difficulty_count_contract = (
+                f"- Required difficulty counts (out of {generation_question_count}): "
+                f"easy: {difficulty_counts['easy']}, medium: {difficulty_counts['medium']}, "
+                f"hard: {difficulty_counts['hard']}\n"
+                "- Match these difficulty counts exactly.\n"
+            )
         question_type_contract = build_question_type_contract(
             paper_spec,
             self.mcq_types_path,
@@ -1138,6 +1184,8 @@ class QuestionGenerator:
             )
         else:
             markdown_text = load_file_content(input_file)
+        if not markdown_text.strip():
+            raise ValueError(f"Chapter input has no readable content: {input_file}")
 
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
@@ -1169,7 +1217,9 @@ class QuestionGenerator:
             paper_header=paper_header,
             question_type_contract=question_type_contract,
             question_count=str(generation_question_count),
+            question_count_contract=question_count_contract,
             difficulty_mix=self.difficulty_mix,
+            difficulty_count_contract=difficulty_count_contract,
             languages=", ".join(self.languages),
             standards=self.standards,
             global_tags=", ".join(all_tags),
@@ -1206,6 +1256,8 @@ class QuestionGenerator:
             output_filename=output_artifact_name,
             prompt_snapshot_path=snapshot_path,
         )
+        if not raw_output or not raw_output.strip():
+            raise ValueError(f"AI returned an empty response for chapter input: {input_file}")
 
         # 5. Render the generated artifact
         if self.output_format == "pdf":
@@ -1219,6 +1271,14 @@ class QuestionGenerator:
             elapsed = time.perf_counter() - item_start
             logger.info("⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
             return final_pdf_path
+        elif self.num_papers > 1:
+            paper_xml = self.split_xml_papers(raw_output, generation_question_count, self.num_papers)
+            paths = [
+                self.renderer.render(xml, paper_dir, f"{generation_stem}_paper_{index:02d}", image_map)
+                for index, xml in enumerate(paper_xml, start=1)
+            ]
+            logger.info("Saved %d generated Moodle XML papers: %s", len(paths), paths)
+            return paths
         else:
             final_xml_path = self.renderer.render(
                 raw_output,
@@ -1248,7 +1308,10 @@ class QuestionGenerator:
         results = []
         for file_path in source_files:
             out_path = self.process_file(file_path, output_dir, input_root=input_dir)
-            results.append(out_path)
+            if isinstance(out_path, list):
+                results.extend(out_path)
+            else:
+                results.append(out_path)
         directory_elapsed = time.perf_counter() - directory_start
         logger.info("⏱️ [GENERATE-QUESTIONS DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
         self.ocr_engine.log_cache_summary()

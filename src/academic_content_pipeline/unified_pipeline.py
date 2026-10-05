@@ -152,6 +152,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_chap.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
+    p_chap.add_argument("--num-papers", type=int, default=1, help="Split the generated XML questions across this many papers.")
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
 
@@ -270,6 +271,7 @@ def main():
     p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_direct_chap.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
+    p_direct_chap.add_argument("--num-papers", type=int, default=1, help="Split the generated XML questions across this many papers.")
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
@@ -433,6 +435,7 @@ def main():
                 tags=args.tags,
                 difficulty_mix=args.difficulty_mix,
                 num_questions=args.num_questions,
+                num_papers=args.num_papers,
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
                 page_range=args.page_range,
