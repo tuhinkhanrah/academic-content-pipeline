@@ -62,50 +62,50 @@ def load_yaml_or_json_file(path: Path) -> Any:
 
 
 @dataclass(frozen=True)
-class SummaryPromptSpec:
+class TutorialPromptSpec:
     prompt_path: Path
     intermediate_extension: str
 
 
-class SummaryPromptResolver:
-    """Resolve the summary prompt for a specific engine without any fallback path."""
+class TutorialPromptResolver:
+    """Resolve the tutorial prompt for a specific engine without any fallback path."""
 
     def __init__(self, prompt_root: Path):
         self.prompt_root = Path(prompt_root)
 
-    def resolve(self, pdf_engine: str) -> SummaryPromptSpec:
+    def resolve(self, pdf_engine: str) -> TutorialPromptSpec:
         engine_name = str(pdf_engine).lower().strip()
-        prompt_path = self.prompt_root / engine_name / "summary_request.md"
+        prompt_path = self.prompt_root / engine_name / "tutorial_request.md"
         if not prompt_path.exists():
-            raise FileNotFoundError(f"Summary prompt not found for PDF engine '{engine_name}'.")
-        return SummaryPromptSpec(
+            raise FileNotFoundError(f"Tutorial prompt not found for PDF engine '{engine_name}'.")
+        return TutorialPromptSpec(
             prompt_path=prompt_path,
             intermediate_extension="tex" if engine_name == "tex" else "html",
         )
 
 
-class SummarySystemPromptResolver:
-    """Resolve the summary system prompt for the selected engine without fallback behavior."""
+class TutorialSystemPromptResolver:
+    """Resolve the tutorial system prompt for the selected engine without fallback behavior."""
 
     def __init__(self, prompt_root: Path):
         self.prompt_root = Path(prompt_root)
 
     def resolve(self, pdf_engine: str) -> Path:
         engine_name = str(pdf_engine).lower().strip()
-        prompt_path = self.prompt_root / engine_name / "summary_system.md"
+        prompt_path = self.prompt_root / engine_name / "tutorial_system.md"
         if not prompt_path.exists():
-            raise FileNotFoundError(f"Summary system prompt not found for PDF engine '{engine_name}'.")
+            raise FileNotFoundError(f"Tutorial system prompt not found for PDF engine '{engine_name}'.")
         return prompt_path
 
 
-def build_summary_system_instruction(pdf_engine: str = "html") -> str:
-    """Load the engine-specific summary system instruction from the markdown prompt file."""
-    resolver = SummarySystemPromptResolver(PROMPTS_DIR / "generator")
+def build_tutorial_system_instruction(pdf_engine: str = "html") -> str:
+    """Load the engine-specific tutorial system instruction from the markdown prompt file."""
+    resolver = TutorialSystemPromptResolver(PROMPTS_DIR / "generator")
     return resolver.resolve(pdf_engine).read_text(encoding="utf-8").strip()
 
 
-def build_summary_language_instruction(languages: List[str]) -> str:
-    """Build summary-specific language guidance from the markdown rules file."""
+def build_tutorial_language_instruction(languages: List[str]) -> str:
+    """Build tutorial-specific language guidance from the markdown rules file."""
     clean_langs = [lang.strip().lower() for lang in languages if lang and lang.strip()]
     if not clean_langs:
         clean_langs = ["english"]
@@ -113,9 +113,10 @@ def build_summary_language_instruction(languages: List[str]) -> str:
     if len(clean_langs) == 1 and clean_langs[0] != "english":
         target_lang = clean_langs[0].capitalize()
         return (
-            f"Write the entire summary in {target_lang} only. Use clear academic {target_lang} terminology, preserve the chapter structure, "
+            f"Write the entire tutorial in {target_lang} only. Use clear academic {target_lang} terminology, preserve the chapter structure, "
             "and keep all mathematical equations, notation, variables, scientific names, and SVG labels unchanged. "
-            "Do not add any English summary text, English section labels, or exam-style answer formatting."
+            "Include the requested exam-aligned practice questions, answers, and worked solutions in that language. "
+            "Do not add English text or English section labels."
         )
 
     primary_lang = "english" if "english" in clean_langs else clean_langs[0]
@@ -123,25 +124,25 @@ def build_summary_language_instruction(languages: List[str]) -> str:
 
     if not secondary_langs:
         return (
-            "Write the summary in English only. Keep the final document in one language, maintain a clear academic tone, "
-            "and do not output questions, answer options, or exam-style formatting."
+            "Write the entire tutorial in English only. Keep the document in one language, maintain a clear academic tone, "
+            "and include exam-aligned practice questions, answers, and worked solutions."
         )
 
-    summary_rules = (PROMPTS_DIR / "generator" / "summary_language_rules.md").read_text(encoding="utf-8").strip()
-    summary_rules = summary_rules.replace("{{languages}}", ", ".join(clean_langs))
+    tutorial_rules = (PROMPTS_DIR / "generator" / "tutorial_language_rules.md").read_text(encoding="utf-8").strip()
+    tutorial_rules = tutorial_rules.replace("{{languages}}", ", ".join(clean_langs))
     if len(clean_langs) > 1:
         target_lang = secondary_langs[0].capitalize()
-        summary_rules = summary_rules.replace("target-language", target_lang)
-        summary_rules = summary_rules.replace("requested language", f"{target_lang} language")
+        tutorial_rules = tutorial_rules.replace("target-language", target_lang)
+        tutorial_rules = tutorial_rules.replace("requested language", f"{target_lang} language")
     elif clean_langs[0] != "english":
         target_lang = clean_langs[0].capitalize()
-        summary_rules = summary_rules.replace("target-language", target_lang)
-        summary_rules = summary_rules.replace("requested language", f"{target_lang} language")
-    return summary_rules
+        tutorial_rules = tutorial_rules.replace("target-language", target_lang)
+        tutorial_rules = tutorial_rules.replace("requested language", f"{target_lang} language")
+    return tutorial_rules
 
 
-class SummaryGenerator:
-    """Generates chapter summaries from PDFs or Markdown files and renders them as HTML/PDF."""
+class TutorialGenerator:
+    """Generates exam-oriented chapter tutorials from PDFs or Markdown files."""
 
     def __init__(
         self,
@@ -155,8 +156,10 @@ class SummaryGenerator:
         pdf_engine: str = "html",
         page_range: Optional[List[int]] = None,
         staging_dir: Path = Path("output"),
-        summary_title: Optional[str] = None,
+        tutorial_title: Optional[str] = None,
         watermark_text: str = "",
+        header_text: str = "",
+        footer_text: str = "",
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine
@@ -166,25 +169,33 @@ class SummaryGenerator:
         self.tags = tags
         self.output_format = output_format.lower()
         if self.output_format not in {"pdf"}:
-            raise ValueError("SummaryGenerator currently supports only PDF output mode.")
+            raise ValueError("TutorialGenerator currently supports only PDF output mode.")
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
-        self.summary_prompt_resolver = SummaryPromptResolver(PROMPTS_DIR / "generator")
-        self.summary_spec = self.summary_prompt_resolver.resolve(self.pdf_engine)
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
+        self.header_text = header_text or ""
+        self.footer_text = footer_text or ""
+        self.tutorial_prompt_resolver = TutorialPromptResolver(PROMPTS_DIR / "generator")
+        self.tutorial_spec = self.tutorial_prompt_resolver.resolve(self.pdf_engine)
+        self.renderer = OutputRenderer(
+            self.output_format,
+            self.pdf_engine,
+            watermark_text=self.watermark_text,
+            header_text=self.header_text,
+            footer_text=self.footer_text,
+        )
         self.page_range = page_range
         self.staging_dir = Path(staging_dir)
-        self.summary_title = summary_title
+        self.tutorial_title = tutorial_title
 
-    def _resolve_summary_prompt_path(self) -> Path:
-        """Resolve the engine-specific summary prompt and fail fast if it is missing."""
-        return self.summary_prompt_resolver.resolve(self.pdf_engine).prompt_path
+    def _resolve_tutorial_prompt_path(self) -> Path:
+        """Resolve the engine-specific tutorial prompt and fail fast if it is missing."""
+        return self.tutorial_prompt_resolver.resolve(self.pdf_engine).prompt_path
 
     def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
-        """Summarizes a chapter file (.pdf or .md) and writes a final HTML/PDF artifact."""
+        """Generates a tutorial from a chapter file and writes a final PDF artifact."""
         input_file = Path(input_file)
         if not input_file.exists():
-            raise FileNotFoundError(f"Summary input file does not exist: {input_file}")
+            raise FileNotFoundError(f"Tutorial input file does not exist: {input_file}")
 
         input_file = input_file.resolve()
         output_dir = Path(output_dir).resolve()
@@ -200,39 +211,45 @@ class SummaryGenerator:
         markdown_dir.mkdir(parents=True, exist_ok=True)
         prompt_dir.mkdir(parents=True, exist_ok=True)
 
-        generation_stem = build_generated_output_stem(input_file.stem)
+        generation_stem = build_generated_output_stem(
+            input_file.stem,
+            self.languages,
+            qualifier=self.standards,
+        )
         logger.info(
-            f"\n{'='*60}\n📘 [GENERATE-SUMMARY] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}"
+            f"\n{'='*60}\n📘 [GENERATE-TUTORIAL] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}"
         )
 
         image_map: Dict[str, str] = {}
         if input_file.suffix.lower() == ".pdf":
             if self.ocr_engine is None:
                 self.ocr_engine = MistralOCREngine()
-            markdown_text, image_map = self.ocr_engine.process_pdf(
+            ocr_result = self.ocr_engine.process_pdf(
                 pdf_path=input_file,
                 img_output_dir=img_output_dir,
                 page_range=self.page_range,
                 temp_dir=temp_dir,
             )
+            markdown_text = ocr_result.full_markdown
+            image_map = ocr_result.all_images
         else:
             markdown_text = load_file_content(input_file)
 
-        system_instruction = build_summary_system_instruction(self.pdf_engine)
+        system_instruction = build_tutorial_system_instruction(self.pdf_engine)
         lang_instruction, lang_tags = build_language_instructions(
             self.languages,
             output_format=self.output_format,
             pdf_engine=self.pdf_engine,
         )
-        summary_lang_instruction = build_summary_language_instruction(self.languages)
-        language_instruction = "\n\n".join(part for part in [lang_instruction, summary_lang_instruction] if part and part.strip())
+        tutorial_lang_instruction = build_tutorial_language_instruction(self.languages)
+        language_instruction = "\n\n".join(part for part in [lang_instruction, tutorial_lang_instruction] if part and part.strip())
         all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
 
-        summary_title = self.summary_title or input_file.stem.replace("_", " ").replace("-", " ").title()
-        prompt_path = self._resolve_summary_prompt_path()
+        tutorial_title = self.tutorial_title or input_file.stem.replace("_", " ").replace("-", " ").title()
+        prompt_path = self._resolve_tutorial_prompt_path()
         prompt_text = load_prompt_template(
             prompt_path,
-            title=summary_title,
+            title=tutorial_title,
             chapter_content=markdown_text,
             languages=", ".join(self.languages),
             standards=self.standards,
@@ -251,8 +268,8 @@ class SummaryGenerator:
             images=batch_images,
         )
 
-        output_artifact_name = f"{generation_stem}.{self.summary_spec.intermediate_extension}"
-        snapshot_path = prompt_dir / f"{generation_stem}_summary_prompt.md"
+        output_artifact_name = f"{generation_stem}.{self.tutorial_spec.intermediate_extension}"
+        snapshot_path = prompt_dir / f"{generation_stem}_tutorial_prompt.md"
         write_prompt_snapshot(
             snapshot_path,
             system_instruction,
@@ -272,9 +289,9 @@ class SummaryGenerator:
             generation_stem,
             image_map,
         )
-        logger.info(f"✨ Compiled summary PDF to: {final_pdf_path}")
+        logger.info(f"✨ Compiled tutorial PDF to: {final_pdf_path}")
         elapsed = time.perf_counter() - item_start
-        logger.info("⏱️ [GENERATE-SUMMARY] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
+        logger.info("⏱️ [GENERATE-TUTORIAL] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
         return final_pdf_path
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
@@ -296,7 +313,7 @@ class SummaryGenerator:
             out_path = self.process_file(file_path, output_dir, input_root=input_dir)
             results.append(out_path)
         directory_elapsed = time.perf_counter() - directory_start
-        logger.info("⏱️ [GENERATE-SUMMARY DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
+        logger.info("⏱️ [GENERATE-TUTORIAL DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
         self.ocr_engine.log_cache_summary()
         return results
 
@@ -332,27 +349,66 @@ def resolve_output_layout(
     return paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir
 
 
-def find_existing_output(output_dir: Path, stem: str, output_format: str) -> Optional[Path]:
+def find_existing_output(
+    output_dir: Path,
+    stem: str,
+    output_format: str,
+    *,
+    generated_prefix: Optional[str] = None,
+    include_legacy: bool = True,
+) -> Optional[Path]:
     """Return an existing non-empty generated artifact for the same source file, if any."""
     if output_format == "xml":
-        candidates = [
-            output_dir / f"{stem}.xml",
-        ]
+        extension = "xml"
     else:
-        candidates = [
-            output_dir / f"{stem}.pdf",
-        ]
+        extension = "pdf"
 
+    candidates = []
+    if include_legacy:
+        candidates.append(output_dir / f"{stem}.{extension}")
+        if extension == "pdf":
+            candidates.append(output_dir / f"{stem}_extracted.pdf")
+    if generated_prefix:
+        candidates.extend(sorted(output_dir.glob(f"{generated_prefix}_*.{extension}"), reverse=True))
+    elif not generated_prefix:
+        candidates.extend(sorted(output_dir.glob(f"{stem}_*.{extension}"), reverse=True))
     for candidate in candidates:
         if candidate.exists() and candidate.stat().st_size > 0:
             return candidate
     return None
 
 
-def build_generated_output_stem(stem: str) -> str:
-    """Create a versioned output stem for generation tasks to allow multiple variants."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:-3]
-    return f"{stem}_{timestamp}"
+def build_generated_output_stem(
+    stem: str,
+    languages: Optional[List[str]] = None,
+    *,
+    qualifier: Optional[str] = None,
+) -> str:
+    """Create a unique output stem with an optional exam/standard before languages."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+    normalized = []
+    for language in languages or ["english"]:
+        token = str(language).strip().lower()
+        token = re.sub(r"[^a-z0-9]+", "_", token).strip("_")
+        if token:
+            normalized.append(token)
+
+    if not normalized:
+        normalized = ["english"]
+
+    safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(stem)).strip("._-")
+    if not safe_stem:
+        safe_stem = "output"
+
+    qualifier_token = ""
+    if qualifier:
+        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(qualifier)).strip("._-").lower()
+        if candidate and candidate not in {"general", "mock_exam"}:
+            qualifier_token = f"_{candidate}"
+
+    language_prefix = "_".join(dict.fromkeys(normalized))
+    return f"{safe_stem}{qualifier_token}_{language_prefix}_{timestamp}"
 
 
 def build_paper_metadata(
@@ -658,6 +714,8 @@ class QuestionPaperExtractor:
         batch_size: int = 0,
         force_overwrite: bool = False,
         page_check_communicator: Optional[BaseAICommunicator] = None,
+        header_text: str = "",
+        footer_text: str = "",
     ):
         self.communicator = communicator
         self.page_check_communicator = page_check_communicator or communicator
@@ -676,6 +734,8 @@ class QuestionPaperExtractor:
         self.staging_dir = Path(staging_dir)
         self.batch_size = int(batch_size)
         self.force_overwrite = bool(force_overwrite)
+        self.header_text = header_text or ""
+        self.footer_text = footer_text or ""
 
     @staticmethod
     def parse_instruction_page_summary(response: Optional[str]) -> Optional[str]:
@@ -788,12 +848,28 @@ class QuestionPaperExtractor:
         markdown_dir.mkdir(parents=True, exist_ok=True)
         prompt_dir.mkdir(parents=True, exist_ok=True)
 
-        existing_output = find_existing_output(paper_dir, pdf_path.stem, self.output_format)
+        output_stem = build_generated_output_stem(
+            pdf_path.stem if self.output_format == "xml" else f"{pdf_path.stem}_extracted",
+            self.languages,
+            qualifier=self.standards,
+        )
+        output_prefix = output_stem.rsplit("_", 3)[0]
+        is_default_naming = (
+            self.standards.strip().lower() == "general"
+            and [language.strip().lower() for language in self.languages] == ["english"]
+        )
+        existing_output = find_existing_output(
+            paper_dir,
+            pdf_path.stem,
+            self.output_format,
+            generated_prefix=output_prefix,
+            include_legacy=is_default_naming,
+        )
         if existing_output is not None and not self.force_overwrite:
             logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
             return existing_output
         if existing_output is not None and self.force_overwrite:
-            logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; existing output at {existing_output} will be overwritten.")
+            logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; a new output will be generated (existing output: {existing_output}).")
 
         logger.info(f"\n{'='*60}\n📄 [EXTRACT] Processing: {pdf_path.name}\n{'='*60}")
 
@@ -932,20 +1008,24 @@ class QuestionPaperExtractor:
                     images=batch_images,
                 )
 
-                output_stem = pdf_path.stem
                 output_extension = "tex" if self.pdf_engine == "tex" else "html"
                 snapshot_path = prompt_dir / f"{output_stem}_extraction_prompt.md"
                 write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
                 raw_output = self.communicator.generate(
                     system_instruction=system_instruction,
                     contents=multimodal_batch,
-                    output_filename=f"{output_stem}_extracted.{output_extension}",
+                    output_filename=f"{output_stem}.{output_extension}",
                     prompt_snapshot_path=snapshot_path,
                 )
-                return OutputRenderer("pdf", self.pdf_engine).render(
+                return OutputRenderer(
+                    "pdf",
+                    self.pdf_engine,
+                    header_text=self.header_text,
+                    footer_text=self.footer_text,
+                ).render(
                     raw_output,
                     paper_dir,
-                    f"{output_stem}_extracted",
+                    output_stem,
                     ocr_result.all_images,
                 )
 
@@ -1000,7 +1080,7 @@ class QuestionPaperExtractor:
         )
 
         final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
-        output_filepath = paper_dir / f"{pdf_path.stem}.xml"
+        output_filepath = paper_dir / f"{output_stem}.xml"
         output_filepath.write_text(final_xml, encoding="utf-8")
 
         logger.info(f"✅ Extracted {len(all_questions_xml)} total question(s) -> {output_filepath}")
@@ -1075,6 +1155,8 @@ class QuestionGenerator:
         mcq_types_path: Path = resource_path("catalogs/mcq_types.yaml"),
         watermark_text: str = "",
         num_papers: int = 1,
+        header_text: str = "",
+        footer_text: str = "",
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -1092,7 +1174,15 @@ class QuestionGenerator:
             raise ValueError("--num-papers greater than 1 currently requires --output-format xml")
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
+        self.header_text = header_text or ""
+        self.footer_text = footer_text or ""
+        self.renderer = OutputRenderer(
+            self.output_format,
+            self.pdf_engine,
+            watermark_text=self.watermark_text,
+            header_text=self.header_text,
+            footer_text=self.footer_text,
+        )
         self.page_range = page_range
         self.staging_dir = Path(staging_dir)
         self.exam_duration_minutes = exam_duration_minutes
@@ -1116,9 +1206,6 @@ class QuestionGenerator:
         paper_dir.mkdir(parents=True, exist_ok=True)
         markdown_dir.mkdir(parents=True, exist_ok=True)
         prompt_dir.mkdir(parents=True, exist_ok=True)
-
-        generation_stem = build_generated_output_stem(input_file.stem)
-        logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}")
 
         paper_spec: Dict[str, Any] = {}
         if self.spec_path is not None:
@@ -1144,6 +1231,16 @@ class QuestionGenerator:
                 self.rules_dict["instruction_file"] = None
         else:
             paper_metadata = None
+        generation_stem = build_generated_output_stem(
+            input_file.stem,
+            self.languages,
+            qualifier=(
+                paper_spec.get("exam_name")
+                if str(paper_spec.get("exam_name", "")).strip().lower() not in {"", "mock_exam"}
+                else self.standards
+            ),
+        )
+        logger.info(f"\n{'='*60}\n📚 [GENERATE-QUESTIONS] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}")
         generation_question_count = (
             int(paper_spec.get("total_questions", self.num_questions))
             if paper_spec
@@ -1176,12 +1273,14 @@ class QuestionGenerator:
         # 1. Read or OCR source content
         image_map: Dict[str, str] = {}
         if input_file.suffix.lower() == ".pdf":
-            markdown_text, image_map = self.ocr_engine.process_pdf(
+            ocr_result = self.ocr_engine.process_pdf(
                 pdf_path=input_file,
                 img_output_dir=img_output_dir,
                 page_range=self.page_range,
                 temp_dir=temp_dir,
             )
+            markdown_text = ocr_result.full_markdown
+            image_map = ocr_result.all_images
         else:
             markdown_text = load_file_content(input_file)
         if not markdown_text.strip():
@@ -1374,6 +1473,8 @@ class PaperGenerator:
         exam_duration_minutes: Optional[int] = None,
         mcq_types_path: Path = resource_path("catalogs/mcq_types.yaml"),
         watermark_text: str = "",
+        header_text: str = "",
+        footer_text: str = "",
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -1385,7 +1486,15 @@ class PaperGenerator:
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
-        self.renderer = OutputRenderer(self.output_format, self.pdf_engine, watermark_text=self.watermark_text)
+        self.header_text = header_text or ""
+        self.footer_text = footer_text or ""
+        self.renderer = OutputRenderer(
+            self.output_format,
+            self.pdf_engine,
+            watermark_text=self.watermark_text,
+            header_text=self.header_text,
+            footer_text=self.footer_text,
+        )
         self.sample_pdf = sample_pdf
         self.staging_dir = Path(staging_dir)
         self.exam_duration_minutes = exam_duration_minutes
@@ -1397,16 +1506,6 @@ class PaperGenerator:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
-
-        exam_name = spec_path.stem.upper() if spec_path.suffix.lower() not in {".yaml", ".yml", ".json"} else "MOCK_EXAM"
-        if spec_path.suffix.lower() in {".yaml", ".yml", ".json"}:
-            try:
-                spec_data = load_yaml_or_json_file(spec_path)
-                exam_name = spec_data.get("exam_name", exam_name)
-            except Exception:
-                pass
-        output_stem = f"mock_{exam_name.lower()}_bank" if self.output_format == "xml" else f"mock_{exam_name.lower()}_paper"
-        generation_stem = build_generated_output_stem(output_stem)
 
         if not spec_path.exists():
             raise FileNotFoundError(f"Spec file not found: {spec_path}")
@@ -1421,6 +1520,16 @@ class PaperGenerator:
             }
 
         exam_name = spec_data.get("exam_name", "MOCK_EXAM")
+        output_stem = "mock_bank" if self.output_format == "xml" else "mock_paper"
+        generation_stem = build_generated_output_stem(
+            output_stem,
+            self.languages,
+            qualifier=(
+                exam_name
+                if str(exam_name).strip().lower() not in {"", "mock_exam"}
+                else self.standards
+            ),
+        )
         subjects = spec_data.get("subjects", [])
         metadata = build_paper_metadata(
             spec_data,
@@ -1456,7 +1565,11 @@ class PaperGenerator:
             content = ""
             if s_file.exists():
                 if s_file.suffix.lower() == ".pdf":
-                    content, _ = self.ocr_engine.process_pdf(s_file, self.staging_dir / "syllabus" / s_file.stem)
+                    ocr_result = self.ocr_engine.process_pdf(
+                        s_file,
+                        self.staging_dir / "syllabus" / s_file.stem,
+                    )
+                    content = ocr_result.full_markdown
                 else:
                     content = load_file_content(s_file)
                 logger.info(f"  ✓ Loaded syllabus for {subj_name} ({s_file.name})")

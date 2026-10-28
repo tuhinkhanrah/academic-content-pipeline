@@ -11,6 +11,7 @@ Functionalities:
   1. extract               : Extract questions from PDF question papers via Mistral OCR
   2. generate-questions     : Synthesize questions from chapter PDFs/MDs
   3. generate-paper         : Synthesize full mock exams from YAML specs / syllabi
+  4. generate-tutorial      : Generate exam-oriented tutorials with practice questions
 """
 
 import argparse
@@ -40,7 +41,7 @@ from academic_content_pipeline.content_processors import (
     PaperGenerator,
     QuestionGenerator,
     QuestionPaperExtractor,
-    SummaryGenerator,
+    TutorialGenerator,
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
 from academic_content_pipeline.pipeline_utils import setup_logger
@@ -129,10 +130,12 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache and force a fresh Mistral OCR run.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
     parser.add_argument("--watermark-text", default="", help="Optional text overlay added to generated PDF pages.")
+    parser.add_argument("--header-text", default="", help="Optional repeating header text for HTML-rendered PDFs.")
+    parser.add_argument("--footer-text", default="", help="Optional repeating footer text for HTML-rendered PDFs.")
 
 
 def add_task_subparsers(subparser_dest: Any) -> None:
-    """Attaches extract, generate-questions, and generate-paper subparsers."""
+    """Attach extraction, generation, and tutorial task subparsers."""
 
     # 1. extract
     p_ext = subparser_dest.add_parser("extract", help="Extract questions from exam paper PDFs via Mistral OCR.")
@@ -156,13 +159,16 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
 
-    # 3. generate-summary
-    p_summary = subparser_dest.add_parser("generate-summary", help="Generate a chapter or syllabus summary into HTML and PDF.")
-    add_common_options(p_summary)
-    p_summary.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
-    p_summary.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
-    p_summary.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
-    p_summary.add_argument("--title", default=None, help="Optional title for the generated summary document.")
+    # 3. generate-tutorial
+    p_tutorial = subparser_dest.add_parser(
+        "generate-tutorial",
+        help="Generate an exam-oriented chapter tutorial with practice questions and solutions.",
+    )
+    add_common_options(p_tutorial)
+    p_tutorial.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
+    p_tutorial.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
+    p_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
+    p_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
 
     # 4. generate-paper
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
@@ -275,13 +281,16 @@ def main():
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
 
-    p_direct_summary = top_subparsers.add_parser("generate-summary", help="Generate a chapter summary to HTML and PDF.")
-    p_direct_summary.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
-    add_common_options(p_direct_summary)
-    p_direct_summary.add_argument("--input-dir", type=Path, default=None)
-    p_direct_summary.add_argument("--input-file", type=Path, default=None)
-    p_direct_summary.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
-    p_direct_summary.add_argument("--title", default=None)
+    p_direct_tutorial = top_subparsers.add_parser(
+        "generate-tutorial",
+        help="Generate an exam-oriented chapter tutorial with practice questions and solutions.",
+    )
+    p_direct_tutorial.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
+    add_common_options(p_direct_tutorial)
+    p_direct_tutorial.add_argument("--input-dir", type=Path, default=None)
+    p_direct_tutorial.add_argument("--input-file", type=Path, default=None)
+    p_direct_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
+    p_direct_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
 
     p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
@@ -335,7 +344,7 @@ def main():
         parts = prompt_path.parts
         if "generator" in parts:
             stem = prompt_path.stem
-            if stem in {"question_generator", "paper_generator", "summary_request"}:
+            if stem in {"question_generator", "paper_generator", "tutorial_request"}:
                 return GeneratorPromptResolver(Path("prompts/generator")).resolve(
                     stem,
                     output_format=args.output_format,
@@ -359,9 +368,9 @@ def main():
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/question_generator.md")
             else:
                 args.prompt = Path("prompts/generator/xml/question_generator.md")
-        elif task == "generate-summary":
+        elif task == "generate-tutorial":
             args.output_format = "pdf"
-            args.prompt = Path(f"prompts/generator/{args.pdf_engine}/summary_request.md")
+            args.prompt = Path(f"prompts/generator/{args.pdf_engine}/tutorial_request.md")
         elif task == "generate-paper":
             if args.output_format == "pdf":
                 args.prompt = Path(f"prompts/generator/{args.pdf_engine}/paper_generator.md")
@@ -416,6 +425,8 @@ def main():
                 pdf_engine=args.pdf_engine,
                 batch_size=getattr(args, "batch_size", 0),
                 force_overwrite=getattr(args, "force", False),
+                header_text=getattr(args, "header_text", ""),
+                footer_text=getattr(args, "footer_text", ""),
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)
@@ -443,6 +454,8 @@ def main():
                 spec_path=getattr(args, "spec", None),
                 mcq_types_path=args.mcq_types,
                 watermark_text=getattr(args, "watermark_text", ""),
+                header_text=getattr(args, "header_text", ""),
+                footer_text=getattr(args, "footer_text", ""),
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -452,9 +465,9 @@ def main():
                 logger.error("Please specify --input-dir or --input-file for chapter generation.")
                 sys.exit(1)
 
-        elif task == "generate-summary":
+        elif task == "generate-tutorial":
             args.output_format = "pdf"
-            summary_generator = SummaryGenerator(
+            tutorial_generator = TutorialGenerator(
                 communicator=communicator,
                 ocr_engine=ocr_engine,
                 rules_dict=rules_dict,
@@ -464,15 +477,17 @@ def main():
                 output_format="pdf",
                 pdf_engine=args.pdf_engine,
                 page_range=args.page_range,
-                summary_title=getattr(args, "title", None),
+                tutorial_title=getattr(args, "title", None),
                 watermark_text=getattr(args, "watermark_text", ""),
+                header_text=getattr(args, "header_text", ""),
+                footer_text=getattr(args, "footer_text", ""),
             )
             if args.input_file:
-                summary_generator.process_file(args.input_file, args.output_dir)
+                tutorial_generator.process_file(args.input_file, args.output_dir)
             elif args.input_dir:
-                summary_generator.process_directory(args.input_dir, args.output_dir)
+                tutorial_generator.process_directory(args.input_dir, args.output_dir)
             else:
-                logger.error("Please specify --input-dir or --input-file for summary generation.")
+                logger.error("Please specify --input-dir or --input-file for tutorial generation.")
                 sys.exit(1)
 
         elif task == "generate-paper":
@@ -494,6 +509,8 @@ def main():
                 exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
                 mcq_types_path=args.mcq_types,
                 watermark_text=getattr(args, "watermark_text", ""),
+                header_text=getattr(args, "header_text", ""),
+                footer_text=getattr(args, "footer_text", ""),
             )
             mock_generator.process_spec(args.spec, args.output_dir)
 

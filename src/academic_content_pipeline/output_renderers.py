@@ -13,10 +13,19 @@ from .pipeline_utils import (
 class OutputRenderer:
     """Renders generated content as Moodle XML or a compiled PDF."""
 
-    def __init__(self, output_format: str, pdf_engine: str = "html", watermark_text: str = ""):
+    def __init__(
+        self,
+        output_format: str,
+        pdf_engine: str = "html",
+        watermark_text: str = "",
+        header_text: str = "",
+        footer_text: str = "",
+    ):
         self.output_format = output_format.lower()
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
+        self.header_text = header_text or ""
+        self.footer_text = footer_text or ""
         self._validate_configuration()
 
     def _validate_configuration(self) -> None:
@@ -47,5 +56,12 @@ class OutputRenderer:
         if self.pdf_engine == "tex":
             compile_tex_to_pdf(raw_output, final_path, image_map=image_map)
         else:
-            compile_html_to_pdf(raw_output, final_path, image_map=image_map, watermark_text=self.watermark_text)
+            compile_html_to_pdf(
+                raw_output,
+                final_path,
+                image_map=image_map,
+                watermark_text=self.watermark_text,
+                header_text=self.header_text,
+                footer_text=self.footer_text,
+            )
         return final_path

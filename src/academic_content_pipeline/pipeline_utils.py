@@ -198,27 +198,30 @@ def inject_html_watermark(html_content: str, watermark_text: Optional[str]) -> s
     if not watermark_text:
         return html_content
 
-    safe_text = html.escape(watermark_text, quote=True)
+    safe_text = json.dumps(watermark_text, ensure_ascii=False)
     watermark_css = f"""
     <style>
-      body {{
-        position: relative;
-      }}
-      body::before {{
-        content: "{safe_text}";
-        position: fixed;
-        inset: 0;
-        display: grid;
-        place-items: center;
-        font-size: clamp(28px, 4vw, 64px);
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        color: rgba(0, 0, 0, 0.08);
-        transform: rotate(-45deg);
-        pointer-events: none;
-        z-index: 9999;
-        white-space: nowrap;
-        text-transform: uppercase;
+      @media print {{
+        body {{
+          position: relative;
+        }}
+        body::before {{
+          content: {safe_text};
+          position: fixed;
+          inset: 0;
+          display: grid;
+          place-items: center;
+          font-size: clamp(48pt, 12vw, 120pt);
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          color: rgba(0, 0, 0, 0.08);
+          transform: rotate(-45deg);
+          pointer-events: none;
+          z-index: 9999;
+          white-space: nowrap;
+          overflow: hidden;
+          text-transform: uppercase;
+        }}
       }}
     </style>
     """
@@ -230,6 +233,61 @@ def inject_html_watermark(html_content: str, watermark_text: Optional[str]) -> s
     if "</head>" in html_content.lower():
         return html_content.replace("</head>", f"{watermark_css}\n</head>", 1)
     return f"{watermark_css}\n{html_content}"
+
+
+def inject_html_page_text(
+    html_content: str,
+    header_text: Optional[str],
+    footer_text: Optional[str],
+) -> str:
+    """Add repeating header/footer text and reserve print-page space for it."""
+    header_text = (header_text or "").strip()
+    footer_text = (footer_text or "").strip()
+    if not header_text and not footer_text:
+        return html_content
+
+    top_margin = "16mm" if header_text else "8mm"
+    bottom_margin = "16mm" if footer_text else "8mm"
+    page_margin_rules = ""
+    if header_text:
+        page_margin_rules += f"""
+        @top-center {{
+          content: {json.dumps(header_text, ensure_ascii=False)};
+          font: 9pt Arial, sans-serif;
+          color: #555;
+          text-align: center;
+          vertical-align: middle;
+        }}
+        """
+    if footer_text:
+        page_margin_rules += f"""
+        @bottom-center {{
+          content: {json.dumps(footer_text, ensure_ascii=False)};
+          font: 9pt Arial, sans-serif;
+          color: #555;
+          text-align: center;
+          vertical-align: middle;
+        }}
+        """
+    page_text_style = f"""
+    <style>
+      @page {{
+        margin: {top_margin} 10mm {bottom_margin} 10mm !important;
+        {page_margin_rules}
+      }}
+    </style>
+    """
+    if re.search(r"</head>", html_content, re.IGNORECASE):
+        html_content = re.sub(
+            r"</head>",
+            lambda match: page_text_style + match.group(0),
+            html_content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    else:
+        html_content = page_text_style + html_content
+    return html_content
 
 
 def format_instruction_profile(profile: Dict[str, Any]) -> str:
@@ -730,24 +788,34 @@ def compile_html_to_pdf(
     output_pdf_path: Path,
     image_map: Optional[Dict[str, str]] = None,
     watermark_text: Optional[str] = None,
+    header_text: Optional[str] = None,
+    footer_text: Optional[str] = None,
 ) -> Path:
     """Compiles HTML string to PDF locally via Headless Chrome."""
     html_content = normalize_html_math_source(html_content)
     html_content = ensure_html_print_safe_styles(html_content)
     html_content = inject_html_watermark(html_content, watermark_text)
+    html_content = inject_html_page_text(html_content, header_text, footer_text)
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
     html_file = output_pdf_path.with_suffix(".html")
     html_file.write_text(html_content, encoding="utf-8")
 
-    # Copy associated diagram images to output directory so relative image tags resolve
+    # Copy only OCR images referenced by the HTML; SVG-only documents need no image files.
     if image_map:
-        for img_name, img_path in image_map.items():
-            if os.path.exists(img_path):
-                dest = output_pdf_path.parent / img_name
-                try:
-                    shutil.copy2(img_path, dest)
-                except Exception as e:
-                    logger.debug(f"Image copy note: {e}")
+        references = re.findall(
+            r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']",
+            html_content,
+            re.IGNORECASE,
+        )
+        image_paths = {
+            Path(img_name).name: Path(img_path)
+            for img_name, img_path in image_map.items()
+        }
+        for reference in references:
+            reference_name = Path(reference).name
+            img_path = image_paths.get(reference_name)
+            if img_path is not None and img_path.is_file():
+                shutil.copy2(img_path, output_pdf_path.parent / reference_name)
 
     validate_local_image_references(html_content, output_pdf_path.parent, image_map, "html")
 

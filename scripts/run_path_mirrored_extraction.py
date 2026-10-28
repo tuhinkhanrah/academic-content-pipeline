@@ -85,6 +85,41 @@ def should_skip(output_xml: Path, force: bool = False) -> bool:
     return output_xml.exists() and output_xml.stat().st_size > 0
 
 
+def find_existing_output(
+    output_dir: Path,
+    source_stem: str,
+    standard: str,
+    languages: str,
+) -> Path | None:
+    """Find an extraction output for the requested standard and language set."""
+    name_parts = [source_stem]
+    standard_token = re.sub(r"[^a-zA-Z0-9._-]+", "_", standard).strip("._-").lower()
+    if standard_token and standard_token != "general":
+        name_parts.append(standard_token)
+    language_tokens = list(
+        dict.fromkeys(
+            token
+            for token in (
+                re.sub(r"[^a-zA-Z0-9._-]+", "_", language.strip()).strip("._-").lower()
+                for language in languages.split(",")
+            )
+            if token
+        )
+    )
+    if not language_tokens:
+        language_tokens = ["english"]
+    name_parts.extend(language_tokens)
+    generated_prefix = "_".join(name_parts)
+
+    candidates = sorted(output_dir.glob(f"{generated_prefix}_*.xml"), reverse=True)
+    if standard_token in {"", "general"} and language_tokens == ["english"]:
+        candidates.insert(0, output_dir / f"{source_stem}.xml")
+    return next(
+        (candidate for candidate in candidates if candidate.is_file() and candidate.stat().st_size > 0),
+        None,
+    )
+
+
 def iter_pdfs(source_root: Path) -> Iterable[Path]:
     for pdf in sorted(source_root.rglob("*.pdf")):
         if pdf.name.startswith("sliced_") or pdf.name.startswith("temp_"):
@@ -200,17 +235,17 @@ def main(argv: List[str] | None = None) -> int:
         output_dir = build_output_dir(source_root, pdf_path, output_root)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        final_xml = output_dir / f"{pdf_path.stem}.xml"
-        if should_skip(final_xml, force=args.force):
+        standard, tags = infer_metadata_from_path(pdf_path, source_root)
+        final_xml = find_existing_output(output_dir, pdf_path.stem, standard, args.languages)
+        if final_xml is not None and should_skip(final_xml, force=args.force):
             if args.verbose:
                 print(f"Skipping {pdf_path}: output already exists at {final_xml}")
             skipped += 1
             skipped_files.append((str(pdf_path), str(final_xml)))
             continue
-        elif args.force and final_xml.exists():
-            print(f"Forcing rerun for {pdf_path}: existing output at {final_xml} will be overwritten.")
+        elif args.force and final_xml is not None:
+            print(f"Forcing rerun for {pdf_path}: an updated output will be generated; existing output is {final_xml}.")
 
-        standard, tags = infer_metadata_from_path(pdf_path, source_root)
         if args.verbose:
             print(f"{rel} -> standard={standard}, tags={tags}")
 
