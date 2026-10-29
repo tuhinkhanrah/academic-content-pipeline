@@ -16,7 +16,6 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 import yaml
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -369,9 +368,7 @@ def find_existing_output(
         if extension == "pdf":
             candidates.append(output_dir / f"{stem}_extracted.pdf")
     if generated_prefix:
-        candidates.extend(sorted(output_dir.glob(f"{generated_prefix}_*.{extension}"), reverse=True))
-    elif not generated_prefix:
-        candidates.extend(sorted(output_dir.glob(f"{stem}_*.{extension}"), reverse=True))
+        candidates.append(output_dir / f"{generated_prefix}.{extension}")
     for candidate in candidates:
         if candidate.exists() and candidate.stat().st_size > 0:
             return candidate
@@ -384,9 +381,7 @@ def build_generated_output_stem(
     *,
     qualifier: Optional[str] = None,
 ) -> str:
-    """Create a unique output stem with an optional exam/standard before languages."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
-
+    """Create a stable output stem with an optional exam/standard before languages."""
     normalized = []
     for language in languages or ["english"]:
         token = str(language).strip().lower()
@@ -408,7 +403,7 @@ def build_generated_output_stem(
             qualifier_token = f"_{candidate}"
 
     language_prefix = "_".join(dict.fromkeys(normalized))
-    return f"{safe_stem}{qualifier_token}_{language_prefix}_{timestamp}"
+    return f"{safe_stem}{qualifier_token}_{language_prefix}"
 
 
 def build_paper_metadata(
@@ -853,7 +848,7 @@ class QuestionPaperExtractor:
             self.languages,
             qualifier=self.standards,
         )
-        output_prefix = output_stem.rsplit("_", 3)[0]
+        output_prefix = output_stem
         is_default_naming = (
             self.standards.strip().lower() == "general"
             and [language.strip().lower() for language in self.languages] == ["english"]
@@ -869,7 +864,7 @@ class QuestionPaperExtractor:
             logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
             return existing_output
         if existing_output is not None and self.force_overwrite:
-            logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; a new output will be generated (existing output: {existing_output}).")
+            logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; the stable output will be replaced (existing output: {existing_output}).")
 
         logger.info(f"\n{'='*60}\n📄 [EXTRACT] Processing: {pdf_path.name}\n{'='*60}")
 

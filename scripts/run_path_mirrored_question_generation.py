@@ -130,21 +130,16 @@ def build_output_prefix(
 
 
 def find_existing_output(output_dir: Path, prefix: str, output_format: str) -> Path | None:
-    """Find a non-empty timestamped question output, including split papers."""
+    """Find a non-empty stable question output, including split papers."""
     extension = "pdf" if output_format == "pdf" else "xml"
-    candidates = sorted(
-        (
-            path
-            for path in output_dir.iterdir()
-            if path.is_file()
-            and path.suffix.lower() == f".{extension}"
-            and path.name.startswith(f"{prefix}_")
-            and path.stat().st_size > 0
-        ),
-        key=lambda path: path.name,
-        reverse=True,
+    stable_output = output_dir / f"{prefix}.{extension}"
+    if stable_output.is_file() and stable_output.stat().st_size > 0:
+        return stable_output
+    split_outputs = sorted(output_dir.glob(f"{prefix}_paper_*.{extension}"), reverse=True)
+    return next(
+        (path for path in split_outputs if path.is_file() and path.stat().st_size > 0),
+        None,
     )
-    return candidates[0] if candidates else None
 
 
 def command_for_input(

@@ -36,6 +36,7 @@ Teach the chapter or syllabus content, then assess understanding with original p
 - Every SVG root must have `viewBox`, `width="100%"`, `height="auto"`, and `xmlns="http://www.w3.org/2000/svg"`.
 - Never put LaTeX, MathJax delimiters, or TeX commands inside SVG `<text>` nodes. Render equations in HTML outside the SVG.
 - Use concise, plain Unicode SVG labels and keep all SVG content within the viewBox.
+- Never put non-English words, labels, or sentences inside MathJax `\text{...}` or similar text wrappers. Keep translated labels in regular HTML, optionally with the appropriate `lang` attribute, outside the MathJax delimiters; use MathJax only for the equation.
 
 [SCIENTIFIC SYMBOLS AND HTML-SAFE UNITS]
 - The output is HTML rendered by a browser and then printed to PDF. Never leave raw LaTeX symbol commands in ordinary HTML text.
@@ -51,6 +52,8 @@ Teach the chapter or syllabus content, then assess understanding with original p
 - Prevent text from colliding: provide readable line-height and spacing, natural wrapping, and distinct separation for paragraphs, equations, diagrams, questions, answers, and solutions.
 - Apply `box-sizing: border-box`; constrain all content to the available width. Make SVGs, tables, formula blocks, and cards responsive with `max-width: 100%`.
 - Prevent long text and equations from pushing content past page edges. Keep tables compact and avoid wide layouts.
+- Do not create horizontal or vertical scrollbars for content. Avoid `overflow: auto` or `overflow: scroll`, fixed-height containers, and fixed-width content layouts. Wrap long text, make tables and diagrams fit the available width, and split long equations or tables when needed.
+- In print styles, remove scroll behavior so all content remains visible and fits within printable page bounds. Never use `overflow: hidden` to conceal content that does not fit; fix the element's width, wrapping, or layout instead.
 - Include print CSS for A4 paper with explicit printable margins. No content may extend beyond the printable area.
 - Where practical, keep each question with its answer and solution when printing.
 - Use high-contrast print-friendly colors, and robust system font fallbacks that support the requested script.

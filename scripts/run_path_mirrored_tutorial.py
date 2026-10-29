@@ -6,6 +6,13 @@ Example:
         --source-root /data/chapters \
         --output-root /workspace/summaries \
         --languages english
+
+Re-render PDFs from existing HTML files, saving each PDF beside its HTML:
+    python scripts/run_path_mirrored_tutorial.py \
+        --source-root /workspace/summaries \
+        --render-pdf \
+        --watermark-text "DRAFT" \
+        --footer-text "Study resource"
 """
 
 from __future__ import annotations
@@ -77,6 +84,12 @@ def iter_source_files(source_root: Path) -> Iterable[Path]:
             yield path
 
 
+def iter_html_files(source_root: Path) -> Iterable[Path]:
+    for path in sorted(source_root.rglob("*")):
+        if path.is_file() and path.suffix.lower() == ".html":
+            yield path
+
+
 def build_output_dir(source_root: Path, input_path: Path, output_root: Path) -> Path:
     return output_root / input_path.relative_to(source_root).parent
 
@@ -99,20 +112,13 @@ def output_prefix(input_path: Path, standard: str, languages: str) -> str:
 
 
 def find_existing_tutorial(output_dir: Path, prefix: str) -> Path | None:
-    """Find a non-empty tutorial PDF for this input, standard, and language set."""
-    candidates = sorted(
-        (
-            path
-            for path in output_dir.iterdir()
-            if path.is_file()
-            and path.suffix.lower() == ".pdf"
-            and path.name.startswith(f"{prefix}_")
-            and path.stat().st_size > 0
-        ),
-        key=lambda path: path.name,
-        reverse=True,
+    """Find a non-empty stable tutorial PDF."""
+    stable_output = output_dir / f"{prefix}.pdf"
+    return (
+        stable_output
+        if stable_output.is_file() and stable_output.stat().st_size > 0
+        else None
     )
-    return candidates[0] if candidates else None
 
 
 def command_for_input(
@@ -131,7 +137,29 @@ def command_for_input(
     footer_text: str = "",
     bucket_name: str | None = None,
     disable_ocr_cache: bool = False,
+    render_pdf: bool = False,
 ) -> List[str]:
+    if render_pdf:
+        command = [
+            sys.executable,
+            "-m",
+            "academic_content_pipeline.unified_pipeline",
+            mode,
+            "generate-tutorial",
+            "--render-pdf",
+            "--input-file",
+            str(input_path),
+            "--pdf-engine",
+            pdf_engine,
+        ]
+        if watermark_text:
+            command.extend(["--watermark-text", watermark_text])
+        if header_text:
+            command.extend(["--header-text", header_text])
+        if footer_text:
+            command.extend(["--footer-text", footer_text])
+        return command
+
     output_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -190,11 +218,9 @@ def execute_command(command: List[str], input_path: Path) -> int:
 
 
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Generate PDF summaries while mirroring source folders."
-    )
-    parser.add_argument("--source-root", type=Path, required=True, help="Root containing PDF/Markdown sources.")
-    parser.add_argument("--output-root", type=Path, required=True, help="Root for mirrored tutorial PDFs.")
+    parser = argparse.ArgumentParser(description="Generate or re-render mirrored PDF tutorials.")
+    parser.add_argument("--source-root", type=Path, required=True, help="Root containing PDF/Markdown sources, or HTML files with --render-pdf.")
+    parser.add_argument("--output-root", type=Path, default=None, help="Root for mirrored tutorial PDFs.")
     parser.add_argument(
         "--mode",
         choices=["context", "agent", "remote", "batch", "sequential"],
@@ -217,29 +243,46 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--footer-text", default="", help="Optional repeating footer on HTML-rendered PDFs.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     parser.add_argument("--force", action="store_true", help="Regenerate even if a matching tutorial PDF exists.")
+    parser.add_argument(
+        "--render-pdf",
+        action="store_true",
+        help="Re-render existing HTML files to PDFs beside them; do not generate tutorials.",
+    )
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Force fresh Mistral OCR for PDF inputs.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file inferred metadata.")
     args = parser.parse_args(argv)
+
+    if not args.render_pdf and args.output_root is None:
+        parser.error("--output-root is required unless --render-pdf is used.")
+    if args.render_pdf and args.pdf_engine != "html":
+        parser.error("--render-pdf requires --pdf-engine html.")
 
     if args.mode == "sequential":
         args.mode = "context"
     max_workers = max(1, args.parallel_workers)
     source_root = args.source_root.resolve()
-    output_root = args.output_root.resolve()
     if not source_root.is_dir():
         raise NotADirectoryError(f"Source root does not exist or is not a directory: {source_root}")
-    output_root.mkdir(parents=True, exist_ok=True)
+    output_root = args.output_root.resolve() if args.output_root else None
+    if output_root:
+        output_root.mkdir(parents=True, exist_ok=True)
 
     skipped_files: List[tuple[Path, Path]] = []
     jobs: List[tuple[Path, List[str]]] = []
-    source_files = list(iter_source_files(source_root))
+    source_files = list(iter_html_files(source_root) if args.render_pdf else iter_source_files(source_root))
+    if args.render_pdf and not source_files:
+        parser.error(f"No HTML files found under: {source_root}")
     for input_path in source_files:
-        output_dir = build_output_dir(source_root, input_path, output_root)
+        output_dir = input_path.parent if args.render_pdf else build_output_dir(source_root, input_path, output_root)
         standard, tags = infer_metadata_from_path(input_path)
         if args.verbose:
             print(f"{input_path.relative_to(source_root)} -> standard={standard}, tags={tags}")
         prefix = output_prefix(input_path, standard, args.languages)
-        existing_tutorial = find_existing_tutorial(output_dir, prefix) if output_dir.exists() else None
+        existing_tutorial = (
+            find_existing_tutorial(output_dir, prefix)
+            if not args.render_pdf and output_dir.exists()
+            else None
+        )
         if existing_tutorial is not None and not args.force:
             print(f"Skipping {input_path}: tutorial already exists at {existing_tutorial}")
             skipped_files.append((input_path, existing_tutorial))
@@ -261,6 +304,7 @@ def main(argv: List[str] | None = None) -> int:
             footer_text=args.footer_text,
             bucket_name=args.bucket_name,
             disable_ocr_cache=args.disable_ocr_cache,
+            render_pdf=args.render_pdf,
         )
         if args.dry_run:
             print(subprocess.list2cmdline(command))
@@ -268,7 +312,7 @@ def main(argv: List[str] | None = None) -> int:
             jobs.append((input_path, command))
 
     if args.dry_run:
-        print(f"Prepared {len(source_files)} source file(s); skipped {len(skipped_files)} existing tutorial file(s).")
+        print(f"Prepared {len(source_files)} HTML file(s) for PDF rendering.")
         return 0
     if not jobs:
         print(f"No tutorials to generate. Skipped {len(skipped_files)} existing tutorial file(s).")
@@ -292,7 +336,7 @@ def main(argv: List[str] | None = None) -> int:
                 failures += 1
 
     print(
-        f"Generated tutorials for {len(jobs) - failures} file(s); "
+        f"{'Rendered PDFs for' if args.render_pdf else 'Generated tutorials for'} {len(jobs) - failures} file(s); "
         f"skipped {len(skipped_files)} existing tutorial file(s); "
         f"failed {failures} file(s)."
     )

@@ -496,16 +496,21 @@ class AgentSessionBackend(BaseAICommunicator):
     def close(self) -> None:
         """Tears down the remote environment sandbox to release quotas and resources."""
         if self.environment_id:
+            environment_id = self.environment_id
             try:
-                logger.info(f"🧹 Tearing down remote agent environment: {self.environment_id}...")
+                logger.info(f"🧹 Tearing down remote agent environment: {environment_id}...")
                 if hasattr(self.client, "environments") and hasattr(self.client.environments, "delete"):
-                    self.client.environments.delete(name=self.environment_id)
+                    self.client.environments.delete(id=environment_id)
                 elif hasattr(self.client, "agents") and hasattr(self.client.agents, "environments"):
-                    self.client.agents.environments.delete(name=self.environment_id)
+                    self.client.agents.environments.delete(id=environment_id)
+                else:
+                    raise RuntimeError("The GenAI client does not expose an environment delete operation.")
             except Exception as e:
-                logger.debug(f"Environment cleanup notice: {e}")
-            finally:
+                logger.exception("Failed to tear down remote agent environment %s: %s", environment_id, e)
+            else:
+                logger.info("Deleted remote agent environment: %s", environment_id)
                 self.environment_id = None
+            finally:
                 self.last_interaction_id = None
 
 
@@ -844,13 +849,17 @@ if resp.status_code not in [200, 201]:
     def close(self) -> None:
         """Tears down the remote sandbox environment created during execution."""
         if self.last_environment_id:
+            environment_id = self.last_environment_id
             try:
-                logger.info(f"🧹 Tearing down remote sandbox environment: {self.last_environment_id}...")
+                logger.info(f"🧹 Tearing down remote sandbox environment: {environment_id}...")
                 if hasattr(self.client, "environments") and hasattr(self.client.environments, "delete"):
-                    self.client.environments.delete(name=self.last_environment_id)
+                    self.client.environments.delete(id=environment_id)
                 elif hasattr(self.client, "agents") and hasattr(self.client.agents, "environments"):
-                    self.client.agents.environments.delete(name=self.last_environment_id)
+                    self.client.agents.environments.delete(id=environment_id)
+                else:
+                    raise RuntimeError("The GenAI client does not expose an environment delete operation.")
             except Exception as e:
-                logger.debug(f"Remote environment cleanup notice: {e}")
-            finally:
+                logger.exception("Failed to tear down remote sandbox environment %s: %s", environment_id, e)
+            else:
+                logger.info("Deleted remote sandbox environment: %s", environment_id)
                 self.last_environment_id = None

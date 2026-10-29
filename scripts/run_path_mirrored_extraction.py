@@ -111,9 +111,9 @@ def find_existing_output(
     name_parts.extend(language_tokens)
     generated_prefix = "_".join(name_parts)
 
-    candidates = sorted(output_dir.glob(f"{generated_prefix}_*.xml"), reverse=True)
+    candidates = [output_dir / f"{generated_prefix}.xml"]
     if standard_token in {"", "general"} and language_tokens == ["english"]:
-        candidates.insert(0, output_dir / f"{source_stem}.xml")
+        candidates.append(output_dir / f"{source_stem}.xml")
     return next(
         (candidate for candidate in candidates if candidate.is_file() and candidate.stat().st_size > 0),
         None,

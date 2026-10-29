@@ -33,7 +33,7 @@ You are an academic typesetter. Produce a clean, single-file UTF-8 HTML paper (`
      ```
 4. **Text Formatting vs. Math Mode Rules (CRITICAL):**
    - **Text Formatting:** Do NOT use LaTeX commands (such as `\textit{}`, `\textbf{}`, `\underline{}`) in general text or scientific names. Use native HTML tags (`<i>Spirogyra</i>`) or Markdown (`*Spirogyra*`).
-   - **Indic-language safety in math blocks:** Do NOT wrap Indic words, labels, or sentences inside `\text{...}` or similar MathJax wrappers. This is not Bengali-specific; it applies to all Indic scripts. A safe pattern is: `কৌণিক ভরবেগ: \[ L = \frac{nh}{2\pi} \]` or `Angular momentum: \( L = \frac{nh}{2\pi} \)`. Unsafe patterns include `\text{কৌণিক ভরবেগ}` or `\text{कोणीय संवेग}`.
+   - **Non-English text in math blocks:** Do NOT put non-English words, labels, or sentences inside `\text{...}` or similar MathJax text wrappers. Keep translated labels in regular HTML, optionally marked with the appropriate `lang` attribute (for example, `<span lang="bn">কৌণিক ভরবেগ</span>`), outside the MathJax delimiters. Use MathJax for the equation only. For example: `<span lang="bn">কৌণিক ভরবেগ:</span> \( L = \frac{nh}{2\pi} \)`. Unsafe patterns include `\text{কৌণিক ভরবেগ}` or `\text{कोणीय संवेग}`.
    - **Math Mode Formatting:** Use LaTeX syntax ONLY for mathematical equations wrapped inside `$...$` (inline) or `$$...$$` (block).
      - Correct Math: `$$\frac{u^2 \cos^2 \theta}{g}$$` or `$\sin\theta$`
      - Correct Text/Biology: `<i>Gelidium</i>` or `<i>Ulothrix</i>`
@@ -60,6 +60,10 @@ You are an academic typesetter. Produce a clean, single-file UTF-8 HTML paper (`
       });
     </script>
     ```
+11. **Responsive and print-fit layout (required):**
+    - Do not create horizontal or vertical scrollbars for content. Avoid `overflow: auto` or `overflow: scroll`, fixed-height containers, and fixed-width content layouts.
+    - Wrap long text, make tables and diagrams fit the available width, and split long equations or tables when needed.
+    - In print styles, remove scroll behavior so all content remains visible and fits within printable page bounds. Never use `overflow: hidden` to conceal content that does not fit; fix the element's width, wrapping, or layout instead.
 
 ## II. GRAPHICS & GENERATED SVG RULE
 

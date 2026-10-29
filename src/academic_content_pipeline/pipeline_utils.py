@@ -790,6 +790,7 @@ def compile_html_to_pdf(
     watermark_text: Optional[str] = None,
     header_text: Optional[str] = None,
     footer_text: Optional[str] = None,
+    html_output_path: Optional[Path] = None,
 ) -> Path:
     """Compiles HTML string to PDF locally via Headless Chrome."""
     html_content = normalize_html_math_source(html_content)
@@ -797,7 +798,8 @@ def compile_html_to_pdf(
     html_content = inject_html_watermark(html_content, watermark_text)
     html_content = inject_html_page_text(html_content, header_text, footer_text)
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    html_file = output_pdf_path.with_suffix(".html")
+    html_file = Path(html_output_path) if html_output_path else output_pdf_path.with_suffix(".html")
+    html_file.parent.mkdir(parents=True, exist_ok=True)
     html_file.write_text(html_content, encoding="utf-8")
 
     # Copy only OCR images referenced by the HTML; SVG-only documents need no image files.

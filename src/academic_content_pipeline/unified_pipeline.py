@@ -18,6 +18,7 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,7 @@ from academic_content_pipeline.content_processors import (
     TutorialGenerator,
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
-from academic_content_pipeline.pipeline_utils import setup_logger
+from academic_content_pipeline.pipeline_utils import compile_html_to_pdf, setup_logger
 from academic_content_pipeline.resource_paths import resource_path
 
 logger = logging.getLogger("academic_content_pipeline")
@@ -169,6 +170,11 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_tutorial.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
     p_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
     p_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
+    p_tutorial.add_argument(
+        "--render-pdf",
+        action="store_true",
+        help="Render existing HTML input to PDF without running AI generation; save the PDF beside the HTML.",
+    )
 
     # 4. generate-paper
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
@@ -291,6 +297,11 @@ def main():
     p_direct_tutorial.add_argument("--input-file", type=Path, default=None)
     p_direct_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
     p_direct_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
+    p_direct_tutorial.add_argument(
+        "--render-pdf",
+        action="store_true",
+        help="Render existing HTML input to PDF without running AI generation; save the PDF beside the HTML.",
+    )
 
     p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
@@ -315,6 +326,71 @@ def main():
 
     runtime_config = {k: v for k, v in vars(args).items() if not callable(v)}
     logger.info("CLI runtime configuration: %s", runtime_config)
+
+    if getattr(args, "render_pdf", False):
+        if task != "generate-tutorial":
+            parser.error("--render-pdf is only supported with generate-tutorial.")
+        if args.pdf_engine != "html":
+            parser.error("--render-pdf requires --pdf-engine html.")
+        if bool(args.input_file) == bool(args.input_dir):
+            parser.error("Specify exactly one of --input-file or --input-dir with --render-pdf.")
+
+        if args.input_file:
+            input_path = args.input_file
+            if not input_path.is_file():
+                parser.error(f"HTML input file does not exist: {input_path}")
+            if input_path.suffix.lower() != ".html":
+                parser.error(f"--render-pdf requires an .html input file: {input_path}")
+            html_files = [input_path]
+        else:
+            input_dir = args.input_dir
+            if not input_dir.is_dir():
+                parser.error(f"HTML input directory does not exist: {input_dir}")
+            html_files = sorted(
+                path for path in input_dir.rglob("*")
+                if path.is_file() and path.suffix.lower() == ".html"
+            )
+            if not html_files:
+                parser.error(f"No HTML files found under: {input_dir}")
+
+        failures = 0
+        for html_path in html_files:
+            output_pdf = html_path.with_suffix(".pdf")
+            temporary_html_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".html",
+                    prefix=f".{html_path.stem}.render-",
+                    dir=html_path.parent,
+                    delete=False,
+                ) as temporary_html:
+                    temporary_html_path = Path(temporary_html.name)
+                compile_html_to_pdf(
+                    html_path.read_text(encoding="utf-8"),
+                    output_pdf,
+                    watermark_text=args.watermark_text,
+                    header_text=args.header_text,
+                    footer_text=args.footer_text,
+                    html_output_path=temporary_html_path,
+                )
+                logger.info("Rendered %s -> %s", html_path, output_pdf)
+            except Exception:
+                failures += 1
+                logger.exception("Failed to render HTML tutorial PDF: %s", html_path)
+            finally:
+                if temporary_html_path is not None:
+                    temporary_html_path.unlink(missing_ok=True)
+
+        logger.info(
+            "PDF-only tutorial rendering complete: %d succeeded, %d failed.",
+            len(html_files) - failures,
+            failures,
+        )
+        if failures:
+            sys.exit(1)
+        return
 
     # Verify environment keys
     if not os.environ.get("GEMINI_API_KEY"):
