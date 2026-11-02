@@ -1,4 +1,4 @@
-# NEET (UG) Biology Syllabus
+# NEET UG Biology Syllabus
 
 ## UNIT 1: DIVERSITY IN LIVING WORLD
 What is living?; Biodiversity; Need for classification; Taxonomy & Systematics; Concept of species and taxonomical hierarchy; Binomial nomenclature;

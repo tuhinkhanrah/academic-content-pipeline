@@ -26,7 +26,7 @@ mcq_types:
 - id: MCQ_STMT_MULTI_001
   name: statement_based_multi
   display_name: Multi-Statement Question
-  description: Multi-statement evaluation question where several statements must be
+  description: Multi-statement evaluation question where several statements (more than 4) must be
     assessed together to determine the correct answer.
 - id: MCQ_MATCH_001
   name: match_list

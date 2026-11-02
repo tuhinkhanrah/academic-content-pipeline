@@ -12,7 +12,7 @@ Example:
         --mode batch
 
 The inferred metadata may look like:
-    standards = NEET
+    standards = NEET UG
     tags = year:2026
 """
 
@@ -36,9 +36,10 @@ def normalize_standard(value: str) -> str:
         "jee-main": "jee_main",
         "jee advanced": "jee_advanced",
         "jee_advanced": "jee_advanced",
-        "neet": "neet",
-        "neet ug": "neet",
-        "neet_ug": "neet",
+        "neet": "neet_ug",
+        "neet ug": "neet_ug",
+        "neet_ug": "neet_ug",
+        "neet-ug": "neet_ug",
         "wbjee": "wbjee",
         "wb-jee": "wbjee",
     }
@@ -54,7 +55,7 @@ def infer_metadata_from_path(pdf_path: Path, source_root: Path) -> tuple[str, Li
     standard_aliases = {
         "jee_main": ["jee main", "jee-main", "jee_main"],
         "jee_advanced": ["jee advanced", "jee_advanced"],
-        "neet": ["neet", "neet ug", "neet_ug"],
+        "neet_ug": ["neet", "neet ug", "neet_ug", "neet-ug"],
         "wbjee": ["wbjee", "wb-jee", "wb_jee"],
     }
     for canonical, aliases in standard_aliases.items():

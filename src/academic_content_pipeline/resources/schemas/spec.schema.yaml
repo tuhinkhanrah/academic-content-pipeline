@@ -59,7 +59,7 @@ properties:
   calibration:
     $ref: '#/$defs/calibration'
   question_types:
-    description: Question type allocation. A list is shorthand for exact mode.
+    description: Question type allocation. Adaptive mode uses weights as preferences to plan a chapter-specific mix under the total_questions target.
     oneOf:
     - type: array
       items:
@@ -198,6 +198,7 @@ $defs:
         type: number
         exclusiveMinimum: 0
         maximum: 1
+        description: Relative preference; adaptive profiles must sum to 1.
   questionTypeConfig:
     type: object
     required:
@@ -208,7 +209,9 @@ $defs:
         enum:
         - exact
         - weighted
+        - adaptive
         - automatic
+        description: Adaptive plans per-chapter counts from source content, with total_questions as a target and upper limit.
       types:
         type: array
         minItems: 1
@@ -247,6 +250,13 @@ $defs:
         properties:
           mode:
             const: weighted
+      then:
+        required:
+        - types
+    - if:
+        properties:
+          mode:
+            const: adaptive
       then:
         required:
         - types

@@ -1,4 +1,4 @@
-# NEET (UG) Chemistry Syllabus
+# NEET UG Chemistry Syllabus
 
 ## PHYSICAL CHEMISTRY
 

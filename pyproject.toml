@@ -31,6 +31,7 @@ academic_content_pipeline = [
     "resources/schemas/*.yaml",
     "resources/spec_templates/*.yaml",
     "resources/spec_templates/jee_advanced/*.yaml",
+    "resources/spec_templates/neet_ug/*.yaml",
     "resources/spec_templates/wbjee/*.yaml",
 ]
 

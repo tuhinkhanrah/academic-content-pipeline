@@ -1,4 +1,4 @@
-# NEET (UG) Physics Syllabus
+# NEET UG Physics Syllabus
 
 ## UNIT 1: PHYSICS AND MEASUREMENT
 Units of measurements, System of Units, S I Units, fundamental and derived units, least count, significant figures, Errors in measurements, Dimensions of Physics quantities, dimensional analysis, and its applications.

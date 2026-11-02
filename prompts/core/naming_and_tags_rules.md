@@ -19,10 +19,10 @@ Construct the question name dynamically using **ONLY** the available metadata to
   * Name: `WBJEE_CHEMISTRY_2026_CAT1_ORGANIC_MCQ_Q12 - Reaction of benzyl chloride with potassium hydroxide`
 
 * **When Section is Missing (Skip `SECTION` token and tag completely):**
-  * Name: `NEET_PHYSICS_2026_THERMODYNAMICS_MCQ_Q05 - Work done during an isothermal expansion process`
+  * Name: `NEET_UG_PHYSICS_2026_THERMODYNAMICS_MCQ_Q05 - Work done during an isothermal expansion process`
 
 * **When Section, Chapter, and Year are Missing:**
-  * Name: `NEET_BIOLOGY_MCQ_Q01 - Main function of chloroplast in plant cells`
+  * Name: `NEET_UG_BIOLOGY_MCQ_Q01 - Main function of chloroplast in plant cells`
 
 # Tag Schema Rules
 - Embed taxonomy tags inside a single `<tags>` block placed directly before `</question>`.

@@ -12,11 +12,17 @@ Functionalities:
   2. generate-questions     : Synthesize questions from chapter PDFs/MDs
   3. generate-paper         : Synthesize full mock exams from YAML specs / syllabi
   4. generate-tutorial      : Generate exam-oriented tutorials with practice questions
+  5. translate-artifacts    : Translate reviewed English XML, HTML, and TeX artifacts
+
+Review-first translation example:
+  python -m academic_content_pipeline.unified_pipeline agent translate-artifacts
+      --input-dir ./reviewed-english --output-dir ./translated --translate-to bengali
 """
 
 import argparse
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -43,6 +49,10 @@ from academic_content_pipeline.content_processors import (
     QuestionGenerator,
     QuestionPaperExtractor,
     TutorialGenerator,
+)
+from academic_content_pipeline.artifact_translator import (
+    is_valid_moodle_xml_file,
+    translate_assessment_artifact,
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
 from academic_content_pipeline.pipeline_utils import compile_html_to_pdf, setup_logger
@@ -72,7 +82,9 @@ def resolve_default_extractor_prompt(standards: str, output_format: str, pdf_eng
         return Path("prompts/extractor") / pdf_engine / "extractor.md"
 
     prompt_map = {
-        "neet": Path("prompts/extractor/neet.md"),
+        "neet": Path("prompts/extractor/neet_ug.md"),
+        "neet ug": Path("prompts/extractor/neet_ug.md"),
+        "neet_ug": Path("prompts/extractor/neet_ug.md"),
         "wbjee": Path("prompts/extractor/wbjee.md"),
         "jee main": Path("prompts/extractor/jee_main.md"),
         "jee advanced": Path("prompts/extractor/jee_advanced.md"),
@@ -87,7 +99,62 @@ def resolve_default_extractor_prompt(standards: str, output_format: str, pdf_eng
         if key in standard_name or standard_name in key:
             return path
 
-    return Path("prompts/extractor/neet.md")
+    return Path("prompts/extractor/neet_ug.md")
+
+
+def collect_translation_inputs(
+    parser: argparse.ArgumentParser,
+    input_file: Path | None,
+    input_dir: Path | None,
+    output_dir: Path,
+) -> tuple[list[Path], Path | None]:
+    """Validate translation inputs and return files plus their optional root."""
+    if bool(input_file) == bool(input_dir):
+        parser.error("Specify exactly one of --input-file or --input-dir.")
+
+    resolved_output_dir = output_dir.expanduser().resolve()
+    if input_file is not None:
+        source_file = input_file.expanduser().resolve()
+        if not source_file.is_file():
+            parser.error(f"Input artifact does not exist: {source_file}")
+        if source_file.suffix.lower() not in {".xml", ".html", ".tex"}:
+            parser.error("Translation input must be an .xml, .html, or .tex file.")
+        return [source_file], None
+
+    source_dir = input_dir.expanduser().resolve()
+    if not source_dir.is_dir():
+        parser.error(f"Input directory does not exist: {source_dir}")
+    if resolved_output_dir == source_dir or source_dir in resolved_output_dir.parents:
+        parser.error(
+            "--output-dir must be outside --input-dir to prevent translated files "
+            "from being picked up as English inputs."
+        )
+
+    artifact_files = sorted(
+        path
+        for path in source_dir.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".xml", ".html", ".tex"}
+        and not any(part in {".tmp", "__pycache__"} for part in path.relative_to(source_dir).parts)
+    )
+    if not artifact_files:
+        parser.error(f"No XML, HTML, or TeX artifacts found under: {source_dir}")
+    return artifact_files, source_dir
+
+
+def build_translation_output_stem(source_stem: str, target_language: str) -> str:
+    """Keep the English-master marker and append a normalized target-language token."""
+    english_stem = (
+        source_stem
+        if source_stem.casefold().endswith("_english")
+        else f"{source_stem}_english"
+    )
+    language_token = re.sub(
+        r"[^a-z0-9]+", "_", target_language.strip().lower()
+    ).strip("_")
+    if not language_token:
+        raise ValueError(f"Target language has no usable filename characters: {target_language!r}")
+    return f"{english_stem}_{language_token}"
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -122,12 +189,12 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     # Communicator specific tuning
     parser.add_argument("--model-name", default="gemini-flash-latest", help="Gemini model name.")
     parser.add_argument("--ocr-model", "--model", dest="ocr_model", default=os.environ.get("MISTRAL_OCR_MODEL", "mistral-ocr-latest"), help="Mistral OCR model name to use.")
-    parser.add_argument("--agent-name", default="antigravity-preview-05-2026", help="Agent identifier.")
+    parser.add_argument("--agent-name", default="antigravity-preview-09-2026", help="Agent identifier.")
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
     parser.add_argument("--retry-limit", type=int, default=5, help="Max retry attempts per page on API/quota error.")
     parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes the entire document in one batch.")
-    parser.add_argument("--force", action="store_true", help="Re-run extraction even if a non-empty target output already exists.")
+    parser.add_argument("--force", action="store_true", help="Force regeneration of existing or cached outputs.")
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache and force a fresh Mistral OCR run.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
     parser.add_argument("--watermark-text", default="", help="Optional text overlay added to generated PDF pages.")
@@ -136,7 +203,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 
 
 def add_task_subparsers(subparser_dest: Any) -> None:
-    """Attach extraction, generation, and tutorial task subparsers."""
+    """Attach extraction, generation, translation, and tutorial task subparsers."""
 
     # 1. extract
     p_ext = subparser_dest.add_parser("extract", help="Extract questions from exam paper PDFs via Mistral OCR.")
@@ -157,10 +224,40 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_chap.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
     p_chap.add_argument("--num-papers", type=int, default=1, help="Split the generated XML questions across this many papers.")
+    p_chap.add_argument(
+        "--separate-by-question-type",
+        action="store_true",
+        help="Generate each exact or adaptively planned question type into its own Moodle XML file.",
+    )
     p_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown for generated questions.")
     p_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
+    p_chap.add_argument(
+        "--translate-to",
+        default="",
+        help="After normal generation, create English-master bilingual output(s) for comma-separated languages.",
+    )
 
-    # 3. generate-tutorial
+    # 3. translate reviewed artifacts
+    p_translate = subparser_dest.add_parser(
+        "translate-artifacts",
+        help="Translate reviewed English XML, HTML, or TeX artifacts without regenerating them.",
+    )
+    add_common_options(p_translate)
+    p_translate.add_argument("--input-dir", type=Path, default=None, help="Directory containing reviewed English artifacts.")
+    p_translate.add_argument("--input-file", type=Path, default=None, help="Single reviewed English XML, HTML, or TeX artifact.")
+    p_translate.add_argument(
+        "--translate-to",
+        required=True,
+        help="Comma-separated target languages, for example bengali,hindi.",
+    )
+    p_translate.add_argument(
+        "--xml-chunk-size",
+        type=int,
+        default=5,
+        help="Questions per AI request when translating Moodle XML (default: 5).",
+    )
+
+    # 4. generate-tutorial
     p_tutorial = subparser_dest.add_parser(
         "generate-tutorial",
         help="Generate an exam-oriented chapter tutorial with practice questions and solutions.",
@@ -176,7 +273,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
         help="Render existing HTML input to PDF without running AI generation; save the PDF beside the HTML.",
     )
 
-    # 4. generate-paper
+    # 5. generate-paper
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
@@ -284,8 +381,40 @@ def main():
     p_direct_chap.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
     p_direct_chap.add_argument("--num-papers", type=int, default=1, help="Split the generated XML questions across this many papers.")
+    p_direct_chap.add_argument(
+        "--separate-by-question-type",
+        action="store_true",
+        help="Generate each exact or adaptively planned question type into its own Moodle XML file.",
+    )
     p_direct_chap.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_chap.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
+    p_direct_chap.add_argument(
+        "--translate-to",
+        default="",
+        help="After generation, create bilingual output(s) immediately for comma-separated languages.",
+    )
+
+    p_direct_translate = top_subparsers.add_parser(
+        "translate-artifacts",
+        help="Translate reviewed English XML, HTML, or TeX artifacts.",
+    )
+    p_direct_translate.add_argument(
+        "--mode", choices=["context", "agent", "remote", "batch"], default="context"
+    )
+    add_common_options(p_direct_translate)
+    p_direct_translate.add_argument("--input-dir", type=Path, default=None)
+    p_direct_translate.add_argument("--input-file", type=Path, default=None)
+    p_direct_translate.add_argument(
+        "--translate-to",
+        required=True,
+        help="Comma-separated target languages, for example bengali,hindi.",
+    )
+    p_direct_translate.add_argument(
+        "--xml-chunk-size",
+        type=int,
+        default=5,
+        help="Questions per AI request when translating Moodle XML (default: 5).",
+    )
 
     p_direct_tutorial = top_subparsers.add_parser(
         "generate-tutorial",
@@ -320,6 +449,61 @@ def main():
     else:
         mode = getattr(args, "mode", "context")
         task = args.top_command
+
+    translate_to = [
+        language.strip()
+        for language in getattr(args, "translate_to", "").split(",")
+        if language.strip()
+    ]
+    if task == "generate-questions" and translate_to:
+        if any(language.casefold() == "english" for language in translate_to):
+            parser.error("--translate-to accepts non-English language names only.")
+        configured_languages = {
+            language.strip().casefold()
+            for language in args.languages.split(",")
+            if language.strip()
+        }
+        conflicting_targets = [
+            language for language in translate_to
+            if language.casefold() in configured_languages
+            and language.casefold() != "english"
+        ]
+        if conflicting_targets:
+            parser.error(
+                "Do not request the same non-English language in both --languages "
+                f"and --translate-to: {', '.join(conflicting_targets)}."
+            )
+    if task == "generate-questions" and args.separate_by_question_type:
+        if args.spec is None:
+            parser.error(
+                "--separate-by-question-type requires --spec with exact counts "
+                "or an adaptive question-type profile."
+            )
+        if args.output_format != "xml":
+            parser.error("--separate-by-question-type requires --output-format xml.")
+        if args.num_papers != 1:
+            parser.error(
+                "--separate-by-question-type cannot be combined with --num-papers."
+            )
+
+    translation_files: list[Path] = []
+    translation_input_root: Path | None = None
+    if task == "translate-artifacts":
+        if args.xml_chunk_size < 1:
+            parser.error("--xml-chunk-size must be at least 1.")
+        if not translate_to:
+            parser.error("Provide at least one target language with --translate-to.")
+        if any(language.casefold() == "english" for language in translate_to):
+            parser.error("--translate-to accepts non-English language names only.")
+        normalized_targets = [language.casefold() for language in translate_to]
+        if len(normalized_targets) != len(set(normalized_targets)):
+            parser.error("--translate-to contains duplicate target languages.")
+        translation_files, translation_input_root = collect_translation_inputs(
+            parser,
+            args.input_file,
+            args.input_dir,
+            args.output_dir,
+        )
 
     # Setup Logging
     setup_logger(args.log_file, verbose=args.verbose)
@@ -396,15 +580,19 @@ def main():
     if not os.environ.get("GEMINI_API_KEY"):
         logger.error("GEMINI_API_KEY environment variable must be set.")
         sys.exit(1)
-    if not os.environ.get("MISTRAL_API_KEY"):
+    if task != "translate-artifacts" and not os.environ.get("MISTRAL_API_KEY"):
         logger.error("MISTRAL_API_KEY environment variable must be set.")
         sys.exit(1)
 
-    # Initialize communication backend & OCR engine
+    # Initialize communication backend and only create OCR resources for OCR tasks.
     communicator = build_communicator(mode, args)
-    ocr_engine = MistralOCREngine(
-        model_name=getattr(args, "ocr_model", None),
-        enable_cache=not getattr(args, "disable_ocr_cache", False),
+    ocr_engine = (
+        None
+        if task == "translate-artifacts"
+        else MistralOCREngine(
+            model_name=getattr(args, "ocr_model", None),
+            enable_cache=not getattr(args, "disable_ocr_cache", False),
+        )
     )
 
     # Auto-infer PDF engine and prompt defaults if not explicitly set
@@ -470,13 +658,76 @@ def main():
     }
 
     languages_list = [l.strip() for l in args.languages.split(",") if l.strip()]
-    args.output_dir = Path(args.output_dir)
+    args.output_dir = Path(args.output_dir).expanduser().resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Execute Functional Task
     start_time = time.perf_counter()
     try:
-        if task == "extract":
+        if task == "translate-artifacts":
+            for source_path in translation_files:
+                relative_path = (
+                    source_path.relative_to(translation_input_root)
+                    if translation_input_root is not None
+                    else Path(source_path.name)
+                )
+                output_parent = args.output_dir / relative_path.parent
+                extension = source_path.suffix.lower()
+                output_format = "xml" if extension == ".xml" else "pdf"
+                pdf_engine = "html" if extension == ".html" else "tex"
+                source_artifact = source_path.read_text(encoding="utf-8")
+
+                for target_language in translate_to:
+                    output_stem = build_translation_output_stem(
+                        source_path.stem, target_language
+                    )
+                    output_path = output_parent / f"{output_stem}{extension}"
+                    if (
+                        output_path.is_file()
+                        and output_path.stat().st_size > 0
+                        and not args.force
+                        and (
+                            extension != ".xml"
+                            or is_valid_moodle_xml_file(output_path)
+                        )
+                    ):
+                        logger.info("Skipping existing translation: %s", output_path)
+                        continue
+                    if (
+                        extension == ".xml"
+                        and output_path.is_file()
+                        and not is_valid_moodle_xml_file(output_path)
+                    ):
+                        logger.warning(
+                            "Existing translation is not well-formed Moodle XML; "
+                            "regenerating: %s",
+                            output_path,
+                        )
+
+                    prompt_snapshot_path = (
+                        args.output_dir
+                        / ".tmp"
+                        / "prompts"
+                        / relative_path.parent
+                        / f"{output_stem}_translation_prompt.md"
+                    )
+                    prompt_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                    translated_artifact = translate_assessment_artifact(
+                        communicator,
+                        source_artifact,
+                        target_language,
+                        output_format,
+                        pdf_engine,
+                        output_filename=output_path.name,
+                        prompt_snapshot_path=prompt_snapshot_path,
+                        force=args.force,
+                        xml_chunk_size=args.xml_chunk_size,
+                    )
+                    output_parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(translated_artifact, encoding="utf-8")
+                    logger.info("Saved reviewed bilingual artifact: %s", output_path)
+
+        elif task == "extract":
             page_check_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
             page_check_communicator = SingleShotBackend(
                 client=page_check_client,
@@ -532,6 +783,13 @@ def main():
                 watermark_text=getattr(args, "watermark_text", ""),
                 header_text=getattr(args, "header_text", ""),
                 footer_text=getattr(args, "footer_text", ""),
+                translate_to=translate_to,
+                force_overwrite=getattr(args, "force", False),
+                separate_by_question_type=getattr(
+                    args,
+                    "separate_by_question_type",
+                    False,
+                ),
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -592,7 +850,8 @@ def main():
 
         elapsed = time.perf_counter() - start_time
         logger.info("⏱️ Total operation time: %.2f seconds (%.2f minutes)", elapsed, elapsed / 60.0)
-        ocr_engine.log_cache_summary()
+        if ocr_engine is not None:
+            ocr_engine.log_cache_summary()
     except Exception:
         elapsed = time.perf_counter() - start_time
         logger.exception("Pipeline command failed after %.2f seconds (%.2f minutes).", elapsed, elapsed / 60.0)

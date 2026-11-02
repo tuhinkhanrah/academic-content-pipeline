@@ -521,6 +521,9 @@ class AgentSessionBackend(BaseAICommunicator):
 class BatchAPIBackend(BaseAICommunicator):
     """Runs a single request through the Gemini Batch API and returns the generated text."""
 
+    class _BatchJobCleanupError(RuntimeError):
+        """Indicates a terminal batch job could not be deleted."""
+
     def __init__(
         self,
         client: Optional[genai.Client] = None,
@@ -583,6 +586,23 @@ class BatchAPIBackend(BaseAICommunicator):
 
         return ""
 
+    def _delete_batch_job(self, job_name: str) -> None:
+        """Delete a completed batch job and report cleanup failures explicitly."""
+        try:
+            deletion = self.client.batches.delete(name=job_name)
+            deletion_error = getattr(deletion, "error", None)
+            if deletion_error:
+                raise RuntimeError(str(deletion_error))
+            if getattr(deletion, "done", None) is False:
+                raise RuntimeError("Batch job deletion operation is still pending.")
+        except Exception as exc:
+            logger.exception("Failed to delete completed batch job %s.", job_name)
+            raise self._BatchJobCleanupError(
+                f"Batch job completed but could not be deleted: {job_name}: {exc}"
+            ) from exc
+
+        logger.info("Deleted completed batch job: %s", job_name)
+
     def generate(
         self,
         system_instruction: str,
@@ -602,8 +622,9 @@ class BatchAPIBackend(BaseAICommunicator):
             ),
         )
 
-        job_name = None
         for attempt in range(1, self.attempt_limit + 1):
+            job_name = None
+            terminal_job = False
             try:
                 logger.info(f"📦 Batch API request (attempt {attempt}/{self.attempt_limit})...")
                 job = self.client.batches.create(
@@ -624,6 +645,7 @@ class BatchAPIBackend(BaseAICommunicator):
                     state_name = state.name if hasattr(state, "name") else str(state)
                     logger.info("⏳ Batch job state: %s", state_name)
                     if state_name in {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}:
+                        terminal_job = True
                         break
                     time.sleep(10)
 
@@ -647,6 +669,8 @@ class BatchAPIBackend(BaseAICommunicator):
                     logger.warning("Batch job state was unavailable; returning empty response.")
                 return ""
 
+            except self._BatchJobCleanupError:
+                raise
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
@@ -665,6 +689,9 @@ class BatchAPIBackend(BaseAICommunicator):
                     time.sleep(self.retry_delay)
                 else:
                     raise
+            finally:
+                if job_name and terminal_job:
+                    self._delete_batch_job(job_name)
 
         raise RuntimeError("Batch API generation failed after reaching max attempts.")
 

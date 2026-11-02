@@ -8,8 +8,10 @@ Classes:
   3. PaperGenerator         : Synthesizes full mock exam papers from syllabi & specs.
 """
 
+import hashlib
 import json
 import logging
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -27,6 +29,7 @@ from .ai_communicators import (
     MultimodalBatch,
     RemoteSandboxBackend,
 )
+from .artifact_translator import translate_assessment_artifact
 from .mistral_ocr import MistralOCREngine
 from .output_renderers import OutputRenderer
 from .resource_paths import resource_path
@@ -399,6 +402,8 @@ def build_generated_output_stem(
     qualifier_token = ""
     if qualifier:
         candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(qualifier)).strip("._-").lower()
+        if candidate in {"neet", "neet-ug", "neet_ug"}:
+            candidate = "neet_ug"
         if candidate and candidate not in {"general", "mock_exam"}:
             qualifier_token = f"_{candidate}"
 
@@ -642,7 +647,7 @@ def build_question_type_contract(
         resolved.append((entry, item if isinstance(item, dict) else {}))
 
     mode = config.get("mode", "automatic").lower()
-    if mode not in {"exact", "weighted", "automatic"}:
+    if mode not in {"exact", "weighted", "adaptive", "automatic"}:
         raise ValueError(f"Unsupported question_types mode: {mode}")
 
     if mode == "exact":
@@ -651,10 +656,14 @@ def build_question_type_contract(
             raise ValueError(
                 f"Question type counts ({total}) must equal total_questions ({max_questions})"
             )
-    if mode == "weighted":
+    if mode in {"weighted", "adaptive"}:
         weights = [float(item.get("weight", 0)) for _, item in resolved]
-        if not weights or abs(sum(weights) - 1.0) > 1e-9:
-            raise ValueError("Question type weights must sum to 1.0")
+        if (
+            not weights
+            or any(not math.isfinite(weight) or weight <= 0 for weight in weights)
+            or abs(sum(weights) - 1.0) > 1e-9
+        ):
+            raise ValueError("Question type weights must be positive and sum to 1.0.")
 
     allocation_lines = []
     for entry, allocation in resolved:
@@ -664,7 +673,7 @@ def build_question_type_contract(
             line += f" Constraints: {json.dumps(constraints, sort_keys=True)}."
         if mode == "exact":
             line += f" Requested count: {int(allocation.get('count', 0))}."
-        elif mode == "weighted":
+        elif mode in {"weighted", "adaptive"}:
             line += f" Weight: {float(allocation.get('weight', 0)):g}."
         allocation_lines.append(line)
 
@@ -681,6 +690,207 @@ def build_question_type_contract(
         allocations="\n".join(allocation_lines),
         minimum_counts=minimum_counts,
     )
+
+
+def resolve_separate_question_type_allocations(
+    spec_data: Dict[str, Any],
+    registry_path: Path,
+    total_questions: int,
+) -> List[tuple[Dict[str, Any], int]]:
+    """Resolve exact per-type counts for separate Moodle XML generation."""
+    config = spec_data.get("question_types")
+    if isinstance(config, list):
+        config = {"mode": "exact", "types": config}
+    mode = config.get("mode", "automatic") if isinstance(config, dict) else None
+    if not isinstance(mode, str) or mode.casefold() != "exact":
+        raise ValueError(
+            "Separate question-type output requires --spec with "
+            "question_types.mode: exact and explicit per-type counts."
+        )
+
+    requested = config.get("types")
+    if not isinstance(requested, list) or not requested:
+        raise ValueError(
+            "Separate question-type output requires question_types.types "
+            "to be a non-empty list of {type, count} entries."
+        )
+
+    registry = load_yaml_or_json_file(Path(registry_path))
+    entries = registry.get("mcq_types", [])
+    by_key = {entry["id"]: entry for entry in entries}
+    by_key.update({entry["name"]: entry for entry in entries})
+
+    allocations: List[tuple[Dict[str, Any], int]] = []
+    seen_types: set[str] = set()
+    for allocation in requested:
+        if not isinstance(allocation, dict) or "type" not in allocation:
+            raise ValueError(
+                "Each question_types.types entry must include both 'type' and 'count'."
+            )
+        type_key = allocation["type"]
+        if not isinstance(type_key, str):
+            raise ValueError("Question type names and IDs must be strings.")
+        if type_key not in by_key:
+            raise ValueError(f"Unknown MCQ type: {type_key}")
+        entry = by_key[type_key]
+        type_name = entry["name"]
+        if type_name in seen_types:
+            raise ValueError(f"Question type is allocated more than once: {type_name}")
+        seen_types.add(type_name)
+        count_value = allocation.get("count")
+        if isinstance(count_value, bool) or not isinstance(count_value, int):
+            raise ValueError(
+                f"Question type '{type_name}' must have an integer count."
+            )
+        count = count_value
+        if count < 0:
+            raise ValueError(f"Question type '{type_name}' cannot have a negative count.")
+        if count:
+            allocations.append((entry, count))
+
+    allocated_total = sum(count for _, count in allocations)
+    if allocated_total != total_questions:
+        raise ValueError(
+            f"Separate question-type counts ({allocated_total}) must equal "
+            f"total_questions ({total_questions})."
+        )
+    return allocations
+
+
+def resolve_adaptive_question_type_profile(
+    spec_data: Dict[str, Any],
+    registry_path: Path,
+) -> List[tuple[Dict[str, Any], float]]:
+    """Resolve weighted type preferences used to plan a chapter-specific mix."""
+    config = spec_data.get("question_types")
+    if not isinstance(config, dict) or config.get("mode") != "adaptive":
+        raise ValueError(
+            "Adaptive question-type output requires question_types.mode: adaptive."
+        )
+    requested = config.get("types")
+    if not isinstance(requested, list) or not requested:
+        raise ValueError(
+            "Adaptive question_types.types must be a non-empty list of "
+            "{type, weight} entries."
+        )
+
+    registry = load_yaml_or_json_file(Path(registry_path))
+    entries = registry.get("mcq_types", [])
+    by_key = {entry["id"]: entry for entry in entries}
+    by_key.update({entry["name"]: entry for entry in entries})
+
+    profile: List[tuple[Dict[str, Any], float]] = []
+    seen_types: set[str] = set()
+    for allocation in requested:
+        if not isinstance(allocation, dict) or not isinstance(
+            allocation.get("type"), str
+        ):
+            raise ValueError("Each adaptive question type must include a string 'type'.")
+        type_key = allocation["type"]
+        if type_key not in by_key:
+            raise ValueError(f"Unknown MCQ type: {type_key}")
+        entry = by_key[type_key]
+        type_name = entry["name"]
+        if type_name in seen_types:
+            raise ValueError(f"Question type is listed more than once: {type_name}")
+        seen_types.add(type_name)
+        weight_value = allocation.get("weight")
+        if isinstance(weight_value, bool) or not isinstance(
+            weight_value, (int, float)
+        ):
+            raise ValueError(
+                f"Adaptive question type '{type_name}' must have a numeric weight."
+            )
+        weight = float(weight_value)
+        if not math.isfinite(weight) or weight <= 0:
+            raise ValueError(
+                f"Adaptive question type '{type_name}' weight must be positive."
+            )
+        profile.append((entry, weight))
+
+    if abs(sum(weight for _, weight in profile) - 1.0) > 1e-9:
+        raise ValueError("Adaptive question-type weights must sum to 1.0.")
+    return profile
+
+
+def parse_adaptive_question_type_plan(
+    raw_plan: str,
+    profile: List[tuple[Dict[str, Any], float]],
+    target_questions: int,
+) -> List[tuple[Dict[str, Any], int]]:
+    """Validate a model-produced per-type plan against the configured profile."""
+    try:
+        plan = json.loads(BaseAICommunicator.strip_code_fences(raw_plan))
+    except json.JSONDecodeError as exc:
+        raise ValueError("AI returned an invalid JSON question-type allocation plan.") from exc
+    if not isinstance(plan, dict) or not isinstance(plan.get("allocations"), list):
+        raise ValueError("Question-type allocation plan must contain an 'allocations' list.")
+
+    profile_by_name = {entry["name"]: entry for entry, _ in profile}
+    profile_by_id = {entry["id"]: entry for entry, _ in profile}
+    allocations: Dict[str, int] = {}
+    for item in plan["allocations"]:
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            raise ValueError("Each planned allocation must contain a string 'type'.")
+        type_key = item["type"]
+        entry = profile_by_name.get(type_key) or profile_by_id.get(type_key)
+        if entry is None:
+            raise ValueError(
+                f"AI allocated a type not enabled by the profile: {type_key}"
+            )
+        count = item.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(
+                f"AI allocation for '{entry['name']}' must be a non-negative integer."
+            )
+        if entry["name"] in allocations:
+            raise ValueError(
+                f"AI allocated question type more than once: {entry['name']}"
+            )
+        allocations[entry["name"]] = count
+
+    resolved = [
+        (entry, allocations.get(entry["name"], 0))
+        for entry, _ in profile
+        if allocations.get(entry["name"], 0) > 0
+    ]
+    allocated_total = sum(count for _, count in resolved)
+    if allocated_total < 1:
+        raise ValueError("AI found no suitable questions to allocate for this chapter.")
+    if allocated_total > target_questions:
+        raise ValueError(
+            f"AI allocated {allocated_total} questions, exceeding the target "
+            f"of {target_questions}."
+        )
+    return resolved
+
+
+def write_json_atomically(path: Path, payload: Dict[str, Any]) -> None:
+    """Write JSON through a temporary sibling so readers never see partial data."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def is_valid_moodle_xml_question_file(
+    path: Path,
+    expected_question_count: int,
+) -> bool:
+    """Return whether an existing file is Moodle XML with the expected count."""
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return False
+    actual_question_count = sum(
+        node.tag == "question" and node.get("type") != "category"
+        for node in root
+    )
+    return root.tag == "quiz" and actual_question_count == expected_question_count
 
 
 # =======================================================================
@@ -1152,21 +1362,51 @@ class QuestionGenerator:
         num_papers: int = 1,
         header_text: str = "",
         footer_text: str = "",
+        translate_to: Optional[List[str]] = None,
+        force_overwrite: bool = False,
+        separate_by_question_type: bool = False,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
         self.rules_dict = rules_dict or {}
         self.languages = languages or ["english"]
+        unique_targets = {}
+        for language in translate_to or []:
+            target = language.strip()
+            if target:
+                unique_targets.setdefault(target.casefold(), target)
+        self.translate_to = list(unique_targets.values())
+        self.force_overwrite = bool(force_overwrite)
+        if any(language.lower() == "english" for language in self.translate_to):
+            raise ValueError("--translate-to must contain non-English languages only.")
+        requested_languages = {language.lower() for language in self.languages}
+        duplicate_targets = [
+            language
+            for language in self.translate_to
+            if language.lower() in requested_languages and language.lower() != "english"
+        ]
+        if duplicate_targets:
+            raise ValueError(
+                "Do not request the same non-English language in both --languages "
+                f"and --translate-to: {', '.join(duplicate_targets)}"
+            )
         self.standards = standards
         self.tags = tags
         self.difficulty_mix = difficulty_mix
         self.num_questions = num_questions
         self.num_papers = num_papers
+        self.separate_by_question_type = bool(separate_by_question_type)
         self.output_format = output_format.lower()
         if self.num_papers < 1:
             raise ValueError("--num-papers must be at least 1")
         if self.num_papers > 1 and self.output_format != "xml":
             raise ValueError("--num-papers greater than 1 currently requires --output-format xml")
+        if self.separate_by_question_type and self.output_format != "xml":
+            raise ValueError("--separate-by-question-type requires --output-format xml.")
+        if self.separate_by_question_type and self.num_papers != 1:
+            raise ValueError(
+                "--separate-by-question-type cannot be combined with --num-papers."
+            )
         self.pdf_engine = pdf_engine.lower()
         self.watermark_text = watermark_text or ""
         self.header_text = header_text or ""
@@ -1264,6 +1504,31 @@ class QuestionGenerator:
             self.mcq_types_path,
             generation_question_count,
         )
+        question_type_config = paper_spec.get("question_types")
+        question_type_mode = (
+            question_type_config.get("mode", "exact")
+            if isinstance(question_type_config, dict)
+            else "exact" if isinstance(question_type_config, list) else None
+        )
+        adaptive_type_profile = (
+            resolve_adaptive_question_type_profile(
+                paper_spec,
+                self.mcq_types_path,
+            )
+            if self.separate_by_question_type
+            and question_type_mode == "adaptive"
+            else []
+        )
+        separate_type_allocations = (
+            resolve_separate_question_type_allocations(
+                paper_spec,
+                self.mcq_types_path,
+                generation_question_count,
+            )
+            if self.separate_by_question_type
+            and question_type_mode != "adaptive"
+            else []
+        )
 
         # 1. Read or OCR source content
         image_map: Dict[str, str] = {}
@@ -1289,101 +1554,838 @@ class QuestionGenerator:
             pdf_engine=self.pdf_engine,
         )
 
-        lang_instruction, lang_tags = build_language_instructions(
-            self.languages, output_format=self.output_format, pdf_engine=self.pdf_engine
-        )
-        all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
-
         duration_line = ""
         if paper_metadata is None and self.output_format == "pdf" and self.exam_duration_minutes is not None:
             duration_line = f"- Exam Duration: {self.exam_duration_minutes} minutes\n"
 
-        # 3. Build turn content
         paper_header = ""
         if paper_metadata is not None and self.output_format == "pdf":
             paper_header = (
                 f"- Paper Title: {paper_spec.get('paper_title', input_file.stem)}\n\n"
                 f"{PaperGenerator._format_paper_metadata(paper_metadata)}\n\n"
             )
-        prompt_text = load_prompt_template(
-            PROMPTS_DIR / "generator" / "generation_request.md",
-            chapter_content=markdown_text,
-            paper_header=paper_header,
-            question_type_contract=question_type_contract,
-            question_count=str(generation_question_count),
-            question_count_contract=question_count_contract,
-            difficulty_mix=self.difficulty_mix,
-            difficulty_count_contract=difficulty_count_contract,
-            languages=", ".join(self.languages),
-            standards=self.standards,
-            global_tags=", ".join(all_tags),
-            output_format=self.output_format.upper(),
-            pdf_engine=self.pdf_engine.upper(),
-            duration_line=duration_line,
-            language_instruction=lang_instruction,
-        )
-
         batch_images = [
             ImageAttachment(reference_id=img_name, source=filepath)
             for img_name, filepath in unique_image_items(image_map)
         ]
-        multimodal_batch = MultimodalBatch(
-            text=prompt_text,
-            images=batch_images,
-        )
-
-        ext = "pdf" if self.output_format == "pdf" else "xml"
         intermediate_ext = "tex" if self.pdf_engine == "tex" else "html"
-        output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
-
-        # 4. Dispatch to communicator
         prompt_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_path = prompt_dir / f"{generation_stem}_prompt.md"
-        write_prompt_snapshot(
-            snapshot_path,
-            system_instruction,
-            multimodal_batch,
-        )
-        raw_output = self.communicator.generate(
-            system_instruction=system_instruction,
-            contents=multimodal_batch,
-            output_filename=output_artifact_name,
-            prompt_snapshot_path=snapshot_path,
-        )
-        if not raw_output or not raw_output.strip():
-            raise ValueError(f"AI returned an empty response for chapter input: {input_file}")
+        master_cache_dir = prompt_dir.parent / "masters"
+        master_cache_key: Optional[str] = None
 
-        # 5. Render the generated artifact
-        if self.output_format == "pdf":
-            final_pdf_path = self.renderer.render(
-                raw_output,
-                paper_dir,
-                generation_stem,
-                image_map,
+        def generate_for_languages(
+            languages: List[str],
+            output_stem: str,
+            label: str,
+            *,
+            request_question_count: int | None = None,
+            request_question_type_contract: str | None = None,
+        ) -> str:
+            nonlocal master_cache_key
+            requested_count = (
+                generation_question_count
+                if request_question_count is None
+                else request_question_count
             )
-            logger.info(f"✨ Compiled generated PDF to: {final_pdf_path}")
-            elapsed = time.perf_counter() - item_start
-            logger.info("⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
-            return final_pdf_path
-        elif self.num_papers > 1:
-            paper_xml = self.split_xml_papers(raw_output, generation_question_count, self.num_papers)
-            paths = [
-                self.renderer.render(xml, paper_dir, f"{generation_stem}_paper_{index:02d}", image_map)
-                for index, xml in enumerate(paper_xml, start=1)
+            lang_instruction, lang_tags = build_language_instructions(
+                languages, output_format=self.output_format, pdf_engine=self.pdf_engine
+            )
+            all_tags = [tag.strip() for tag in self.tags.split(",") if tag.strip()] + lang_tags
+            prompt_text = load_prompt_template(
+                PROMPTS_DIR / "generator" / "generation_request.md",
+                chapter_content=markdown_text,
+                paper_header=paper_header,
+                question_type_contract=(
+                    question_type_contract
+                    if request_question_type_contract is None
+                    else request_question_type_contract
+                ),
+                question_count=str(requested_count),
+                question_count_contract=(
+                    question_count_contract
+                    if request_question_count is None
+                    else f"- Exact total question count (required): {requested_count}\n"
+                ),
+                difficulty_mix=self.difficulty_mix,
+                difficulty_count_contract=difficulty_count_contract,
+                languages=", ".join(languages),
+                standards=self.standards,
+                global_tags=", ".join(all_tags),
+                output_format=self.output_format.upper(),
+                pdf_engine=self.pdf_engine.upper(),
+                duration_line=duration_line,
+                language_instruction=lang_instruction,
+            )
+            normalized_languages = [
+                language.strip().lower()
+                for language in languages
+                if language and language.strip()
             ]
-            logger.info("Saved %d generated Moodle XML papers: %s", len(paths), paths)
-            return paths
-        else:
-            final_xml_path = self.renderer.render(
-                raw_output,
-                paper_dir,
-                generation_stem,
-                image_map,
+            is_english_master = bool(self.translate_to) and normalized_languages == [
+                "english"
+            ]
+            cache_path: Optional[Path] = None
+            if is_english_master:
+                cache_digest = hashlib.sha256()
+                cache_digest.update(system_instruction.encode("utf-8"))
+                cache_digest.update(prompt_text.encode("utf-8"))
+                cache_digest.update(
+                    type(self.communicator).__qualname__.encode("utf-8")
+                )
+                cache_digest.update(
+                    str(getattr(self.communicator, "model_name", "")).encode("utf-8")
+                )
+                for image in batch_images:
+                    cache_digest.update(image.reference_id.encode("utf-8"))
+                    image_bytes = image.to_bytes()
+                    if image_bytes is not None:
+                        cache_digest.update(image_bytes)
+                    else:
+                        cache_digest.update(str(image.source).encode("utf-8"))
+                master_cache_key = cache_digest.hexdigest()
+                cache_path = master_cache_dir / f"{output_stem}.json"
+                if cache_path.is_file() and not self.force_overwrite:
+                    cache_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if cache_payload.get("cache_key") == master_cache_key:
+                        cached_artifact = cache_payload.get("artifact")
+                        if not isinstance(cached_artifact, str) or not cached_artifact.strip():
+                            raise ValueError(
+                                f"English master cache is invalid: {cache_path}"
+                            )
+                        logger.info("Reusing unchanged English master: %s", cache_path)
+                        return cached_artifact
+
+            multimodal_batch = MultimodalBatch(text=prompt_text, images=batch_images)
+            extension = intermediate_ext if self.output_format == "pdf" else "xml"
+            snapshot_path = prompt_dir / f"{output_stem}_{label}_prompt.md"
+            write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
+            generated = self.communicator.generate(
+                system_instruction=system_instruction,
+                contents=multimodal_batch,
+                output_filename=f"{output_stem}.{extension}",
+                prompt_snapshot_path=snapshot_path,
             )
-            logger.info(f"✅ Saved generated Moodle XML to: {final_xml_path}")
+            if not generated or not generated.strip():
+                raise ValueError(
+                    f"AI returned an empty response for chapter input: {input_file}"
+                )
+            if cache_path is not None and master_cache_key is not None:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_cache_path = cache_path.with_suffix(".json.tmp")
+                temporary_cache_path.write_text(
+                    json.dumps(
+                        {"cache_key": master_cache_key, "artifact": generated},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                temporary_cache_path.replace(cache_path)
+            return generated
+
+        configured_languages = [
+            language.strip().lower()
+            for language in self.languages
+            if language and language.strip()
+        ] or ["english"]
+        english_master_stem = build_generated_output_stem(
+            input_file.stem,
+            ["english"],
+            qualifier=(
+                paper_spec.get("exam_name")
+                if str(paper_spec.get("exam_name", "")).strip().lower() not in {"", "mock_exam"}
+                else self.standards
+            ),
+        )
+        separate_english_master = bool(
+            self.translate_to and configured_languages != ["english"]
+        )
+        if self.separate_by_question_type:
+            bilingual_stem = build_generated_output_stem(
+                input_file.stem,
+                ["english"],
+                qualifier=(
+                    paper_spec.get("exam_name")
+                    if str(paper_spec.get("exam_name", "")).strip().lower()
+                    not in {"", "mock_exam"}
+                    else self.standards
+                ),
+            )
+            all_output_paths: List[Path] = []
+            adaptive_manifest_path: Optional[Path] = (
+                paper_dir / f"{generation_stem}_question_types.json"
+                if adaptive_type_profile
+                else None
+            )
+            reused_adaptive_manifest = False
+            if (
+                adaptive_type_profile
+                and adaptive_manifest_path is not None
+                and adaptive_manifest_path.is_file()
+                and not self.force_overwrite
+            ):
+                try:
+                    saved_manifest = json.loads(
+                        adaptive_manifest_path.read_text(encoding="utf-8")
+                    )
+                except json.JSONDecodeError:
+                    saved_manifest = None
+                    logger.warning(
+                        "Ignoring invalid adaptive manifest: %s",
+                        adaptive_manifest_path,
+                    )
+                if isinstance(saved_manifest, dict):
+                    source_digest = hashlib.sha256(
+                        markdown_text.encode("utf-8")
+                    ).hexdigest()
+                    saved_source_digest = saved_manifest.get("source_sha256")
+                    manifest_matches = (
+                        saved_manifest.get("status")
+                        in {"in_progress", "completed"}
+                        and saved_manifest.get("target_questions")
+                        == generation_question_count
+                        and saved_manifest.get("spec_sha256")
+                        == hashlib.sha256(
+                            self.spec_path.read_bytes()
+                        ).hexdigest()
+                        if self.spec_path is not None
+                        else False
+                    )
+                    manifest_matches = (
+                        manifest_matches
+                        and saved_manifest.get("languages")
+                        == [
+                            language.strip().casefold()
+                            for language in self.languages
+                            if language.strip()
+                        ]
+                        and saved_manifest.get("translate_to")
+                        == [
+                            language.strip().casefold()
+                            for language in self.translate_to
+                        ]
+                        and (
+                            saved_source_digest is None
+                            or saved_source_digest == source_digest
+                        )
+                    )
+                    if manifest_matches:
+                        try:
+                            separate_type_allocations = (
+                                parse_adaptive_question_type_plan(
+                                    json.dumps(
+                                        {
+                                            "allocations": saved_manifest.get(
+                                                "question_types"
+                                            )
+                                        }
+                                    ),
+                                    adaptive_type_profile,
+                                    generation_question_count,
+                                )
+                            )
+                        except ValueError as exc:
+                            logger.warning(
+                                "Ignoring invalid adaptive allocation in %s: %s",
+                                adaptive_manifest_path,
+                                exc,
+                            )
+                        else:
+                            reused_adaptive_manifest = True
+                            logger.info(
+                                "Reusing saved adaptive question-type allocation "
+                                "from %s.",
+                                adaptive_manifest_path,
+                            )
+            if adaptive_type_profile:
+                allocation_prompt = load_prompt_template(
+                    PROMPTS_DIR
+                    / "generator"
+                    / "question_type_allocation.md",
+                    chapter_content=markdown_text,
+                    source_filename=input_file.name,
+                    target_questions=str(generation_question_count),
+                    standards=self.standards,
+                    type_profile=json.dumps(
+                        [
+                            {
+                                "type": entry["name"],
+                                "id": entry["id"],
+                                "description": entry["description"],
+                                "weight": weight,
+                            }
+                            for entry, weight in adaptive_type_profile
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+                allocation_snapshot = prompt_dir / (
+                    f"{generation_stem}_question_type_allocation_prompt.md"
+                )
+                allocation_batch = MultimodalBatch(
+                    text=allocation_prompt,
+                    images=batch_images,
+                )
+                allocation_system_instruction = (
+                    "You are a chapter-specific assessment planner. "
+                    "Your only task is to return a valid JSON question-type "
+                    "allocation as requested. Do not generate questions or "
+                    "Moodle XML."
+                )
+                write_prompt_snapshot(
+                    allocation_snapshot,
+                    allocation_system_instruction,
+                    allocation_batch,
+                )
+                if not reused_adaptive_manifest:
+                    raw_plan = self.communicator.generate(
+                        system_instruction=allocation_system_instruction,
+                        contents=allocation_batch,
+                        output_filename=(
+                            f"{generation_stem}_question_type_allocation.json"
+                        ),
+                        prompt_snapshot_path=allocation_snapshot,
+                    )
+                    separate_type_allocations = (
+                        parse_adaptive_question_type_plan(
+                            raw_plan,
+                            adaptive_type_profile,
+                            generation_question_count,
+                        )
+                    )
+                allocated_count = sum(
+                    count for _, count in separate_type_allocations
+                )
+                if allocated_count < generation_question_count:
+                    logger.info(
+                        "Adaptive question-type allocation selected %s of %s "
+                        "target questions for this chapter.",
+                        allocated_count,
+                        generation_question_count,
+                    )
+
+            adaptive_manifest: Optional[Dict[str, Any]] = None
+            if adaptive_type_profile:
+                assert adaptive_manifest_path is not None
+                planned_output_names: List[str] = []
+                planned_output_counts: Dict[str, int] = {}
+                for entry, _ in separate_type_allocations:
+                    suffix = re.sub(
+                        r"[^a-z0-9]+", "_", entry["name"].casefold()
+                    ).strip("_")
+                    if not suffix:
+                        raise ValueError(
+                            "Question type has no usable filename characters: "
+                            f"{entry['name']!r}"
+                        )
+                    expected_type_count = next(
+                        count
+                        for allocated_entry, count in separate_type_allocations
+                        if allocated_entry["name"] == entry["name"]
+                    )
+                    primary_name = f"{generation_stem}_{suffix}.xml"
+                    planned_output_names.append(primary_name)
+                    planned_output_counts[primary_name] = expected_type_count
+                    if separate_english_master:
+                        english_name = f"{english_master_stem}_{suffix}.xml"
+                        planned_output_names.append(english_name)
+                        planned_output_counts[english_name] = expected_type_count
+                    for target_language in self.translate_to:
+                        target_suffix = re.sub(
+                            r"[^a-z0-9]+",
+                            "_",
+                            target_language.strip().casefold(),
+                        ).strip("_")
+                        translated_name = (
+                            f"{bilingual_stem}_{target_suffix}_{suffix}.xml"
+                        )
+                        planned_output_names.append(translated_name)
+                        planned_output_counts[translated_name] = expected_type_count
+                existing_completed_names = [
+                    name
+                    for name, count in planned_output_counts.items()
+                    if is_valid_moodle_xml_question_file(
+                        paper_dir / name,
+                        count,
+                    )
+                ]
+                adaptive_manifest = {
+                    "status": "in_progress",
+                    "target_questions": generation_question_count,
+                    "allocated_questions": sum(
+                        count for _, count in separate_type_allocations
+                    ),
+                    "question_types": [
+                        {"type": entry["name"], "count": count}
+                        for entry, count in separate_type_allocations
+                    ],
+                    "files": planned_output_names,
+                    "completed_files": existing_completed_names,
+                    "languages": [
+                        language.strip().casefold()
+                        for language in self.languages
+                        if language.strip()
+                    ],
+                    "translate_to": [
+                        language.strip().casefold()
+                        for language in self.translate_to
+                    ],
+                    "spec_sha256": hashlib.sha256(
+                        self.spec_path.read_bytes()
+                    ).hexdigest()
+                    if self.spec_path is not None
+                    else None,
+                    "source_sha256": hashlib.sha256(
+                        markdown_text.encode("utf-8")
+                    ).hexdigest(),
+                }
+                write_json_atomically(
+                    adaptive_manifest_path,
+                    adaptive_manifest,
+                )
+
+            def persist_adaptive_progress() -> None:
+                if adaptive_manifest is None or adaptive_manifest_path is None:
+                    return
+                adaptive_manifest["completed_files"] = [
+                    name
+                    for name, count in planned_output_counts.items()
+                    if is_valid_moodle_xml_question_file(
+                        paper_dir / name,
+                        count,
+                    )
+                ]
+                write_json_atomically(
+                    adaptive_manifest_path,
+                    adaptive_manifest,
+                )
+
+            for type_entry, type_question_count in separate_type_allocations:
+                type_name = type_entry["name"]
+                type_suffix = re.sub(
+                    r"[^a-z0-9]+", "_", type_name.casefold()
+                ).strip("_")
+                if not type_suffix:
+                    raise ValueError(
+                        f"Question type has no usable filename characters: {type_name!r}"
+                    )
+                type_contract = build_question_type_contract(
+                    {
+                        "question_types": {
+                            "mode": "exact",
+                            "types": [
+                                {"type": type_name, "count": type_question_count}
+                            ],
+                        }
+                    },
+                    self.mcq_types_path,
+                    type_question_count,
+                )
+                type_generation_stem = f"{generation_stem}_{type_suffix}"
+                type_english_stem = f"{english_master_stem}_{type_suffix}"
+                primary_path = paper_dir / f"{type_generation_stem}.xml"
+                english_master_path = paper_dir / f"{type_english_stem}.xml"
+
+                def output_is_valid(path: Path) -> bool:
+                    return (
+                        not self.force_overwrite
+                        and is_valid_moodle_xml_question_file(
+                            path,
+                            type_question_count,
+                        )
+                    )
+
+                primary_is_valid = output_is_valid(primary_path)
+                english_master_is_valid = (
+                    output_is_valid(english_master_path)
+                    if separate_english_master
+                    else False
+                )
+
+                def require_type_count(artifact: str, label: str) -> None:
+                    try:
+                        root = ET.fromstring(
+                            fix_and_inject_moodle_xml(artifact, image_map)
+                        )
+                    except ET.ParseError as exc:
+                        raise ValueError(
+                            f"Generated {label} for question type '{type_name}' "
+                            "is not valid Moodle XML."
+                        ) from exc
+                    actual_count = sum(
+                        node.tag == "question" and node.get("type") != "category"
+                        for node in root
+                    )
+                    if actual_count != type_question_count:
+                        raise ValueError(
+                            f"Generated {actual_count} questions for type "
+                            f"'{type_name}', expected exactly {type_question_count}."
+                        )
+
+                translation_outputs = [
+                    (
+                        target_language,
+                        paper_dir
+                        / (
+                            f"{bilingual_stem}_"
+                            f"{re.sub('[^a-z0-9]+', '_', target_language.strip().casefold()).strip('_')}_"
+                            f"{type_suffix}.xml"
+                        ),
+                    )
+                    for target_language in self.translate_to
+                ]
+                needs_translation = any(
+                    not output_is_valid(path)
+                    for _, path in translation_outputs
+                )
+                type_english_master = (
+                    generate_for_languages(
+                        ["english"],
+                        type_english_stem,
+                        "english_master",
+                        request_question_count=type_question_count,
+                        request_question_type_contract=type_contract,
+                    )
+                    if separate_english_master
+                    and (not english_master_is_valid or needs_translation)
+                    else None
+                )
+                if primary_is_valid:
+                    type_raw_output = None
+                    all_output_paths.append(primary_path)
+                else:
+                    type_raw_output = generate_for_languages(
+                        self.languages,
+                        type_generation_stem,
+                        "generation",
+                        request_question_count=type_question_count,
+                        request_question_type_contract=type_contract,
+                    )
+                    require_type_count(type_raw_output, "generation output")
+                    primary_path = self.renderer.render(
+                        type_raw_output,
+                        paper_dir,
+                        type_generation_stem,
+                        image_map,
+                    )
+                    all_output_paths.append(primary_path)
+
+                if type_english_master is None and english_master_is_valid:
+                    all_output_paths.append(english_master_path)
+
+                if type_english_master is not None:
+                    require_type_count(type_english_master, "English master")
+                    english_master_path = self.renderer.render(
+                        type_english_master,
+                        paper_dir,
+                        type_english_stem,
+                        image_map,
+                    )
+                    all_output_paths.append(english_master_path)
+
+                if separate_english_master and (type_english_master is not None or english_master_is_valid):
+                    translation_source = (
+                        type_english_master
+                        if type_english_master is not None
+                        else english_master_path.read_text(encoding="utf-8")
+                    )
+                elif self.translate_to:
+                    translation_source = (
+                        type_raw_output
+                        if type_raw_output is not None
+                        else primary_path.read_text(encoding="utf-8")
+                    )
+                else:
+                    translation_source = ""
+
+                if (
+                    self.translate_to
+                    and not separate_english_master
+                    and configured_languages != ["english"]
+                ):
+                    raise ValueError(
+                        "Separate-by-type translations require English in --languages "
+                        "or a separate English-master generation."
+                    )
+
+                for target_language in self.translate_to:
+                    target_suffix = re.sub(
+                        r"[^a-z0-9]+",
+                        "_",
+                        target_language.strip().casefold(),
+                    ).strip("_")
+                    translated_stem = (
+                        f"{bilingual_stem}_{target_suffix}"
+                        f"_{type_suffix}"
+                    )
+                    translated_path = paper_dir / f"{translated_stem}.xml"
+                    metadata_path = (
+                        master_cache_dir
+                        / f"{translated_stem}.translation.json"
+                    )
+                    if output_is_valid(translated_path):
+                        all_output_paths.append(translated_path)
+                        continue
+                    cached_translation = False
+                    if (
+                        not self.force_overwrite
+                        and master_cache_key is not None
+                        and translated_path.is_file()
+                        and translated_path.stat().st_size > 0
+                        and metadata_path.is_file()
+                    ):
+                        metadata = json.loads(
+                            metadata_path.read_text(encoding="utf-8")
+                        )
+                        if (
+                            metadata.get("master_cache_key") == master_cache_key
+                            and metadata.get("target_language")
+                            == target_language.casefold()
+                        ):
+                            try:
+                                translated_root = ET.parse(translated_path).getroot()
+                                cached_count = sum(
+                                    node.tag == "question"
+                                    and node.get("type") != "category"
+                                    for node in translated_root
+                                )
+                                cached_translation = (
+                                    translated_root.tag == "quiz"
+                                    and cached_count == type_question_count
+                                )
+                            except ET.ParseError:
+                                cached_translation = False
+                    if cached_translation:
+                        all_output_paths.append(translated_path)
+                        continue
+
+                    translated = translate_assessment_artifact(
+                        self.communicator,
+                        translation_source,
+                        target_language,
+                        "xml",
+                        output_filename=translated_path.name,
+                        prompt_snapshot_path=prompt_dir
+                        / f"{translated_stem}_translation_prompt.md",
+                        force=self.force_overwrite,
+                    )
+                    require_type_count(translated, "translated output")
+                    all_output_paths.append(
+                        self.renderer.render(
+                            translated,
+                            paper_dir,
+                            translated_stem,
+                            image_map,
+                        )
+                    )
+                    if master_cache_key is not None:
+                        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                        temporary_metadata_path = metadata_path.with_suffix(
+                            ".json.tmp"
+                        )
+                        temporary_metadata_path.write_text(
+                            json.dumps(
+                                {
+                                    "master_cache_key": master_cache_key,
+                                    "target_language": target_language.casefold(),
+                                },
+                                ensure_ascii=False,
+                            ),
+                            encoding="utf-8",
+                        )
+                        temporary_metadata_path.replace(metadata_path)
+
+                persist_adaptive_progress()
+
+                logger.info(
+                    "Saved separate question-type output for %s (%s questions).",
+                    type_name,
+                    type_question_count,
+                )
+
+            if adaptive_manifest is not None and adaptive_manifest_path is not None:
+                persist_adaptive_progress()
+                if adaptive_manifest["completed_files"] != planned_output_names:
+                    missing_outputs = sorted(
+                        set(planned_output_names)
+                        - set(adaptive_manifest["completed_files"])
+                    )
+                    raise ValueError(
+                        "Adaptive generation did not produce all valid outputs: "
+                        + ", ".join(missing_outputs)
+                    )
+                adaptive_manifest["status"] = "completed"
+                write_json_atomically(
+                    adaptive_manifest_path,
+                    adaptive_manifest,
+                )
+                all_output_paths.append(adaptive_manifest_path)
+
             elapsed = time.perf_counter() - item_start
-            logger.info("⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
-            return final_xml_path
+            logger.info(
+                "⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds "
+                "(%.2f minutes)",
+                input_file.name,
+                elapsed,
+                elapsed / 60.0,
+            )
+            return all_output_paths
+
+        english_master = (
+            generate_for_languages(["english"], english_master_stem, "english_master")
+            if separate_english_master
+            else None
+        )
+        raw_output = generate_for_languages(
+            self.languages, generation_stem, "generation"
+        )
+        if english_master is None and self.translate_to:
+            english_master_stem = generation_stem
+            english_master = raw_output
+
+        def render_artifact(artifact: str, output_stem: str) -> List[Path]:
+            if self.output_format == "pdf":
+                return [
+                    self.renderer.render(
+                        artifact,
+                        paper_dir,
+                        output_stem,
+                        image_map,
+                    )
+                ]
+            if self.num_papers > 1:
+                split_artifacts = self.split_xml_papers(
+                    artifact, generation_question_count, self.num_papers
+                )
+                return [
+                    self.renderer.render(
+                        xml,
+                        paper_dir,
+                        f"{output_stem}_paper_{index:02d}",
+                        image_map,
+                    )
+                    for index, xml in enumerate(split_artifacts, start=1)
+                ]
+            return [
+                self.renderer.render(
+                    artifact,
+                    paper_dir,
+                    output_stem,
+                    image_map,
+                )
+            ]
+
+        primary_paths = render_artifact(raw_output, generation_stem)
+        all_output_paths = list(primary_paths)
+        if separate_english_master and english_master is not None:
+            english_paths = render_artifact(english_master, english_master_stem)
+            all_output_paths.extend(english_paths)
+            logger.info("Saved canonical English question artifact(s): %s", english_paths)
+
+        for target_language in self.translate_to:
+            translated_stem = build_generated_output_stem(
+                input_file.stem,
+                ["english", target_language],
+                qualifier=(
+                    paper_spec.get("exam_name")
+                    if str(paper_spec.get("exam_name", "")).strip().lower() not in {"", "mock_exam"}
+                    else self.standards
+                ),
+            )
+            translated_extension = (
+                intermediate_ext if self.output_format == "pdf" else "xml"
+            )
+            translated_final_extension = (
+                "pdf" if self.output_format == "pdf" else "xml"
+            )
+            expected_translated_paths = (
+                [
+                    paper_dir / f"{translated_stem}_paper_{index:02d}.xml"
+                    for index in range(1, self.num_papers + 1)
+                ]
+                if self.output_format == "xml" and self.num_papers > 1
+                else [
+                    paper_dir / f"{translated_stem}.{translated_final_extension}"
+                ]
+            )
+            translation_metadata_path = (
+                master_cache_dir / f"{translated_stem}.translation.json"
+            )
+            cached_translation = False
+            if (
+                self.translate_to
+                and not self.force_overwrite
+                and master_cache_key is not None
+                and translation_metadata_path.is_file()
+                and all(
+                    path.is_file() and path.stat().st_size > 0
+                    for path in expected_translated_paths
+                )
+            ):
+                translation_metadata = json.loads(
+                    translation_metadata_path.read_text(encoding="utf-8")
+                )
+                cached_translation = (
+                    translation_metadata.get("master_cache_key") == master_cache_key
+                    and translation_metadata.get("target_language")
+                    == target_language.casefold()
+                )
+            if cached_translation:
+                translated_paths = expected_translated_paths
+                logger.info(
+                    "Reusing %s translation generated from the current English master.",
+                    target_language,
+                )
+            else:
+                translated = translate_assessment_artifact(
+                    self.communicator,
+                    english_master or raw_output,
+                    target_language,
+                    self.output_format,
+                    self.pdf_engine,
+                    output_filename=f"{translated_stem}.{translated_extension}",
+                    prompt_snapshot_path=prompt_dir
+                    / f"{translated_stem}_translation_prompt.md",
+                    force=self.force_overwrite,
+                )
+                translated_paths = render_artifact(translated, translated_stem)
+                if master_cache_key is not None:
+                    master_cache_dir.mkdir(parents=True, exist_ok=True)
+                    temporary_metadata_path = translation_metadata_path.with_suffix(
+                        ".json.tmp"
+                    )
+                    temporary_metadata_path.write_text(
+                        json.dumps(
+                            {
+                                "master_cache_key": master_cache_key,
+                                "target_language": target_language.casefold(),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    temporary_metadata_path.replace(translation_metadata_path)
+            all_output_paths.extend(translated_paths)
+            logger.info(
+                "Saved English + %s question artifact(s): %s",
+                target_language,
+                translated_paths,
+            )
+
+        elapsed = time.perf_counter() - item_start
+        logger.info(
+            "⏱️ [GENERATE-QUESTIONS] %s completed in %.2f seconds (%.2f minutes)",
+            input_file.name,
+            elapsed,
+            elapsed / 60.0,
+        )
+        if self.translate_to:
+            return all_output_paths
+        if self.output_format == "pdf":
+            return primary_paths[0]
+        if self.num_papers > 1:
+            return primary_paths
+        return primary_paths[0]
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
         """Processes all chapter PDFs and MDs in an input directory."""

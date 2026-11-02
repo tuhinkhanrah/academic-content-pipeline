@@ -1,0 +1,23 @@
+exam_name: NEET UG
+paper_title: NEET UG Physics Chapter Question Bank
+total_questions: 120
+marks_per_question: 4
+question_types:
+  mode: adaptive
+  types:
+    - type: standard_mcq
+      weight: 0.4
+    - type: numerical
+      weight: 0.3
+    - type: assertion_reason
+      weight: 0.083333
+    - type: statement_based_2
+      weight: 0.066667
+    - type: statement_based_3
+      weight: 0.033333
+    - type: match_list
+      weight: 0.033333
+    - type: diagram_image
+      weight: 0.05
+    - type: sequencing
+      weight: 0.033334
