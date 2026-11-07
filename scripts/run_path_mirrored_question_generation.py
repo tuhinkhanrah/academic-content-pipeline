@@ -100,7 +100,11 @@ def iter_source_files(source_root: Path) -> Iterable[Path]:
 
 
 def build_output_dir(source_root: Path, input_path: Path, output_root: Path) -> Path:
-    return output_root / input_path.relative_to(source_root).parent
+    relative_input_path = input_path.relative_to(source_root)
+    output_dir = output_root / relative_input_path.parent
+    if re.fullmatch(r"[a-z]{4}\d{3}", input_path.stem, flags=re.IGNORECASE):
+        return output_dir / input_path.stem
+    return output_dir
 
 
 def normalize_name_token(value: str) -> str:
