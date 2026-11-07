@@ -193,7 +193,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--memory-span", type=int, default=3, help="Rolling turn history memory span for chat context.")
     parser.add_argument("--rate-limit-delay", type=float, default=6.0, help="Delay in seconds between page requests to stay under TPM limits.")
     parser.add_argument("--retry-limit", type=int, default=5, help="Max retry attempts per page on API/quota error.")
-    parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes the entire document in one batch.")
+    parser.add_argument("--batch-size", type=int, default=5, help="Maximum pages per extraction request (default: 5); 0 processes the entire document in one batch.")
     parser.add_argument("--force", action="store_true", help="Force regeneration of existing or cached outputs.")
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache and force a fresh Mistral OCR run.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote sandbox staging.")
@@ -211,8 +211,25 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_ext.add_argument("--input-dir", type=Path, default=None, help="Directory containing input PDFs.")
     p_ext.add_argument("--input-file", type=Path, default=None, help="Single input PDF file.")
     p_ext.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range to extract (1-based).")
+    p_ext.add_argument(
+        "--replace-pages",
+        type=int,
+        nargs=2,
+        metavar=("START", "END"),
+        help="Re-extract and replace saved extraction batches covering this page range; requires a checkpoint.",
+    )
     p_ext.add_argument("--no-instruction-page", action="store_true", help="Skip front instruction page.")
     p_ext.add_argument("--instruction-page", type=int, default=1, help="Index of front instruction page (1-based).")
+    p_ext.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume extraction from validated per-batch checkpoints.",
+    )
+    p_ext.add_argument(
+        "--instruction-page-model-name",
+        default=None,
+        help="Gemini model for instruction-page classification (defaults to --model-name).",
+    )
     p_ext.add_argument("--verify-online", action="store_true", help="Verify answers online.")
 
     # 2. generate-questions
@@ -368,8 +385,25 @@ def main():
     p_direct_ext.add_argument("--input-dir", type=Path, default=None)
     p_direct_ext.add_argument("--input-file", type=Path, default=None)
     p_direct_ext.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
+    p_direct_ext.add_argument(
+        "--replace-pages",
+        type=int,
+        nargs=2,
+        metavar=("START", "END"),
+        help="Re-extract and replace saved extraction batches covering this page range; requires a checkpoint.",
+    )
     p_direct_ext.add_argument("--no-instruction-page", action="store_true")
     p_direct_ext.add_argument("--instruction-page", type=int, default=1)
+    p_direct_ext.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume extraction from validated per-batch checkpoints.",
+    )
+    p_direct_ext.add_argument(
+        "--instruction-page-model-name",
+        default=None,
+        help="Gemini model for instruction-page classification (defaults to --model-name).",
+    )
     p_direct_ext.add_argument("--verify-online", action="store_true")
 
     p_direct_chap = top_subparsers.add_parser("generate-questions", help="Synthesize questions from chapter documents.")
@@ -731,7 +765,7 @@ def main():
             page_check_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
             page_check_communicator = SingleShotBackend(
                 client=page_check_client,
-                model_name=args.model_name,
+                model_name=args.instruction_page_model_name or args.model_name,
                 attempt_limit=args.retry_limit,
                 verbose=args.verbose,
             )
@@ -754,6 +788,8 @@ def main():
                 force_overwrite=getattr(args, "force", False),
                 header_text=getattr(args, "header_text", ""),
                 footer_text=getattr(args, "footer_text", ""),
+                resume=getattr(args, "resume", False),
+                replace_pages=getattr(args, "replace_pages", None),
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)

@@ -893,6 +893,43 @@ def is_valid_moodle_xml_question_file(
     return root.tag == "quiz" and actual_question_count == expected_question_count
 
 
+def write_text_atomically(path: Path, text: str) -> None:
+    """Write text through a sibling temporary file so interrupted writes are ignored."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(text, encoding="utf-8")
+    temporary_path.replace(path)
+
+
+def load_question_checkpoint(path: Path) -> Optional[List[str]]:
+    """Load question nodes from a valid checkpoint XML; return None if invalid."""
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    if root.tag != "quiz":
+        return None
+    return [
+        ET.tostring(node, encoding="unicode")
+        for node in root
+        if node.tag == "question" and node.get("type") != "category"
+    ]
+
+
+def is_valid_empty_question_response(response: str) -> bool:
+    """Return whether a no-question response is a well-formed empty Moodle quiz."""
+    cleaned = BaseAICommunicator.strip_code_fences(response).strip()
+    try:
+        root = ET.fromstring(cleaned)
+    except ET.ParseError:
+        return False
+    return root.tag == "quiz" and not any(
+        node.tag == "question" and node.get("type") != "category"
+        for node in root
+    )
+
+
 # =======================================================================
 # 1. Question Paper Extractor Class
 # =======================================================================
@@ -916,11 +953,13 @@ class QuestionPaperExtractor:
         output_format: str = "xml",
         pdf_engine: str = "html",
         staging_dir: Path = Path("output"),
-        batch_size: int = 0,
+        batch_size: int = 5,
         force_overwrite: bool = False,
         page_check_communicator: Optional[BaseAICommunicator] = None,
         header_text: str = "",
         footer_text: str = "",
+        resume: bool = False,
+        replace_pages: Optional[List[int]] = None,
     ):
         self.communicator = communicator
         self.page_check_communicator = page_check_communicator or communicator
@@ -939,6 +978,8 @@ class QuestionPaperExtractor:
         self.staging_dir = Path(staging_dir)
         self.batch_size = int(batch_size)
         self.force_overwrite = bool(force_overwrite)
+        self.resume = bool(resume)
+        self.replace_pages = list(replace_pages) if replace_pages else None
         self.header_text = header_text or ""
         self.footer_text = footer_text or ""
 
@@ -1037,6 +1078,52 @@ class QuestionPaperExtractor:
         page_batch_size = len(pages) if batch_size <= 0 else max(1, int(batch_size))
         return [pages[i : i + page_batch_size] for i in range(0, len(pages), page_batch_size)]
 
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _checkpoint_configuration(self) -> Dict[str, Any]:
+        return {
+            "communicator": type(self.communicator).__name__,
+            "model_name": getattr(self.communicator, "model_name", None),
+            "agent_name": getattr(self.communicator, "agent_name", None),
+            "agent_type": getattr(self.communicator, "agent_type", None),
+            "bucket_name": getattr(self.communicator, "bucket_name", None),
+            "ocr_model": getattr(self.ocr_engine, "model_name", None),
+            "page_check_model_name": getattr(
+                self.page_check_communicator,
+                "model_name",
+                None,
+            ),
+            "languages": [language.strip().casefold() for language in self.languages if language.strip()],
+            "standards": self.standards,
+            "tags": self.tags,
+            "page_range": list(self.page_range) if self.page_range else None,
+            "no_instruction_page": self.no_instruction_page,
+            "instruction_page": self.instruction_page,
+            "output_format": self.output_format,
+            "pdf_engine": self.pdf_engine,
+            "batch_size": self.batch_size,
+            "verify_online": self.verify_online,
+            "rules_sha256": hashlib.sha256(
+                json.dumps(self.rules_dict, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    @staticmethod
+    def _load_extraction_manifest(path: Path) -> Dict[str, Any]:
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Unable to read extraction checkpoint manifest: {path}") from exc
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+            raise ValueError(f"Unsupported extraction checkpoint manifest: {path}")
+        return manifest
+
     def process_file(self, pdf_path: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Extracts questions from a single PDF and writes Moodle XML."""
         pdf_path = Path(pdf_path).resolve()
@@ -1063,16 +1150,124 @@ class QuestionPaperExtractor:
             self.standards.strip().lower() == "general"
             and [language.strip().lower() for language in self.languages] == ["english"]
         )
+        manifest_path = paper_dir / f"{output_stem}.extract.json"
+        batch_output_dir = paper_dir / f".{output_stem}.extract_batches"
         existing_output = find_existing_output(
             paper_dir,
             pdf_path.stem,
             self.output_format,
             generated_prefix=output_prefix,
-            include_legacy=is_default_naming,
+            include_legacy=is_default_naming and not manifest_path.is_file(),
         )
-        if existing_output is not None and not self.force_overwrite:
+        if self.resume and self.output_format != "xml":
+            raise ValueError("--resume is supported only for XML extraction.")
+        if self.replace_pages and self.output_format != "xml":
+            raise ValueError("--replace-pages is supported only for XML extraction.")
+        if self.resume and self.force_overwrite:
+            raise ValueError("--resume and --force cannot be used together.")
+        if self.replace_pages and self.force_overwrite:
+            raise ValueError("--replace-pages and --force cannot be used together.")
+        if self.resume and self.replace_pages:
+            raise ValueError("Use --replace-pages by itself to resume a page replacement.")
+        if self.replace_pages and self.page_range:
+            raise ValueError("--page-range cannot be combined with --replace-pages.")
+        if self.replace_pages and (
+            len(self.replace_pages) != 2
+            or self.replace_pages[0] < 1
+            or self.replace_pages[1] < self.replace_pages[0]
+        ):
+            raise ValueError("--replace-pages requires a valid 1-based inclusive page range.")
+
+        source_sha256 = self._sha256_file(pdf_path)
+        manifest = None
+        if self.resume:
+            if not manifest_path.is_file():
+                if existing_output is not None:
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: an existing XML has no extraction checkpoint. "
+                        "A legacy XML cannot be safely resumed or merged automatically; "
+                        "use --force for a full re-extraction and preserve the old XML separately."
+                    )
+            else:
+                manifest = self._load_extraction_manifest(manifest_path)
+                if manifest.get("source_sha256") != source_sha256:
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: the source PDF changed since its checkpoint."
+                    )
+                if manifest.get("status") == "repair_pending":
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: its checkpoint contains an unfinished "
+                        "repair transaction from an earlier version. Preserve the current XML "
+                        "and checkpoint files and recover them manually before continuing."
+                    )
+                if manifest.get("configuration") != self._checkpoint_configuration():
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
+                    )
+                if (
+                    manifest.get("status") == "completed"
+                    and existing_output is not None
+                    and manifest.get("final_sha256") == self._sha256_file(existing_output)
+                ):
+                    logger.info("Extraction checkpoint is already complete: %s", existing_output)
+                    return existing_output
+                if (
+                    manifest.get("status") == "completed"
+                    and existing_output is not None
+                    and manifest.get("final_sha256") != self._sha256_file(existing_output)
+                ):
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: the completed XML changed after extraction. "
+                        "Use --force for a full re-extraction or an explicit repair option."
+                    )
+        elif self.replace_pages:
+            if not manifest_path.is_file() or existing_output is None:
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: a completed extraction checkpoint "
+                    "and its existing XML are required. Legacy XMLs without checkpoints are left untouched."
+                )
+            manifest = self._load_extraction_manifest(manifest_path)
+            if manifest.get("source_sha256") != source_sha256:
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: the source PDF changed since extraction."
+                )
+            if manifest.get("configuration") != self._checkpoint_configuration():
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
+                )
+            if manifest.get("status") == "in_progress" and (
+                manifest.get("operation") != "replace_pages"
+                or manifest.get("replace_pages") != self.replace_pages
+            ):
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: another extraction operation is incomplete."
+                )
+            if manifest.get("status") == "completed" and (
+                manifest.get("final_sha256") != self._sha256_file(existing_output)
+            ):
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: the existing XML changed since its checkpoint."
+                )
+        elif existing_output is not None and not self.force_overwrite:
             logger.info(f"⏭️ Skipping {pdf_path.name}: output already exists at {existing_output}")
             return existing_output
+        elif (
+            existing_output is not None
+            and self.force_overwrite
+            and self.page_range
+            and not self.replace_pages
+        ):
+            raise ValueError(
+                "Refusing to overwrite an existing full XML with a page-range-only extraction. "
+                "Use --replace-pages with a matching checkpoint or write to a separate --output-dir."
+            )
+        elif manifest_path.is_file() and not self.force_overwrite:
+            existing_manifest = self._load_extraction_manifest(manifest_path)
+            if existing_manifest.get("status") != "completed" or existing_output is None:
+                raise ValueError(
+                    f"An incomplete extraction checkpoint exists for {pdf_path.name}; "
+                    "use --resume to continue or --force to start over."
+                )
         if existing_output is not None and self.force_overwrite:
             logger.info(f"🔄 Reprocessing {pdf_path.name}: force_overwrite enabled; the stable output will be replaced (existing output: {existing_output}).")
 
@@ -1119,179 +1314,332 @@ class QuestionPaperExtractor:
                 global_tags="\n".join(f"  <tag><text>{tag}</text></tag>" for tag in all_tags),
             )
 
-        all_questions_xml: List[str] = []
         pages_to_process = ocr_result.pages if hasattr(ocr_result, "pages") and ocr_result.pages else []
 
-        if self.output_format == "xml" and pages_to_process:
-            if self.batch_size <= 0:
-                logger.info(
-                    "Processing all %s page(s) in a single batch for %s mode.",
-                    len(pages_to_process),
-                    type(self.communicator).__name__,
-                )
+        if self.output_format == "xml":
+            page_batches = []
+            for batch_pages in self._page_batches(pages_to_process, self.batch_size):
+                filtered_batch = [
+                    page_data
+                    for page_data in batch_pages
+                    if not (
+                        self.no_instruction_page
+                        and page_data.page_num == self.instruction_page
+                    )
+                ]
+                if filtered_batch:
+                    page_batches.append(filtered_batch)
+
+            expected_batch_ids = [
+                f"pages_{batch[0].page_num}_{batch[-1].page_num}"
+                for batch in page_batches
+            ]
+            configuration = self._checkpoint_configuration()
+            replacement_batch_ids: set[str] = set()
+
+            if self.replace_pages and manifest is not None:
+                if manifest.get("configuration") != configuration:
+                    raise ValueError(
+                        f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
+                    )
+                if manifest.get("batch_ids") != expected_batch_ids:
+                    raise ValueError(
+                        f"Cannot replace pages for {pdf_path.name}: the current page batches differ from "
+                        "the saved checkpoint. Keep --batch-size unchanged."
+                    )
+                start_page, end_page = self.replace_pages
+                overlapping_batches = [
+                    batch
+                    for batch in page_batches
+                    if batch[-1].page_num >= start_page and batch[0].page_num <= end_page
+                ]
+                if not overlapping_batches:
+                    raise ValueError(
+                        f"No extracted page batches overlap pages {start_page}-{end_page}."
+                    )
+                if any(
+                    batch[0].page_num < start_page or batch[-1].page_num > end_page
+                    for batch in overlapping_batches
+                ):
+                    raise ValueError(
+                        f"Pages {start_page}-{end_page} split a saved batch. "
+                        "Choose a range aligned to the original --batch-size."
+                    )
+                replacement_batch_ids = {
+                    f"pages_{batch[0].page_num}_{batch[-1].page_num}"
+                    for batch in overlapping_batches
+                }
+                if manifest.get("status") == "completed":
+                    manifest["operation"] = "replace_pages"
+                    manifest["replace_pages"] = self.replace_pages
+                    for record in manifest.get("batches", []):
+                        if record.get("id") in replacement_batch_ids:
+                            record["status"] = "pending"
+                            record["error"] = None
+                    manifest["status"] = "in_progress"
+                    write_json_atomically(manifest_path, manifest)
+                elif manifest.get("replace_pages") != self.replace_pages:
+                    raise ValueError(
+                        f"Cannot replace pages for {pdf_path.name}: the saved replacement range differs."
+                    )
+
+            if (self.resume or self.replace_pages) and manifest is not None:
+                if manifest.get("configuration") != configuration:
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
+                    )
+                if manifest.get("batch_ids") != expected_batch_ids:
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: the page batches differ from its checkpoint. "
+                        "Keep --page-range and --batch-size unchanged."
+                    )
+                if (
+                    manifest.get("status") == "completed"
+                    and existing_output is not None
+                    and not self.replace_pages
+                    and manifest.get("final_sha256") == self._sha256_file(existing_output)
+                ):
+                    logger.info("Extraction checkpoint is already complete: %s", existing_output)
+                    return existing_output
             else:
-                logger.info(
-                    "Processing %s page(s) in batches of %s for %s mode.",
-                    len(pages_to_process),
-                    self.batch_size,
-                    type(self.communicator).__name__,
-                )
-            for batch_index, batch_pages in enumerate(self._page_batches(pages_to_process, self.batch_size), start=1):
-                filtered_batch = []
-                for page_data in batch_pages:
-                    p_num = page_data.page_num
-                    if self.no_instruction_page and p_num == self.instruction_page:
-                        logger.info(f"⏩ Skipping instruction page {p_num}...")
-                        continue
-                    filtered_batch.append(page_data)
+                manifest = {
+                    "schema_version": 1,
+                    "status": "in_progress",
+                    "operation": "full",
+                    "source_pdf": pdf_path.name,
+                    "source_sha256": source_sha256,
+                    "configuration": configuration,
+                    "output_file": f"{output_stem}.xml",
+                    "batch_ids": expected_batch_ids,
+                    "batches": [
+                        {
+                            "id": batch_id,
+                            "status": "pending",
+                            "page_start": batch[0].page_num,
+                            "page_end": batch[-1].page_num,
+                            "response_file": f"{batch_id}.response.txt",
+                            "questions_file": f"{batch_id}.xml",
+                            "question_count": None,
+                            "error": None,
+                        }
+                        for batch_id, batch in zip(expected_batch_ids, page_batches)
+                    ],
+                    "final_sha256": None,
+                }
+                batch_output_dir.mkdir(parents=True, exist_ok=True)
+                write_json_atomically(manifest_path, manifest)
 
-                if not filtered_batch:
-                    continue
+            batch_output_dir.mkdir(parents=True, exist_ok=True)
+            records = {record["id"]: record for record in manifest.get("batches", [])}
+            all_questions_xml: List[str] = []
 
+            for batch_index, (batch_id, filtered_batch) in enumerate(
+                zip(expected_batch_ids, page_batches),
+                start=1,
+            ):
                 batch_start = filtered_batch[0].page_num
                 batch_end = filtered_batch[-1].page_num
-                logger.info(f"\n--- 📄 Processing Pages {batch_start}-{batch_end} (batch {batch_index}) ---")
+                record = records[batch_id]
+                questions_path = batch_output_dir / record["questions_file"]
+                response_path = batch_output_dir / record["response_file"]
 
-                batch_prompt_parts = []
-                batch_images: List[ImageAttachment] = []
-
-                for page_data in filtered_batch:
-                    p_num = page_data.page_num
-                    page_prompt = load_prompt_template(
-                        PROMPTS_DIR / "core" / "extraction_page_turn.md",
-                        page_number=str(p_num),
-                        image_ids=str(list(page_data.images.keys())),
-                        ocr_markdown=page_data.markdown,
+                valid_nodes = (
+                    load_question_checkpoint(questions_path)
+                    if record.get("status") == "completed"
+                    else None
+                )
+                if valid_nodes is not None and len(valid_nodes) == record.get("question_count"):
+                    logger.info(
+                        "⏭️ Reusing completed extraction for pages %s-%s (%s question(s)).",
+                        batch_start,
+                        batch_end,
+                        len(valid_nodes),
                     )
-                    batch_prompt_parts.append(page_prompt)
-
-                    for img_name, filepath in unique_image_items(page_data.images):
-                        batch_images.append(ImageAttachment(reference_id=img_name, source=filepath))
-
-                combined_prompt = "\n\n".join(batch_prompt_parts)
-                multimodal_batch = MultimodalBatch(
-                    text=combined_prompt,
-                    images=batch_images,
-                    page_range=(batch_start, batch_end),
-                )
-
-                snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(prompt_dir / snapshot_name, system_instruction, multimodal_batch)
-                raw_batch_output = self.communicator.generate(
-                    system_instruction=system_instruction,
-                    contents=multimodal_batch,
-                    output_filename=f"pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=prompt_dir / snapshot_name,
-                )
-
-                valid_nodes, _ = extract_clean_question_nodes_with_status(raw_batch_output)
-                if valid_nodes:
-                    logger.info(f"  ✓ Pages {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
                     all_questions_xml.extend(valid_nodes)
-                else:
-                    logger.info(f"  ℹ Pages {batch_start}-{batch_end}: No complete questions concluded in this batch.")
+                    continue
 
+                if (
+                    record.get("status") == "in_progress"
+                    and response_path.is_file()
+                ):
+                    recovered_response = response_path.read_text(encoding="utf-8")
+                else:
+                    recovered_response = ""
+                if recovered_response.strip():
+                    raw_batch_output = recovered_response
+                    logger.info("Recovering saved AI response for pages %s-%s.", batch_start, batch_end)
+                else:
+                    batch_prompt_parts = []
+                    batch_images: List[ImageAttachment] = []
+                    for page_data in filtered_batch:
+                        page_prompt = load_prompt_template(
+                            PROMPTS_DIR / "core" / "extraction_page_turn.md",
+                            page_number=str(page_data.page_num),
+                            image_ids=str(list(page_data.images.keys())),
+                            ocr_markdown=page_data.markdown,
+                        )
+                        batch_prompt_parts.append(page_prompt)
+                        for img_name, filepath in unique_image_items(page_data.images):
+                            batch_images.append(
+                                ImageAttachment(reference_id=img_name, source=filepath)
+                            )
+
+                    multimodal_batch = MultimodalBatch(
+                        text="\n\n".join(batch_prompt_parts),
+                        images=batch_images,
+                        page_range=(batch_start, batch_end),
+                    )
+                    snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
+                    snapshot_path = prompt_dir / snapshot_name
+                    write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
+                    record["status"] = "in_progress"
+                    record["error"] = None
+                    record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
+                    manifest["status"] = "in_progress"
+                    write_json_atomically(manifest_path, manifest)
+                    try:
+                        raw_batch_output = self.communicator.generate(
+                            system_instruction=system_instruction,
+                            contents=multimodal_batch,
+                            output_filename=f"{batch_id}.xml",
+                            prompt_snapshot_path=snapshot_path,
+                        )
+                    except Exception as exc:
+                        record["status"] = "failed"
+                        record["error"] = f"{type(exc).__name__}: {exc}"
+                        write_json_atomically(manifest_path, manifest)
+                        raise
+                    if not isinstance(raw_batch_output, str) or not raw_batch_output.strip():
+                        record["status"] = "failed"
+                        record["error"] = "The AI backend returned an empty response."
+                        write_json_atomically(manifest_path, manifest)
+                        raise RuntimeError(
+                            f"Empty extraction response for pages {batch_start}-{batch_end}."
+                        )
+                    write_text_atomically(response_path, raw_batch_output)
+
+                valid_nodes, parse_error = extract_clean_question_nodes_with_status(
+                    raw_batch_output
+                )
+                if parse_error or (
+                    not valid_nodes
+                    and not is_valid_empty_question_response(raw_batch_output)
+                ):
+                    error_message = parse_error or (
+                        "The AI response contained no valid Moodle quiz or question nodes."
+                    )
+                    record["status"] = "failed"
+                    record["error"] = error_message
+                    write_json_atomically(manifest_path, manifest)
+                    raise ValueError(
+                        f"Invalid extraction response for pages {batch_start}-{batch_end}: "
+                        f"{error_message}"
+                    )
+                if (
+                    self.replace_pages
+                    and batch_id in replacement_batch_ids
+                    and not valid_nodes
+                    and int(record.get("question_count") or 0) > 0
+                ):
+                    record["status"] = "failed"
+                    record["error"] = (
+                        "The replacement response contained no questions; "
+                        "the previous batch XML was retained."
+                    )
+                    write_json_atomically(manifest_path, manifest)
+                    raise ValueError(
+                        f"Page replacement for {batch_start}-{batch_end} returned no questions; "
+                        "the existing XML was left unchanged."
+                    )
+                checkpoint_xml = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n<quiz>\n'
+                    + "\n".join(valid_nodes)
+                    + "\n</quiz>\n"
+                )
+                write_text_atomically(questions_path, checkpoint_xml)
+                if load_question_checkpoint(questions_path) is None:
+                    record["status"] = "failed"
+                    record["error"] = "The normalized batch XML did not validate."
+                    write_json_atomically(manifest_path, manifest)
+                    raise ValueError(
+                        f"Invalid normalized Moodle XML for pages {batch_start}-{batch_end}."
+                    )
+                record["status"] = "completed"
+                record["question_count"] = len(valid_nodes)
+                record["error"] = None
+                manifest["status"] = "in_progress"
+                write_json_atomically(manifest_path, manifest)
+                all_questions_xml.extend(valid_nodes)
+                if valid_nodes:
+                    logger.info(
+                        "  ✓ Pages %s-%s: Extracted %s question(s).",
+                        batch_start,
+                        batch_end,
+                        len(valid_nodes),
+                    )
+                else:
+                    logger.info(
+                        "  ℹ Pages %s-%s: No complete questions concluded in this batch.",
+                        batch_start,
+                        batch_end,
+                    )
                 if self.rate_limit_delay > 0:
                     time.sleep(self.rate_limit_delay)
-        else:
-            if self.output_format == "pdf":
-                prompt_text = load_prompt_template(
-                    PROMPTS_DIR / "extractor" / "extraction_request.md",
-                    ocr_content=ocr_result.full_markdown,
-                    languages=", ".join(self.languages),
-                    standards=self.standards,
-                    global_tags=", ".join(all_tags),
-                    image_ids=str(list(ocr_result.all_images.keys())),
-                    language_instruction=lang_instruction,
-                )
-                batch_images = [
-                    ImageAttachment(reference_id=img_name, source=filepath)
-                    for img_name, filepath in unique_image_items(ocr_result.all_images)
-                ]
-                multimodal_batch = MultimodalBatch(
-                    text=prompt_text,
-                    images=batch_images,
-                )
 
-                output_extension = "tex" if self.pdf_engine == "tex" else "html"
-                snapshot_path = prompt_dir / f"{output_stem}_extraction_prompt.md"
-                write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
-                raw_output = self.communicator.generate(
-                    system_instruction=system_instruction,
-                    contents=multimodal_batch,
-                    output_filename=f"{output_stem}.{output_extension}",
-                    prompt_snapshot_path=snapshot_path,
-                )
-                return OutputRenderer(
-                    "pdf",
-                    self.pdf_engine,
-                    header_text=self.header_text,
-                    footer_text=self.footer_text,
-                ).render(
-                    raw_output,
-                    paper_dir,
-                    output_stem,
-                    ocr_result.all_images,
-                )
+            combined_xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                "<quiz>\n"
+                + "\n".join(all_questions_xml)
+                + "\n</quiz>"
+            )
+            final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
+            try:
+                ET.fromstring(final_xml)
+            except ET.ParseError as exc:
+                raise ValueError("Final extracted Moodle XML is not well-formed.") from exc
+            output_filepath = paper_dir / f"{output_stem}.xml"
+            write_text_atomically(output_filepath, final_xml)
+            manifest["status"] = "completed"
+            manifest["final_sha256"] = self._sha256_file(output_filepath)
+            write_json_atomically(manifest_path, manifest)
 
-            if self.batch_size <= 0:
-                logger.info("Sending full document OCR Markdown in a single batch for XML extraction...")
-            else:
-                logger.info("Sending full document OCR Markdown in batches of %s for XML extraction...", self.batch_size)
-            for batch_index, batch_pages in enumerate(self._page_batches(pages_to_process, self.batch_size), start=1):
-                if not batch_pages:
-                    continue
-                batch_start = batch_pages[0].page_num
-                batch_end = batch_pages[-1].page_num
-                batch_markdown = "\n\n".join(page_data.markdown for page_data in batch_pages)
-                prompt_text = (
-                    f"### Exam Paper OCR Markdown (Pages {batch_start}-{batch_end}):\n\n{batch_markdown}\n\n"
-                    f"### Extraction Parameters:\n"
-                    f"- Target Languages: {', '.join(self.languages)}\n"
-                    f"- Target Standards: {self.standards}\n"
-                    f"- Global Tags: {', '.join(all_tags)}\n"
-                    f"- Attached Diagram Reference IDs: {list(ocr_result.all_images.keys())}\n\n"
-                    f"{lang_instruction}\n"
-                    f"Extract all complete questions from these pages into valid Moodle XML format."
-                )
-                batch_images = []
-                for page_data in batch_pages:
-                    for img_name, filepath in unique_image_items(page_data.images):
-                        batch_images.append(ImageAttachment(reference_id=img_name, source=filepath))
+            logger.info(f"✅ Extracted {len(all_questions_xml)} total question(s) -> {output_filepath}")
+            elapsed = time.perf_counter() - item_start
+            logger.info("⏱️ [EXTRACT] %s completed in %.2f seconds (%.2f minutes)", pdf_path.name, elapsed, elapsed / 60.0)
+            return output_filepath
 
-                multimodal_batch = MultimodalBatch(
-                    text=prompt_text,
-                    images=batch_images,
-                    page_range=(batch_start, batch_end),
-                )
+        if self.resume:
+            raise ValueError("--resume is supported only for XML extraction.")
 
-                snapshot_name = f"{pdf_path.stem}_batch_{batch_start}_{batch_end}_prompt.md"
-                write_prompt_snapshot(prompt_dir / snapshot_name, system_instruction, multimodal_batch)
-                raw_output = self.communicator.generate(
-                    system_instruction=system_instruction,
-                    contents=multimodal_batch,
-                    output_filename=f"{pdf_path.stem}_pages_{batch_start}_{batch_end}.xml",
-                    prompt_snapshot_path=prompt_dir / snapshot_name,
-                )
-                valid_nodes, _ = extract_clean_question_nodes_with_status(raw_output)
-                logger.info(f"  ✓ Batch {batch_start}-{batch_end}: Extracted {len(valid_nodes)} question(s).")
-                all_questions_xml.extend(valid_nodes)
-
-        combined_xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<quiz>\n'
-            + '\n'.join(all_questions_xml) +
-            '\n</quiz>'
+        prompt_text = load_prompt_template(
+            PROMPTS_DIR / "extractor" / "extraction_request.md",
+            ocr_content=ocr_result.full_markdown,
+            languages=", ".join(self.languages),
+            standards=self.standards,
+            global_tags=", ".join(all_tags),
+            image_ids=str(list(ocr_result.all_images.keys())),
+            language_instruction=lang_instruction,
         )
-
-        final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
-        output_filepath = paper_dir / f"{output_stem}.xml"
-        output_filepath.write_text(final_xml, encoding="utf-8")
-
-        logger.info(f"✅ Extracted {len(all_questions_xml)} total question(s) -> {output_filepath}")
-        elapsed = time.perf_counter() - item_start
-        logger.info("⏱️ [EXTRACT] %s completed in %.2f seconds (%.2f minutes)", pdf_path.name, elapsed, elapsed / 60.0)
-        return output_filepath
+        batch_images = [
+            ImageAttachment(reference_id=img_name, source=filepath)
+            for img_name, filepath in unique_image_items(ocr_result.all_images)
+        ]
+        multimodal_batch = MultimodalBatch(text=prompt_text, images=batch_images)
+        output_extension = "tex" if self.pdf_engine == "tex" else "html"
+        snapshot_path = prompt_dir / f"{output_stem}_extraction_prompt.md"
+        write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
+        raw_output = self.communicator.generate(
+            system_instruction=system_instruction,
+            contents=multimodal_batch,
+            output_filename=f"{output_stem}.{output_extension}",
+            prompt_snapshot_path=snapshot_path,
+        )
+        return OutputRenderer(
+            "pdf",
+            self.pdf_engine,
+            header_text=self.header_text,
+            footer_text=self.footer_text,
+        ).render(raw_output, paper_dir, output_stem, ocr_result.all_images)
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
         """Processes all PDFs in an input directory."""

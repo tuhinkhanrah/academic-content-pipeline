@@ -140,9 +140,12 @@ def command_for_pdf(
     mode: str,
     languages: str,
     model_name: str | None = None,
+    instruction_page_model_name: str | None = None,
     ocr_model: str | None = None,
-    batch_size: int = 0,
+    batch_size: int = 5,
     force: bool = False,
+    resume: bool = False,
+    replace_pages: list[int] | None = None,
     disable_ocr_cache: bool = False,
     bucket_name: str | None = None,
     instruction_file: Path | None = None,
@@ -170,12 +173,18 @@ def command_for_pdf(
     ]
     if model_name:
         cmd.extend(["--model-name", model_name])
+    if instruction_page_model_name:
+        cmd.extend(["--instruction-page-model-name", instruction_page_model_name])
     if ocr_model:
         cmd.extend(["--ocr-model", ocr_model])
     if batch_size is not None:
         cmd.extend(["--batch-size", str(int(batch_size))])
     if force:
         cmd.append("--force")
+    if resume:
+        cmd.append("--resume")
+    if replace_pages:
+        cmd.extend(["--replace-pages", str(replace_pages[0]), str(replace_pages[1])])
     if disable_ocr_cache:
         cmd.append("--disable-ocr-cache")
     if instruction_file is not None:
@@ -204,16 +213,38 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--mode", choices=["context", "agent", "remote", "batch", "sequential"], default="context", help="Pipeline communication mode.")
     parser.add_argument("--languages", default="english", help="Target languages for extraction (comma-separated, e.g. english,hindi).")
     parser.add_argument("--model-name", default=None, help="Gemini model override. If omitted, the pipeline default is used.")
+    parser.add_argument(
+        "--instruction-page-model-name",
+        default=None,
+        help="Gemini model for instruction-page classification. If omitted, --model-name is used.",
+    )
     parser.add_argument("--model", "--ocr-model", dest="ocr_model", default=os.environ.get("MISTRAL_OCR_MODEL", "mistral-ocr-latest"), help="Mistral OCR model name to use.")
-    parser.add_argument("--batch-size", type=int, default=0, help="Maximum number of pages per extraction request. If 0 or less, processes all pages in one request.")
+    parser.add_argument("--batch-size", type=int, default=5, help="Maximum pages per extraction request (default: 5); 0 processes the entire document in one request.")
     parser.add_argument("--parallel-workers", type=int, default=1, help="Maximum number of PDFs to process concurrently. Use 1 for serial execution.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket name for remote mode.")
     parser.add_argument("--instruction-file", type=Path, default=None, help="Optional instruction file to pass to extraction.")
     parser.add_argument("--dry-run", action="store_true", help="Only print the commands without executing them.")
     parser.add_argument("--force", action="store_true", help="Re-run extraction even when the target XML already exists.")
+    parser.add_argument("--resume", action="store_true", help="Resume extraction from per-PDF batch checkpoints.")
+    parser.add_argument(
+        "--replace-pages",
+        type=int,
+        nargs=2,
+        metavar=("START", "END"),
+        help="Re-extract and replace saved extraction batches covering this page range; requires a checkpoint.",
+    )
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the extraction run.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
     args = parser.parse_args(argv)
+    if args.force and (args.resume or args.replace_pages):
+        parser.error(
+            "--force cannot be combined with --resume or a replacement option."
+        )
+    replacement_options = [
+        bool(args.replace_pages),
+    ]
+    if args.resume and any(replacement_options):
+        parser.error("--resume cannot be combined with a replacement option.")
     if args.mode == "sequential":
         args.mode = "context"
     max_workers = max(1, int(args.parallel_workers)) if args.parallel_workers is not None else 1
@@ -238,7 +269,14 @@ def main(argv: List[str] | None = None) -> int:
 
         standard, tags = infer_metadata_from_path(pdf_path, source_root)
         final_xml = find_existing_output(output_dir, pdf_path.stem, standard, args.languages)
-        if final_xml is not None and should_skip(final_xml, force=args.force):
+        if final_xml is not None and should_skip(
+            final_xml,
+            force=(
+                args.force
+                or args.resume
+                or bool(args.replace_pages)
+            ),
+        ):
             if args.verbose:
                 print(f"Skipping {pdf_path}: output already exists at {final_xml}")
             skipped += 1
@@ -257,9 +295,12 @@ def main(argv: List[str] | None = None) -> int:
             args.mode,
             args.languages,
             model_name=args.model_name,
+            instruction_page_model_name=args.instruction_page_model_name,
             ocr_model=args.ocr_model,
             batch_size=args.batch_size,
             force=args.force,
+            resume=args.resume,
+            replace_pages=args.replace_pages,
             disable_ocr_cache=args.disable_ocr_cache,
             bucket_name=args.bucket_name,
             instruction_file=args.instruction_file,

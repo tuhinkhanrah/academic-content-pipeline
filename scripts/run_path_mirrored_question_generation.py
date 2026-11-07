@@ -360,10 +360,9 @@ def has_valid_adaptive_output_manifest(
 
 
 def resolve_instruction_file(
-    standard: str,
     override: Path | None = None,
 ) -> Path | None:
-    """Use an explicit instruction file or a matching built-in exam profile."""
+    """Resolve an explicitly supplied instruction file, if any."""
     if override is not None:
         instruction_file = override.expanduser().resolve()
         if not instruction_file.is_file():
@@ -372,13 +371,7 @@ def resolve_instruction_file(
             )
         return instruction_file
 
-    profile_path = (
-        Path(__file__).resolve().parents[1]
-        / "prompts"
-        / "instructions"
-        / f"{standard}.md"
-    )
-    return profile_path if profile_path.is_file() else None
+    return None
 
 
 def build_output_prefix(
@@ -565,7 +558,7 @@ def main(argv: List[str] | None = None) -> int:
         "--instruction-file",
         type=Path,
         default=None,
-        help="Override the instruction profile; otherwise use a matching built-in exam profile when available.",
+        help="Optional instruction profile; if omitted, no instruction file is used.",
     )
     parser.add_argument(
         "--separate-by-question-type",
@@ -682,10 +675,7 @@ def main(argv: List[str] | None = None) -> int:
             if args.separate_by_question_type and not adaptive_question_types
             else []
         )
-        instruction_file = resolve_instruction_file(
-            standard,
-            override=args.instruction_file,
-        )
+        instruction_file = resolve_instruction_file(args.instruction_file)
         output_dir = build_output_dir(source_root, input_path, output_root)
         prefix = build_output_prefix(
             input_path,
