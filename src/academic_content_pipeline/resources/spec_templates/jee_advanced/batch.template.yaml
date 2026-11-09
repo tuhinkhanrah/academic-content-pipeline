@@ -1,0 +1,8 @@
+exam_name: JEE Advanced
+test_count: 100
+uniqueness_scope: all_papers
+papers:
+- id: paper1
+  spec: paper1.template.yaml
+- id: paper2
+  spec: paper2.template.yaml

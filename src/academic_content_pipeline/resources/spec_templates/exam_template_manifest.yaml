@@ -1,0 +1,44 @@
+chapter_bank_target_questions: 120
+exams:
+  neet_ug:
+    name: NEET UG
+    test_count: 100
+    uniqueness_scope: all_papers
+    instructions:
+      - prompts/instructions/neet_ug/neet_ug.md
+    papers:
+      - id: full_paper
+        spec: neet_ug/neet_ug.template.yaml
+  jee_main:
+    name: JEE Main
+    test_count: 100
+    uniqueness_scope: all_papers
+    instructions:
+      - prompts/instructions/jee_main/jee_main.md
+    papers:
+      - id: paper1
+        spec: jee_main/jee_main.template.yaml
+  jee_advanced:
+    name: JEE Advanced
+    test_count: 100
+    uniqueness_scope: all_papers
+    instructions:
+      - prompts/instructions/jee_advanced/paper1.md
+      - prompts/instructions/jee_advanced/paper2.md
+    papers:
+      - id: paper1
+        spec: jee_advanced/paper1.template.yaml
+      - id: paper2
+        spec: jee_advanced/paper2.template.yaml
+  wbjee:
+    name: WBJEE
+    test_count: 100
+    uniqueness_scope: all_papers
+    instructions:
+      - prompts/instructions/wbjee/mathematics.md
+      - prompts/instructions/wbjee/physics_chemistry.md
+    papers:
+      - id: mathematics
+        spec: wbjee/mathematics.template.yaml
+      - id: physics_chemistry
+        spec: wbjee/physics_chemistry.template.yaml

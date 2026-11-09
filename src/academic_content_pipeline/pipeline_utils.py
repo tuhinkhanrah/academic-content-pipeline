@@ -7,6 +7,7 @@ import base64
 import html
 import json
 import logging
+import math
 from importlib import resources
 
 import yaml
@@ -290,7 +291,11 @@ def inject_html_page_text(
     return html_content
 
 
-def format_instruction_profile(profile: Dict[str, Any]) -> str:
+def format_instruction_profile(
+    profile: Dict[str, Any],
+    *,
+    output_format: str = "xml",
+) -> str:
     """Render a structured exam profile as a readable AI instruction contract."""
     lines = ["## STRUCTURED EXAM PROFILE"]
     exam = profile.get("exam", {})
@@ -342,6 +347,43 @@ def format_instruction_profile(profile: Dict[str, Any]) -> str:
         scoring = section.get("scoring", {})
         if scoring:
             lines.append(f"- Scoring: {json.dumps(scoring, ensure_ascii=False, sort_keys=True)}")
+            if output_format.lower() == "xml":
+                correct = float(scoring.get("correct", 0))
+                incorrect = float(scoring.get("incorrect", 0))
+                if not math.isfinite(correct) or correct <= 0:
+                    raise ValueError(
+                        f"Section '{section.get('name', section.get('id', 'Unnamed'))}' "
+                        "must have a positive finite scoring.correct value to create "
+                        "Moodle XML grading fields."
+                    )
+                if not math.isfinite(incorrect) or incorrect > 0:
+                    raise ValueError(
+                        f"Section '{section.get('name', section.get('id', 'Unnamed'))}' "
+                        "must have a finite scoring.incorrect value that is zero or negative "
+                        "to create Moodle XML grading fields."
+                    )
+                penalty = -incorrect / correct
+                if penalty > 1:
+                    raise ValueError(
+                        f"Section '{section.get('name', section.get('id', 'Unnamed'))}' "
+                        f"has a Moodle penalty ratio greater than 1: {penalty:g}."
+                    )
+                lines.append(
+                    "- Required Moodle XML child elements for every <question> in this "
+                    "section (override any generic XML template defaults): "
+                    f"<defaultgrade>{correct:.7f}</defaultgrade>, "
+                    f"<penalty>{penalty:.7f}</penalty>."
+                )
+                lines.append(
+                    "- Include both elements directly inside each <question> node; do not "
+                    "use a generic defaultgrade value such as 1.0000000 when it differs "
+                    "from the value above."
+                )
+                lines.append(
+                    "- Set <defaultgrade> to the correct-answer mark. Set <penalty> "
+                    "to the absolute incorrect-answer mark divided by the correct-answer "
+                    "mark; use 0.0000000 when incorrect answers have no deduction."
+                )
         answer_format = section.get("answer_format")
         if answer_format:
             lines.append(f"- Answer format: {json.dumps(answer_format, ensure_ascii=False, sort_keys=True)}")
@@ -429,7 +471,12 @@ def assemble_prompt_files(
 
     instruction_profile = rule_files.get("instruction_profile")
     if instruction_profile:
-        content_blocks.append(format_instruction_profile(instruction_profile))
+        content_blocks.append(
+            format_instruction_profile(
+                instruction_profile,
+                output_format=output_format,
+            )
+        )
 
     if output_format == "pdf":
         pdf_rule_key = "pdf_rules_tex" if pdf_engine == "tex" else "pdf_rules_html"

@@ -1,95 +1,177 @@
+# Structure based on prompts/instructions/jee_advanced/paper2.md.
 schema_version: '1.0'
 exam_name: JEE Advanced
 paper_title: Paper 2
-duration_minutes: 180
 total_marks: 180
+paper_instructions:
+  - This paper has Mathematics, Physics, and Chemistry sections.
+  - Follow the marking scheme for each question type.
+  - Numerical answers must follow the configured two-decimal-place truncation rule.
+  - Each numerical-stem set has one shared stem followed by two distinct numerical questions.
 instruction_profile:
   exam:
     name: JEE Advanced
     paper_name: Paper 2
-    duration_minutes: 180
     total_marks: 180
   global_instructions:
-  - Answer according to the marking scheme of each section.
-  - For multiple-correct questions, select all and only the correct options.
-  - Numerical-value answers must be entered to at most two decimal places.
+    - Generate exactly 18 questions for each of Mathematics, Physics, and Chemistry.
+    - Follow the section-specific question counts and marking rules below.
+    - For multiple-correct questions, one or more options may be correct; implement the stated partial-credit and negative-marking rules.
+    - Numerical answers must be entered as values truncated to at most two decimal places.
+    - The numerical-stem section contains two distinct stems per subject, with two linked numerical questions per stem.
+    - Only the two linked questions in each numerical-stem set may depend on their shared stem; all other questions must be standalone.
+    - Each linked question must have its own answer and solution.
   generation_policy:
     question_count_mode: exact
-    require_standalone_questions: true
+    require_standalone_questions: false
     require_solution: true
     randomize_options: true
     vary_correct_option_position: true
     allow_question_type_substitution: false
   calibration:
     style:
-    - conceptually rigorous
-    - multi-step reasoning
-    - syllabus-bound
+      - conceptually rigorous
+      - multi-step reasoning
+      - syllabus-bound
     calculation_level: high
     avoid:
-    - trivial recall
-    - ambiguous wording
-    - out-of-syllabus concepts
+      - trivial recall
+      - ambiguous wording
+      - out-of-syllabus concepts
+  sections:
+    - id: single_correct
+      name: Single Correct Option
+      subject: all
+      question_count: 4
+      question_types:
+        - type: standard_mcq
+          count: 4
+      scoring:
+        correct: 3
+        incorrect: -1
+        unanswered: 0
+    - id: multiple_correct
+      name: One or More Than One Correct Option
+      subject: all
+      question_count: 5
+      question_types:
+        - type: multiple_correct
+          count: 5
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+        partial: true
+        partial_rules:
+          - Award +3 when all four options are correct and exactly three correct options are selected.
+          - Award +2 when at least three options are correct and exactly two correct options are selected.
+          - Award +1 when at least two options are correct and exactly one correct option is selected.
+          - Award 0 when no option is selected; otherwise apply -1 for any other selection.
+    - id: numerical
+      name: Numerical Value
+      subject: all
+      question_count: 5
+      question_types:
+        - type: numerical
+          count: 5
+      scoring:
+        correct: 4
+        incorrect: 0
+        unanswered: 0
+      answer_format:
+        kind: numeric
+        decimal_places: 2
+        rounding: truncate
+    - id: numerical_stems
+      name: Numerical Value Question Stems
+      subject: all
+      question_count: 4
+      question_types:
+        - type: numerical
+          count: 4
+      scoring:
+        correct: 2
+        incorrect: 0
+        unanswered: 0
+      answer_format:
+        kind: numeric
+        decimal_places: 2
+        rounding: truncate
 sections:
-- id: single_correct
-  name: Single Correct Option
-  subject: all
-  question_count: 4
-  question_types:
-  - type: standard_mcq
-    count: 4
-  scoring:
-    correct: 3
-    incorrect: -1
-    unanswered: 0
-- id: multiple_correct
-  name: One or More Than One Correct Option
-  subject: all
-  question_count: 5
-  question_types:
-  - type: multiple_correct
-    count: 5
-  scoring:
-    correct: 4
-    incorrect: -1
-    unanswered: 0
-    partial: true
-- id: numerical
-  name: Numerical Value
-  subject: all
-  question_count: 5
-  question_types:
-  - type: numerical
-    count: 5
-  scoring:
-    correct: 4
-    incorrect: 0
-    unanswered: 0
-- id: numerical_stems
-  name: Numerical Value Question Stems
-  subject: all
-  question_count: 4
-  question_types:
-  - type: numerical
-    count: 4
-  scoring:
-    correct: 2
-    incorrect: 0
-    unanswered: 0
-  answer_format:
-    kind: numeric
-    decimal_places: 2
-    rounding: truncate
+  - id: single_correct
+    name: Single Correct Option
+    subject: all
+    question_count: 4
+    question_types:
+      - type: standard_mcq
+        count: 4
+    scoring:
+      correct: 3
+      incorrect: -1
+      unanswered: 0
+  - id: multiple_correct
+    name: One or More Than One Correct Option
+    subject: all
+    question_count: 5
+    question_types:
+      - type: multiple_correct
+        count: 5
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+      partial: true
+      partial_rules:
+        - Award +3 when all four options are correct and exactly three correct options are selected.
+        - Award +2 when at least three options are correct and exactly two correct options are selected.
+        - Award +1 when at least two options are correct and exactly one correct option is selected.
+        - Award 0 when no option is selected; otherwise apply -1 for any other selection.
+  - id: numerical
+    name: Numerical Value
+    subject: all
+    question_count: 5
+    question_types:
+      - type: numerical
+        count: 5
+    scoring:
+      correct: 4
+      incorrect: 0
+      unanswered: 0
+    answer_format:
+      kind: numeric
+      decimal_places: 2
+      rounding: truncate
+  - id: numerical_stems
+    name: Numerical Value Question Stems
+    subject: all
+    question_count: 4
+    question_types:
+      - type: numerical
+        count: 4
+    scoring:
+      correct: 2
+      incorrect: 0
+      unanswered: 0
+    answer_format:
+      kind: numeric
+      decimal_places: 2
+      rounding: truncate
 subjects:
-- name: Mathematics
-  total_questions: 18
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/mathematics.md
-- name: Physics
-  total_questions: 18
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/physics.md
-- name: Chemistry
-  total_questions: 18
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/chemistry.md
+  - name: Mathematics
+    total_questions: 18
+    syllabus_file: prompts/generator/syllabus/jee_advanced/mathematics.md
+  - name: Physics
+    total_questions: 18
+    syllabus_file: prompts/generator/syllabus/jee_advanced/physics.md
+  - name: Chemistry
+    total_questions: 18
+    syllabus_file: prompts/generator/syllabus/jee_advanced/chemistry.md
+question_types:
+  mode: exact
+  types:
+    - type: standard_mcq
+      count: 12
+    - type: multiple_correct
+      count: 15
+    - type: numerical
+      count: 27

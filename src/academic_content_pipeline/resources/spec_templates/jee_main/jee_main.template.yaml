@@ -1,0 +1,201 @@
+# Structure based on prompts/instructions/jee_main/jee_main.md.
+schema_version: '1.0'
+exam_name: JEE Main
+paper_title: Paper 1 - B.E./B.Tech.
+total_marks: 300
+paper_instructions:
+  - The paper contains Mathematics, Physics, and Chemistry.
+  - Each subject has 20 Section A single-correct MCQs and 5 Section B numerical-answer questions.
+  - Award 4 marks for a correct answer and deduct 1 mark for an incorrect answer in both sections.
+instruction_profile:
+  exam:
+    name: JEE Main
+    paper_name: Paper 1 - B.E./B.Tech.
+    total_marks: 300
+  global_instructions:
+    - Generate exactly 25 questions for each subject: 20 single-correct MCQs followed by 5 numerical-answer questions.
+    - Award 4 marks for a correct answer, deduct 1 mark for an incorrect answer, and award 0 for an unanswered question.
+    - Numerical-answer questions must require an entered numeric value, not selection from options.
+  generation_policy:
+    question_count_mode: exact
+    require_standalone_questions: true
+    require_solution: true
+    randomize_options: true
+    vary_correct_option_position: true
+    allow_question_type_substitution: false
+  calibration:
+    style:
+      - concept-focused
+      - multi-step where appropriate
+      - syllabus-bound
+    calculation_level: moderate
+    avoid:
+      - trivial recall
+      - ambiguous wording
+      - out-of-syllabus concepts
+  sections:
+    - id: mathematics_section_a
+      name: Mathematics Section A - MCQ
+      subject: Mathematics
+      question_count: 20
+      question_types:
+        - type: standard_mcq
+          count: 20
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+    - id: mathematics_section_b
+      name: Mathematics Section B - Numerical Value
+      subject: Mathematics
+      question_count: 5
+      question_types:
+        - type: numerical
+          count: 5
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+    - id: physics_section_a
+      name: Physics Section A - MCQ
+      subject: Physics
+      question_count: 20
+      question_types:
+        - type: standard_mcq
+          count: 20
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+    - id: physics_section_b
+      name: Physics Section B - Numerical Value
+      subject: Physics
+      question_count: 5
+      question_types:
+        - type: numerical
+          count: 5
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+    - id: chemistry_section_a
+      name: Chemistry Section A - MCQ
+      subject: Chemistry
+      question_count: 20
+      question_types:
+        - type: standard_mcq
+          count: 20
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+    - id: chemistry_section_b
+      name: Chemistry Section B - Numerical Value
+      subject: Chemistry
+      question_count: 5
+      question_types:
+        - type: numerical
+          count: 5
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+sections:
+  - id: mathematics_section_a
+    name: Mathematics Section A - MCQ
+    subject: Mathematics
+    question_count: 20
+    question_number_start: 1
+    question_number_end: 20
+    question_types:
+      - type: standard_mcq
+        count: 20
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+  - id: mathematics_section_b
+    name: Mathematics Section B - Numerical Value
+    subject: Mathematics
+    question_count: 5
+    question_number_start: 21
+    question_number_end: 25
+    question_types:
+      - type: numerical
+        count: 5
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+  - id: physics_section_a
+    name: Physics Section A - MCQ
+    subject: Physics
+    question_count: 20
+    question_number_start: 26
+    question_number_end: 45
+    question_types:
+      - type: standard_mcq
+        count: 20
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+  - id: physics_section_b
+    name: Physics Section B - Numerical Value
+    subject: Physics
+    question_count: 5
+    question_number_start: 46
+    question_number_end: 50
+    question_types:
+      - type: numerical
+        count: 5
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+  - id: chemistry_section_a
+    name: Chemistry Section A - MCQ
+    subject: Chemistry
+    question_count: 20
+    question_number_start: 51
+    question_number_end: 70
+    question_types:
+      - type: standard_mcq
+        count: 20
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+  - id: chemistry_section_b
+    name: Chemistry Section B - Numerical Value
+    subject: Chemistry
+    question_count: 5
+    question_number_start: 71
+    question_number_end: 75
+    question_types:
+      - type: numerical
+        count: 5
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+subjects:
+  - name: Mathematics
+    total_questions: 25
+    default_grade: 4
+    syllabus_file: prompts/generator/syllabus/jee_main/mathematics.md
+  - name: Physics
+    total_questions: 25
+    default_grade: 4
+    syllabus_file: prompts/generator/syllabus/jee_main/physics.md
+  - name: Chemistry
+    total_questions: 25
+    default_grade: 4
+    syllabus_file: prompts/generator/syllabus/jee_main/chemistry.md
+question_types:
+  mode: exact
+  types:
+    - type: standard_mcq
+      count: 60
+    - type: numerical
+      count: 15

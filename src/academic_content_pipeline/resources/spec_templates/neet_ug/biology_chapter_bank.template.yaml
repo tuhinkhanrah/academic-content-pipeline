@@ -1,25 +1,24 @@
 exam_name: NEET UG
 paper_title: NEET UG Biology Chapter Question Bank
 total_questions: 120
-marks_per_question: 4
 question_types:
   mode: adaptive
   types:
-    - type: standard_mcq
-      weight: 0.4
-    - type: assertion_reason
-      weight: 0.1
-    - type: statement_based_2
-      weight: 0.133333
-    - type: statement_based_3
-      weight: 0.116667
-    - type: statement_based_4
-      weight: 0.066667
-    - type: statement_based_multi
-      weight: 0.05
-    - type: match_list
-      weight: 0.083333
-    - type: diagram_image
-      weight: 0.033333
-    - type: sequencing
-      weight: 0.016667
+  - type: assertion_reason
+    weight: 0.1
+  - type: diagram_image
+    weight: 0.033333
+  - type: match_list
+    weight: 0.077778
+  - type: sequencing
+    weight: 0.022222
+  - type: standard_mcq
+    weight: 0.4
+  - type: statement_based_2
+    weight: 0.133333
+  - type: statement_based_3
+    weight: 0.122222
+  - type: statement_based_4
+    weight: 0.066667
+  - type: statement_based_multi
+    weight: 0.044445

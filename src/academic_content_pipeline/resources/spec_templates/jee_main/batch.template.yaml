@@ -1,0 +1,6 @@
+exam_name: JEE Main
+test_count: 100
+uniqueness_scope: all_papers
+papers:
+- id: paper1
+  spec: jee_main.template.yaml

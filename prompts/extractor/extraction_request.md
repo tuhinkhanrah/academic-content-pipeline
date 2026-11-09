@@ -9,3 +9,4 @@
 
 {{language_instruction}}
 Extract all complete questions in source order while preserving their meaning, options, labels, units, and required visuals.
+If no complete questions are present, including when the source is blank or contains no questions, output exactly `<quiz></quiz>` with no explanatory text.

@@ -3,6 +3,7 @@
 - Extract only complete questions that conclude on the supplied page or document context.
 - If a question starts in the current context but ends later, defer it until the complete question is available.
 - If a question ends in the current context but started earlier, reconstruct and extract the complete question.
+- If no complete questions conclude in the supplied context, including when the page is blank, output exactly `<quiz></quiz>` with no explanatory text.
 - For every extracted question, preserve the source wording, answer choices, labels, units, and relevant visual information.
 
 ## Source Visual Preservation

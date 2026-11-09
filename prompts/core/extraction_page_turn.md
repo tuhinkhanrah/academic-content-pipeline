@@ -6,3 +6,4 @@ Attached Diagram Reference IDs on this page: {{image_ids}}
 {{ocr_markdown}}
 
 For diagrams, use the attached reference IDs and embed them according to the session contract.
+If no complete questions conclude on this page, output exactly `<quiz></quiz>` with no explanatory text.

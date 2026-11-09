@@ -1,19 +1,24 @@
+# Structure based on prompts/instructions/jee_advanced/paper1.md.
 schema_version: '1.0'
 exam_name: JEE Advanced
 paper_title: Paper 1
-duration_minutes: 180
-total_marks: 132
+total_marks: 180
+paper_instructions:
+  - This paper has Mathematics, Physics, and Chemistry sections.
+  - Follow the marking scheme for each question type.
+  - Numerical answers must follow the configured two-decimal-place truncation rule.
+  - Matching-list questions must contain List-I with four entries and List-II with five entries, followed by four candidate combinations with exactly one correct option.
 instruction_profile:
   exam:
     name: JEE Advanced
     paper_name: Paper 1
-    duration_minutes: 180
-    total_marks: 132
+    total_marks: 180
   global_instructions:
-  - Answer according to the marking scheme of each section.
-  - For single-correct questions, select exactly one option.
-  - For multiple-correct questions, select all and only the correct options.
-  - Numerical-value answers must be entered to at most two decimal places.
+    - Generate exactly 16 questions for each of Mathematics, Physics, and Chemistry.
+    - Follow the section-specific question counts and marking rules below.
+    - For multiple-correct questions, one or more options may be correct; implement the stated partial-credit and negative-marking rules.
+    - Numerical answers must be entered as values truncated to at most two decimal places.
+    - Each matching-list set is one single-correct MCQ with four List-I entries and five List-II entries.
   generation_policy:
     question_count_mode: exact
     require_standalone_questions: true
@@ -23,66 +28,142 @@ instruction_profile:
     allow_question_type_substitution: false
   calibration:
     style:
-    - conceptually rigorous
-    - multi-step reasoning
-    - syllabus-bound
+      - conceptually rigorous
+      - multi-step reasoning
+      - syllabus-bound
     calculation_level: high
     avoid:
-    - trivial recall
-    - ambiguous wording
-    - out-of-syllabus concepts
-global_instructions:
-- The instructions and grading criteria are identical across Mathematics, Physics,
-  and Chemistry.
+      - trivial recall
+      - ambiguous wording
+      - out-of-syllabus concepts
+  sections:
+    - id: single_correct
+      name: Single Correct Option
+      subject: all
+      question_count: 4
+      question_types:
+        - type: standard_mcq
+          count: 4
+      scoring:
+        correct: 3
+        incorrect: -1
+        unanswered: 0
+    - id: multiple_correct
+      name: One or More Than One Correct Option
+      subject: all
+      question_count: 4
+      question_types:
+        - type: multiple_correct
+          count: 4
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
+        partial: true
+        partial_rules:
+          - Award +3 when all four options are correct and exactly three correct options are selected.
+          - Award +2 when at least three options are correct and exactly two correct options are selected.
+          - Award +1 when at least two options are correct and exactly one correct option is selected.
+          - Award 0 when no option is selected; otherwise apply -1 for any other selection.
+    - id: numerical
+      name: Numerical Value
+      subject: all
+      question_count: 4
+      question_types:
+        - type: numerical
+          count: 4
+      scoring:
+        correct: 4
+        incorrect: 0
+        unanswered: 0
+      answer_format:
+        kind: numeric
+        decimal_places: 2
+        rounding: truncate
+    - id: matching_lists
+      name: Matching List Sets
+      subject: all
+      question_count: 4
+      question_types:
+        - type: match_list
+          count: 4
+      scoring:
+        correct: 4
+        incorrect: -1
+        unanswered: 0
 sections:
-- id: single_correct
-  name: Single Correct Option
-  subject: all
-  question_count: 4
-  question_types:
-  - type: standard_mcq
-    count: 4
-  scoring:
-    correct: 3
-    incorrect: -1
-    unanswered: 0
-- id: multiple_correct
-  name: One or More Than One Correct Option
-  subject: all
-  question_count: 4
-  question_types:
-  - type: multiple_correct
-    count: 4
-  scoring:
-    correct: 4
-    incorrect: -1
-    unanswered: 0
-    partial: true
-- id: numerical
-  name: Numerical Value
-  subject: all
-  question_count: 4
-  question_types:
-  - type: numerical
-    count: 4
-  scoring:
-    correct: 4
-    incorrect: 0
-    unanswered: 0
-  answer_format:
-    kind: numeric
-    decimal_places: 2
-    rounding: truncate
+  - id: single_correct
+    name: Single Correct Option
+    subject: all
+    question_count: 4
+    question_types:
+      - type: standard_mcq
+        count: 4
+    scoring:
+      correct: 3
+      incorrect: -1
+      unanswered: 0
+  - id: multiple_correct
+    name: One or More Than One Correct Option
+    subject: all
+    question_count: 4
+    question_types:
+      - type: multiple_correct
+        count: 4
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
+      partial: true
+      partial_rules:
+        - Award +3 when all four options are correct and exactly three correct options are selected.
+        - Award +2 when at least three options are correct and exactly two correct options are selected.
+        - Award +1 when at least two options are correct and exactly one correct option is selected.
+        - Award 0 when no option is selected; otherwise apply -1 for any other selection.
+  - id: numerical
+    name: Numerical Value
+    subject: all
+    question_count: 4
+    question_types:
+      - type: numerical
+        count: 4
+    scoring:
+      correct: 4
+      incorrect: 0
+      unanswered: 0
+    answer_format:
+      kind: numeric
+      decimal_places: 2
+      rounding: truncate
+  - id: matching_lists
+    name: Matching List Sets
+    subject: all
+    question_count: 4
+    question_types:
+      - type: match_list
+        count: 4
+    scoring:
+      correct: 4
+      incorrect: -1
+      unanswered: 0
 subjects:
-- name: Mathematics
-  total_questions: 12
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/mathematics.md
-- name: Physics
-  total_questions: 12
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/physics.md
-- name: Chemistry
-  total_questions: 12
-  default_grade: 4
-  syllabus_file: prompts/generator/syllabus/jee_advanced/chemistry.md
+  - name: Mathematics
+    total_questions: 16
+    syllabus_file: prompts/generator/syllabus/jee_advanced/mathematics.md
+  - name: Physics
+    total_questions: 16
+    syllabus_file: prompts/generator/syllabus/jee_advanced/physics.md
+  - name: Chemistry
+    total_questions: 16
+    syllabus_file: prompts/generator/syllabus/jee_advanced/chemistry.md
+question_types:
+  mode: exact
+  types:
+    - type: standard_mcq
+      count: 12
+    - type: multiple_correct
+      count: 12
+    - type: numerical
+      count: 12
+    - type: match_list
+      count: 12

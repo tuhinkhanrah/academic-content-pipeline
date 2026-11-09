@@ -1,0 +1,10 @@
+exam_name: JEE Main
+paper_title: JEE Main Mathematics Chapter Question Bank
+total_questions: 120
+question_types:
+  mode: adaptive
+  types:
+  - type: numerical
+    weight: 0.2
+  - type: standard_mcq
+    weight: 0.8

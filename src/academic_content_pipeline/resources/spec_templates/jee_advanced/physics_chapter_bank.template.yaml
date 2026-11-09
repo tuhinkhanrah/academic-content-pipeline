@@ -1,0 +1,14 @@
+exam_name: JEE Advanced
+paper_title: JEE Advanced Physics Chapter Question Bank
+total_questions: 120
+question_types:
+  mode: adaptive
+  types:
+  - type: match_list
+    weight: 0.117647
+  - type: multiple_correct
+    weight: 0.264706
+  - type: numerical
+    weight: 0.382353
+  - type: standard_mcq
+    weight: 0.235294

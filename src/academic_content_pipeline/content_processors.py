@@ -534,20 +534,17 @@ def _allocate_subject_difficulty_counts(total_questions: int, ratio: Dict[str, f
 
 
 def build_global_difficulty_hint(spec_data: Dict[str, Any]) -> str:
-    """Return a non-conflicting difficulty summary with clear precedence rules."""
+    """Describe the fallback difficulty proportions used to derive subject quotas."""
     fallback_mix = _parse_difficulty_mix(
         spec_data.get("difficulty_mix", "easy:0.2,medium:0.5,hard:0.3")
     )
-    if spec_data.get("difficulty_by_subject"):
-        return (
-            "LEGACY GLOBAL MIX ONLY: ignored when subject-specific difficulty is present; "
-            "subject-specific counts are authoritative. "
-            f"Fallback values for single-subject papers only: easy:{fallback_mix.get('easy', 0.2)},"
-            f"medium:{fallback_mix.get('medium', 0.5)},hard:{fallback_mix.get('hard', 0.3)}"
-        )
     return (
-        f"easy:{fallback_mix.get('easy', 0.2)},medium:{fallback_mix.get('medium', 0.5)},"
-        f"hard:{fallback_mix.get('hard', 0.3)}"
+        "Fallback proportions (shares of questions, not difficulty scores): "
+        f"Easy {fallback_mix.get('easy', 0.2) * 100:g}%, "
+        f"Medium {fallback_mix.get('medium', 0.5) * 100:g}%, "
+        f"Hard {fallback_mix.get('hard', 0.3) * 100:g}%. "
+        "Use these only when a subject has no explicit difficulty proportions; "
+        "the exact per-subject question quotas below take precedence."
     )
 
 
@@ -555,22 +552,17 @@ def build_subject_difficulty_contract(
     spec_data: Dict[str, Any],
     subjects: List[Dict[str, Any]],
 ) -> str:
-    """Build a subject-aware difficulty contract for multi-subject exam generation."""
+    """Build explicit per-subject difficulty quotas for AI paper generation."""
     difficulty_by_subject = spec_data.get("difficulty_by_subject") or {}
     fallback_mix = _parse_difficulty_mix(
         spec_data.get("difficulty_mix", "easy:0.2,medium:0.5,hard:0.3")
     )
 
-    if not difficulty_by_subject:
-        return (
-            "Subject-specific difficulty allocation is mandatory for multi-subject papers. "
-            "Do not rely on a single paper-wide mix when per-subject totals exist. "
-            f"Fallback mix: easy:{fallback_mix.get('easy', 0.2)},medium:{fallback_mix.get('medium', 0.5)},hard:{fallback_mix.get('hard', 0.3)}"
-        )
-
     lines = [
-        "Subject-specific difficulty allocation is authoritative. "
-        "Use the counts below for each subject; ignore the legacy paper-wide mix completely when this contract is present."
+        "These are exact question-count quotas for each subject. Generate exactly "
+        "the listed number of questions at each difficulty; do not treat the "
+        "percentages as question counts. The three counts for each subject must "
+        "sum to that subject's total."
     ]
     for subject in subjects:
         subject_name = str(subject.get("name", "Subject"))
@@ -589,10 +581,22 @@ def build_subject_difficulty_contract(
         }
         counts = _allocate_subject_difficulty_counts(total_questions, ratio)
         lines.append(
-            f"- {subject_name}: easy: {counts['easy']}, medium: {counts['medium']}, hard: {counts['hard']} "
-            f"(target ratios easy:{ratio['easy']},medium:{ratio['medium']},hard:{ratio['hard']})"
+            f"- {subject_name} ({total_questions} questions total): "
+            f"Easy = exactly {counts['easy']} questions ({ratio['easy'] * 100:g}%); "
+            f"Medium = exactly {counts['medium']} questions ({ratio['medium'] * 100:g}%); "
+            f"Hard = exactly {counts['hard']} questions ({ratio['hard'] * 100:g}%)."
         )
 
+    lines.extend(
+        [
+            "Difficulty meaning: Easy tests core knowledge or a direct, usually "
+            "single-step application; Medium requires applying concepts or "
+            "moderate multi-step reasoning; Hard requires deeper synthesis or "
+            "non-routine, multi-step reasoning while remaining within the syllabus.",
+            "If a percentage cannot produce a whole question, use the exact "
+            "integer quotas shown above; the counts are authoritative.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1094,11 +1098,6 @@ class QuestionPaperExtractor:
             "agent_type": getattr(self.communicator, "agent_type", None),
             "bucket_name": getattr(self.communicator, "bucket_name", None),
             "ocr_model": getattr(self.ocr_engine, "model_name", None),
-            "page_check_model_name": getattr(
-                self.page_check_communicator,
-                "model_name",
-                None,
-            ),
             "languages": [language.strip().casefold() for language in self.languages if language.strip()],
             "standards": self.standards,
             "tags": self.tags,
@@ -1112,6 +1111,32 @@ class QuestionPaperExtractor:
             "rules_sha256": hashlib.sha256(
                 json.dumps(self.rules_dict, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest(),
+        }
+
+    @staticmethod
+    def _checkpoint_configuration_matches(
+        saved_configuration: Any,
+        current_configuration: Dict[str, Any],
+    ) -> bool:
+        if not isinstance(saved_configuration, dict):
+            return False
+        ignored_keys = {
+            "page_check_model_name",
+            "model_name",
+            "agent_name",
+            "agent_type",
+            "bucket_name",
+            "ocr_model",
+            "verify_online",
+        }
+        return {
+            key: value
+            for key, value in saved_configuration.items()
+            if key not in ignored_keys
+        } == {
+            key: value
+            for key, value in current_configuration.items()
+            if key not in ignored_keys
         }
 
     @staticmethod
@@ -1200,7 +1225,10 @@ class QuestionPaperExtractor:
                         "repair transaction from an earlier version. Preserve the current XML "
                         "and checkpoint files and recover them manually before continuing."
                     )
-                if manifest.get("configuration") != self._checkpoint_configuration():
+                if not self._checkpoint_configuration_matches(
+                    manifest.get("configuration"),
+                    self._checkpoint_configuration(),
+                ):
                     raise ValueError(
                         f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
                     )
@@ -1231,7 +1259,10 @@ class QuestionPaperExtractor:
                 raise ValueError(
                     f"Cannot replace pages for {pdf_path.name}: the source PDF changed since extraction."
                 )
-            if manifest.get("configuration") != self._checkpoint_configuration():
+            if not self._checkpoint_configuration_matches(
+                manifest.get("configuration"),
+                self._checkpoint_configuration(),
+            ):
                 raise ValueError(
                     f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
                 )
@@ -1338,7 +1369,10 @@ class QuestionPaperExtractor:
             replacement_batch_ids: set[str] = set()
 
             if self.replace_pages and manifest is not None:
-                if manifest.get("configuration") != configuration:
+                if not self._checkpoint_configuration_matches(
+                    manifest.get("configuration"),
+                    configuration,
+                ):
                     raise ValueError(
                         f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
                     )
@@ -1384,7 +1418,10 @@ class QuestionPaperExtractor:
                     )
 
             if (self.resume or self.replace_pages) and manifest is not None:
-                if manifest.get("configuration") != configuration:
+                if not self._checkpoint_configuration_matches(
+                    manifest.get("configuration"),
+                    configuration,
+                ):
                     raise ValueError(
                         f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
                     )
@@ -1432,6 +1469,26 @@ class QuestionPaperExtractor:
             batch_output_dir.mkdir(parents=True, exist_ok=True)
             records = {record["id"]: record for record in manifest.get("batches", [])}
             all_questions_xml: List[str] = []
+            output_filepath = paper_dir / f"{output_stem}.xml"
+
+            def write_current_output() -> None:
+                combined_xml = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    "<quiz>\n"
+                    + "\n".join(all_questions_xml)
+                    + "\n</quiz>"
+                )
+                current_xml = fix_and_inject_moodle_xml(
+                    combined_xml,
+                    ocr_result.all_images,
+                )
+                try:
+                    ET.fromstring(current_xml)
+                except ET.ParseError as exc:
+                    raise ValueError(
+                        "Final extracted Moodle XML is not well-formed."
+                    ) from exc
+                write_text_atomically(output_filepath, current_xml)
 
             for batch_index, (batch_id, filtered_batch) in enumerate(
                 zip(expected_batch_ids, page_batches),
@@ -1456,6 +1513,8 @@ class QuestionPaperExtractor:
                         len(valid_nodes),
                     )
                     all_questions_xml.extend(valid_nodes)
+                    if not self.replace_pages:
+                        write_current_output()
                     continue
 
                 if (
@@ -1570,6 +1629,8 @@ class QuestionPaperExtractor:
                 manifest["status"] = "in_progress"
                 write_json_atomically(manifest_path, manifest)
                 all_questions_xml.extend(valid_nodes)
+                if not self.replace_pages:
+                    write_current_output()
                 if valid_nodes:
                     logger.info(
                         "  ✓ Pages %s-%s: Extracted %s question(s).",
@@ -1586,19 +1647,7 @@ class QuestionPaperExtractor:
                 if self.rate_limit_delay > 0:
                     time.sleep(self.rate_limit_delay)
 
-            combined_xml = (
-                '<?xml version="1.0" encoding="UTF-8"?>\n'
-                "<quiz>\n"
-                + "\n".join(all_questions_xml)
-                + "\n</quiz>"
-            )
-            final_xml = fix_and_inject_moodle_xml(combined_xml, ocr_result.all_images)
-            try:
-                ET.fromstring(final_xml)
-            except ET.ParseError as exc:
-                raise ValueError("Final extracted Moodle XML is not well-formed.") from exc
-            output_filepath = paper_dir / f"{output_stem}.xml"
-            write_text_atomically(output_filepath, final_xml)
+            write_current_output()
             manifest["status"] = "completed"
             manifest["final_sha256"] = self._sha256_file(output_filepath)
             write_json_atomically(manifest_path, manifest)
@@ -2824,6 +2873,7 @@ class PaperGenerator:
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
         self.rules_dict = rules_dict or {}
+        self._base_rules_dict = dict(self.rules_dict)
         self.languages = languages or ["english"]
         self.standards = standards
         self.tags = tags
@@ -2845,7 +2895,16 @@ class PaperGenerator:
         self.exam_duration_minutes = exam_duration_minutes
         self.mcq_types_path = Path(mcq_types_path)
 
-    def process_spec(self, spec_path: Path, output_dir: Path) -> Path:
+    def process_spec(
+        self,
+        spec_path: Path,
+        output_dir: Path,
+        *,
+        output_stem: Optional[str] = None,
+        additional_prompt: str = "",
+        raw_response_path: Optional[Path] = None,
+        raw_response_override: Optional[str] = None,
+    ) -> Path:
         """Synthesizes a full calibrated mock exam from a spec JSON or syllabus."""
         spec_path = Path(spec_path).resolve()
         output_dir = Path(output_dir).resolve()
@@ -2865,9 +2924,9 @@ class PaperGenerator:
             }
 
         exam_name = spec_data.get("exam_name", "MOCK_EXAM")
-        output_stem = "mock_bank" if self.output_format == "xml" else "mock_paper"
-        generation_stem = build_generated_output_stem(
-            output_stem,
+        base_output_stem = "mock_bank" if self.output_format == "xml" else "mock_paper"
+        generated_stem = build_generated_output_stem(
+            base_output_stem,
             self.languages,
             qualifier=(
                 exam_name
@@ -2875,6 +2934,8 @@ class PaperGenerator:
                 else self.standards
             ),
         )
+        generation_stem = output_stem if output_stem is not None else generated_stem
+        self.rules_dict = dict(self._base_rules_dict)
         subjects = spec_data.get("subjects", [])
         metadata = build_paper_metadata(
             spec_data,
@@ -2909,6 +2970,17 @@ class PaperGenerator:
 
             content = ""
             if s_file.exists():
+                if s_file.suffix.lower() == ".pdf":
+                    ocr_result = self.ocr_engine.process_pdf(
+                        s_file,
+                        self.staging_dir / "syllabus" / s_file.stem,
+                    )
+                    content = ocr_result.full_markdown
+                else:
+                    content = load_file_content(s_file)
+                logger.info(f"  ✓ Loaded syllabus for {subj_name} ({s_file.name})")
+            elif not s_file.is_absolute() and (spec_path.parent / s_file).is_file():
+                s_file = (spec_path.parent / s_file).resolve()
                 if s_file.suffix.lower() == ".pdf":
                     ocr_result = self.ocr_engine.process_pdf(
                         s_file,
@@ -2966,6 +3038,8 @@ class PaperGenerator:
             pdf_engine=self.pdf_engine.upper(),
             language_instruction=lang_instruction,
         )
+        if additional_prompt.strip():
+            prompt_text += "\n\n" + additional_prompt.strip()
 
         multimodal_batch = MultimodalBatch(text=prompt_text)
 
@@ -2979,12 +3053,20 @@ class PaperGenerator:
             system_instruction,
             multimodal_batch,
         )
-        raw_output = self.communicator.generate(
-            system_instruction=system_instruction,
-            contents=multimodal_batch,
-            output_filename=output_artifact_name,
-            prompt_snapshot_path=snapshot_path,
-        )
+        raw_output = raw_response_override
+        if raw_output is None:
+            raw_output = self.communicator.generate(
+                system_instruction=system_instruction,
+                contents=multimodal_batch,
+                output_filename=output_artifact_name,
+                prompt_snapshot_path=snapshot_path,
+            )
+            if not isinstance(raw_output, str) or not raw_output.strip():
+                raise ValueError(f"AI returned an empty response for spec: {spec_path}")
+            if raw_response_path is not None:
+                write_text_atomically(raw_response_path, raw_output)
+        elif raw_response_path is not None:
+            write_text_atomically(raw_response_path, raw_output)
 
         # 5. Render the generated artifact
         if self.output_format == "pdf":

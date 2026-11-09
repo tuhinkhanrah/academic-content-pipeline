@@ -1,0 +1,215 @@
+# Structure based on prompts/instructions/wbjee/physics_chemistry.md.
+schema_version: '1.0'
+exam_name: WBJEE
+paper_title: Physics and Chemistry
+duration_minutes: 120
+total_marks: 100
+paper_instructions:
+  - This paper contains Physics and Chemistry, with 40 questions and 50 marks per subject.
+  - In each subject, Category 1 has 30 single-correct questions worth 1 mark each; an incorrect or multiple response deducts 0.25 marks.
+  - In each subject, Category 2 has 5 single-correct questions worth 2 marks each; an incorrect or multiple response deducts 0.5 marks.
+  - In each subject, Category 3 has 5 multiple-correct questions worth up to 2 marks each. Incorrect selections receive zero; partial credit is awarded for selecting only correct options.
+instruction_profile:
+  exam:
+    name: WBJEE
+    paper_name: Physics and Chemistry
+    duration_minutes: 120
+    total_marks: 100
+  global_instructions:
+    - Generate exactly 40 Physics questions and 40 Chemistry questions.
+    - Preserve each subject's category numbering and question-type counts.
+    - Category 3 permits one or more correct options. Award full marks only when all correct options are selected; award zero if any incorrect option is selected; otherwise award partial marks using 2 multiplied by the number of correct options selected, divided by the total number of correct options.
+    - Questions should be clear, syllabus-bound, and suitable for the specified category.
+  generation_policy:
+    question_count_mode: exact
+    require_standalone_questions: true
+    require_solution: true
+    randomize_options: true
+    vary_correct_option_position: true
+    allow_question_type_substitution: false
+  calibration:
+    style:
+      - application-oriented
+      - concept-focused
+      - syllabus-bound
+    calculation_level: moderate
+    avoid:
+      - trivial recall
+      - ambiguous wording
+      - out-of-syllabus concepts
+  sections:
+    - id: physics_category_1
+      name: Physics Category 1
+      subject: Physics
+      question_count: 30
+      question_types:
+        - type: standard_mcq
+          count: 30
+      scoring:
+        correct: 1
+        incorrect: -0.25
+        unanswered: 0
+    - id: physics_category_2
+      name: Physics Category 2
+      subject: Physics
+      question_count: 5
+      question_types:
+        - type: standard_mcq
+          count: 5
+      scoring:
+        correct: 2
+        incorrect: -0.5
+        unanswered: 0
+    - id: physics_category_3
+      name: Physics Category 3
+      subject: Physics
+      question_count: 5
+      question_types:
+        - type: multiple_correct
+          count: 5
+      scoring:
+        correct: 2
+        incorrect: 0
+        unanswered: 0
+        partial: true
+        partial_rules:
+          - Award partial marks as 2 times the number of correct options selected divided by the total number of correct options, only when every selected option is correct.
+          - Award zero if any incorrect option is selected.
+    - id: chemistry_category_1
+      name: Chemistry Category 1
+      subject: Chemistry
+      question_count: 30
+      question_types:
+        - type: standard_mcq
+          count: 30
+      scoring:
+        correct: 1
+        incorrect: -0.25
+        unanswered: 0
+    - id: chemistry_category_2
+      name: Chemistry Category 2
+      subject: Chemistry
+      question_count: 5
+      question_types:
+        - type: standard_mcq
+          count: 5
+      scoring:
+        correct: 2
+        incorrect: -0.5
+        unanswered: 0
+    - id: chemistry_category_3
+      name: Chemistry Category 3
+      subject: Chemistry
+      question_count: 5
+      question_types:
+        - type: multiple_correct
+          count: 5
+      scoring:
+        correct: 2
+        incorrect: 0
+        unanswered: 0
+        partial: true
+        partial_rules:
+          - Award partial marks as 2 times the number of correct options selected divided by the total number of correct options, only when every selected option is correct.
+          - Award zero if any incorrect option is selected.
+sections:
+  - id: physics_category_1
+    name: Physics Category 1
+    subject: Physics
+    question_count: 30
+    question_number_start: 1
+    question_number_end: 30
+    question_types:
+      - type: standard_mcq
+        count: 30
+    scoring:
+      correct: 1
+      incorrect: -0.25
+      unanswered: 0
+  - id: physics_category_2
+    name: Physics Category 2
+    subject: Physics
+    question_count: 5
+    question_number_start: 31
+    question_number_end: 35
+    question_types:
+      - type: standard_mcq
+        count: 5
+    scoring:
+      correct: 2
+      incorrect: -0.5
+      unanswered: 0
+  - id: physics_category_3
+    name: Physics Category 3
+    subject: Physics
+    question_count: 5
+    question_number_start: 36
+    question_number_end: 40
+    question_types:
+      - type: multiple_correct
+        count: 5
+    scoring:
+      correct: 2
+      incorrect: 0
+      unanswered: 0
+      partial: true
+      partial_rules:
+        - Award partial marks as 2 times the number of correct options selected divided by the total number of correct options, only when every selected option is correct.
+        - Award zero if any incorrect option is selected.
+  - id: chemistry_category_1
+    name: Chemistry Category 1
+    subject: Chemistry
+    question_count: 30
+    question_number_start: 41
+    question_number_end: 70
+    question_types:
+      - type: standard_mcq
+        count: 30
+    scoring:
+      correct: 1
+      incorrect: -0.25
+      unanswered: 0
+  - id: chemistry_category_2
+    name: Chemistry Category 2
+    subject: Chemistry
+    question_count: 5
+    question_number_start: 71
+    question_number_end: 75
+    question_types:
+      - type: standard_mcq
+        count: 5
+    scoring:
+      correct: 2
+      incorrect: -0.5
+      unanswered: 0
+  - id: chemistry_category_3
+    name: Chemistry Category 3
+    subject: Chemistry
+    question_count: 5
+    question_number_start: 76
+    question_number_end: 80
+    question_types:
+      - type: multiple_correct
+        count: 5
+    scoring:
+      correct: 2
+      incorrect: 0
+      unanswered: 0
+      partial: true
+      partial_rules:
+        - Award partial marks as 2 times the number of correct options selected divided by the total number of correct options, only when every selected option is correct.
+        - Award zero if any incorrect option is selected.
+subjects:
+  - name: Physics
+    total_questions: 40
+    syllabus_file: prompts/generator/syllabus/wbjee/physics.md
+  - name: Chemistry
+    total_questions: 40
+    syllabus_file: prompts/generator/syllabus/wbjee/chemistry.md
+question_types:
+  mode: exact
+  types:
+    - type: standard_mcq
+      count: 70
+    - type: multiple_correct
+      count: 10

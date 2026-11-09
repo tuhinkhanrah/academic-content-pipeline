@@ -1,0 +1,6 @@
+exam_name: NEET UG
+test_count: 100
+uniqueness_scope: all_papers
+papers:
+- id: full_paper
+  spec: neet_ug.template.yaml

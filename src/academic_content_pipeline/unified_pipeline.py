@@ -50,6 +50,7 @@ from academic_content_pipeline.content_processors import (
     QuestionPaperExtractor,
     TutorialGenerator,
 )
+from academic_content_pipeline.paper_batch import PaperBatchRunner, is_batch_paper_spec
 from academic_content_pipeline.artifact_translator import (
     is_valid_moodle_xml_file,
     translate_assessment_artifact,
@@ -57,6 +58,14 @@ from academic_content_pipeline.artifact_translator import (
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
 from academic_content_pipeline.pipeline_utils import compile_html_to_pdf, setup_logger
 from academic_content_pipeline.resource_paths import resource_path
+from academic_content_pipeline.template_tools import (
+    DEFAULT_MANIFEST_PATH,
+    DEFAULT_TEMPLATE_DIR,
+    TemplateValidationError,
+    format_validation_errors,
+    generate_exam_templates,
+    validate_exam_templates,
+)
 
 logger = logging.getLogger("academic_content_pipeline")
 
@@ -297,6 +306,9 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
     p_syl.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
+    p_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
+    p_syl.add_argument("--resume", action="store_true", help="Resume a checkpointed batch-paper run.")
+    p_syl.add_argument("--max-paper-attempts", type=int, default=3, help="Maximum generation attempts per paper in this run.")
 
 
 def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicator:
@@ -377,6 +389,45 @@ def main():
     p_batch = top_subparsers.add_parser("batch", help="Execute using Gemini Batch API requests.")
     batch_sub = p_batch.add_subparsers(dest="task", required=True)
     add_task_subparsers(batch_sub)
+
+    p_generate_templates = top_subparsers.add_parser(
+        "generate-templates",
+        help="Generate paper-batch and subject chapter-bank templates from exam specs.",
+    )
+    p_generate_templates.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST_PATH,
+        help="Structured exam manifest whose paper specs drive derived templates.",
+    )
+    p_generate_templates.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_TEMPLATE_DIR,
+        help="Directory to write paper, batch, and chapter-bank templates.",
+    )
+    p_generate_templates.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace existing generated template files.",
+    )
+
+    p_validate_templates = top_subparsers.add_parser(
+        "validate-templates",
+        help="Validate exam paper specs and generated batch/chapter-bank templates.",
+    )
+    p_validate_templates.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST_PATH,
+        help="Structured exam manifest to validate against.",
+    )
+    p_validate_templates.add_argument(
+        "--template-dir",
+        type=Path,
+        default=DEFAULT_TEMPLATE_DIR,
+        help="Directory containing paper, batch, and chapter-bank templates.",
+    )
 
     # 2. Task-first direct syntax: `pipeline.py extract --mode ...`
     p_direct_ext = top_subparsers.add_parser("extract", help="Extract questions from PDF question papers.")
@@ -473,8 +524,38 @@ def main():
     p_direct_syl.add_argument("--sample-pdf", type=Path, default=None)
     p_direct_syl.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
+    p_direct_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
+    p_direct_syl.add_argument("--resume", action="store_true", help="Resume a checkpointed batch-paper run.")
+    p_direct_syl.add_argument("--max-paper-attempts", type=int, default=3, help="Maximum generation attempts per paper in this run.")
 
     args = parser.parse_args()
+
+    if args.top_command == "generate-templates":
+        try:
+            generated_paths = generate_exam_templates(
+                manifest_path=args.manifest,
+                output_dir=args.output_dir,
+                force=args.force,
+            )
+        except (FileExistsError, FileNotFoundError, TemplateValidationError) as exc:
+            parser.error(str(exc))
+        print(f"Generated {len(generated_paths)} exam templates in {args.output_dir.resolve()}")
+        return
+
+    if args.top_command == "validate-templates":
+        try:
+            validation_errors = validate_exam_templates(
+                manifest_path=args.manifest,
+                template_dir=args.template_dir,
+            )
+        except (FileNotFoundError, TemplateValidationError) as exc:
+            parser.error(str(exc))
+        if validation_errors:
+            print("Template validation failed:")
+            print(format_validation_errors(validation_errors))
+            sys.exit(1)
+        print(f"Exam templates are valid: {args.template_dir.resolve()}")
+        return
 
     # Determine mode and task based on syntax used
     if args.top_command in ["context", "agent", "remote", "batch"]:
@@ -519,6 +600,21 @@ def main():
             parser.error(
                 "--separate-by-question-type cannot be combined with --num-papers."
             )
+    if task == "generate-paper":
+        if args.num_tests is not None and args.num_tests < 1:
+            parser.error("--num-tests must be at least 1.")
+        if args.max_paper_attempts < 1:
+            parser.error("--max-paper-attempts must be at least 1.")
+        if args.spec is not None:
+            batch_paper_run = is_batch_paper_spec(args.spec, args.num_tests)
+            if args.resume and not batch_paper_run:
+                parser.error("--resume is only supported for batch-paper specs or --num-tests.")
+            if batch_paper_run and args.output_format != "xml":
+                parser.error("Checkpointed batch-paper generation currently requires --output-format xml.")
+            if args.max_paper_attempts != 3 and not batch_paper_run:
+                parser.error("--max-paper-attempts is only supported for batch-paper generation.")
+        elif args.resume or args.num_tests is not None:
+            parser.error("--resume and --num-tests require --spec.")
 
     translation_files: list[Path] = []
     translation_input_root: Path | None = None
@@ -882,7 +978,17 @@ def main():
                 header_text=getattr(args, "header_text", ""),
                 footer_text=getattr(args, "footer_text", ""),
             )
-            mock_generator.process_spec(args.spec, args.output_dir)
+            if is_batch_paper_spec(args.spec, args.num_tests):
+                PaperBatchRunner(mock_generator).run(
+                    args.spec,
+                    args.output_dir,
+                    num_tests=args.num_tests,
+                    resume=args.resume,
+                    force=args.force,
+                    max_attempts=args.max_paper_attempts,
+                )
+            else:
+                mock_generator.process_spec(args.spec, args.output_dir)
 
         elapsed = time.perf_counter() - start_time
         logger.info("⏱️ Total operation time: %.2f seconds (%.2f minutes)", elapsed, elapsed / 60.0)
