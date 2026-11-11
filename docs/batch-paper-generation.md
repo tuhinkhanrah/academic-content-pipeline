@@ -6,6 +6,32 @@ exact duplicate questions, and committed separately. A JSON checkpoint and
 saved AI responses are kept in the output directory so interrupted runs can be
 continued.
 
+## Language-specific outputs
+
+Paper batches use the configured language combination in their filenames and
+checkpoint directories. For example, with `--output-dir output/wbjee`:
+
+```text
+wbjee_english_test_001_mathematics.xml
+wbjee_english_batch_generation.json
+.wbjee_english_batch_generation/
+wbjee_english_bengali_test_001_mathematics.xml
+wbjee_english_bengali_batch_generation.json
+.wbjee_english_bengali_batch_generation/
+```
+
+`--languages english,hindi` similarly uses `english_hindi`. Different language
+runs can share an output directory, but each has independent generation and
+reference-profile checkpoints. They generate separate papers, not translations
+of one English paper. `--force` affects the selected language's batch.
+
+On `--resume`, if no language-specific checkpoint exists and an older
+language-independent checkpoint has the same language settings, the runner
+continues that legacy batch with its original filenames and state. Other
+language combinations start their own new checkpoints. To obtain
+language-specific names for an existing legacy batch, run a new batch rather
+than resuming it.
+
 ## Multiple paper blueprints
 
 The repository includes complete paper and batch templates for all four exams:
@@ -165,9 +191,9 @@ PDF OCR artifacts and their local OCR cache are isolated under the exam output
 directory at `reference/<paper-id>/<reference-content-hash>/` (or `shared` for
 a shared reference). Use a separate output directory for each exam; the
 path-mirrored script does this automatically. A marker prevents different exams
-from sharing the same reference directory. Paper-specific profiles are stored
-in the same directory; the checkpoint records their hashes and the
-paper-to-reference mapping. When an older exam-nested reference directory is
+from sharing the same reference directory. New paper-specific profiles are
+stored in the language-specific batch state; the checkpoint records their
+hashes and the paper-to-reference mapping. When an older exam-nested reference directory is
 needed, its artifacts are copied into the new layout for resume; the originals
 are left untouched. Existing shared-reference batch profiles remain in batch
 state. Previously created global `output/reference` artifacts are not deleted.

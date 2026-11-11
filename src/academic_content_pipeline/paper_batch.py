@@ -24,6 +24,7 @@ from .chapter_generation import (
     group_chapters,
     parse_syllabus_chapters,
 )
+from .content_processors import build_generated_output_stem
 from .reference_paper import (
     REFERENCE_BATCH_SIZE, prepare_reference, prepare_reference_storage, reference_fingerprint,
 )
@@ -1127,8 +1128,26 @@ class PaperBatchRunner:
 
         exam_name = str(batch_spec.get("exam_name", "mock_exam"))
         exam_token = _safe_token(exam_name)
-        manifest_path = output_dir / f"{exam_token}_batch_generation.json"
-        state_dir = output_dir / f".{exam_token}_batch_generation"
+        language_stem = build_generated_output_stem(
+            exam_token, list(getattr(self.generator, "languages", []))
+        )
+        manifest_path = output_dir / f"{language_stem}_batch_generation.json"
+        state_dir = output_dir / f".{language_stem}_batch_generation"
+        legacy_resume = False
+        legacy_manifest_path = output_dir / f"{exam_token}_batch_generation.json"
+        if resume and not manifest_path.exists() and legacy_manifest_path.is_file():
+            try:
+                legacy_manifest = json.loads(legacy_manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Unable to read legacy batch checkpoint: {legacy_manifest_path}") from exc
+            if not isinstance(legacy_manifest, dict) or not isinstance(legacy_manifest.get("configuration"), dict):
+                raise ValueError(f"Invalid legacy batch checkpoint: {legacy_manifest_path}")
+            if legacy_manifest["configuration"].get("languages") == list(getattr(self.generator, "languages", [])):
+                legacy_resume = True
+                manifest_path = legacy_manifest_path
+                state_dir = output_dir / f".{exam_token}_batch_generation"
+                logger.info("Resuming legacy batch checkpoint in its existing filenames: %s", manifest_path)
+        output_stem = exam_token if legacy_resume else language_stem
         state_dir.mkdir(parents=True, exist_ok=True)
         source_fingerprints = self._source_fingerprints(spec_path, papers)
         configuration = self._configuration(
@@ -1155,7 +1174,7 @@ class PaperBatchRunner:
                 "test_index": test_index,
                 "paper_id": paper["id"],
                 "question_count": paper["question_count"],
-                "output_file": f"{exam_token}_test_{test_index:03d}_{paper['id']}.xml",
+                "output_file": f"{output_stem}_test_{test_index:03d}_{paper['id']}.xml",
                 "status": "pending",
                 "attempts": [],
                 "question_fingerprints": [],
@@ -1277,7 +1296,7 @@ class PaperBatchRunner:
                     "--num-tests to append more sets, or use a new output directory."
                 )
             expected_saved_items = [
-                (test_index, paper["id"], f"{exam_token}_test_{test_index:03d}_{paper['id']}.xml")
+                (test_index, paper["id"], f"{output_stem}_test_{test_index:03d}_{paper['id']}.xml")
                 for test_index in range(1, saved_test_count + 1)
                 for paper in papers
             ]
@@ -1372,7 +1391,11 @@ class PaperBatchRunner:
                 path = reference_papers[paper_id]
                 fingerprint = configuration["reference_papers"][paper_id]
                 reference_dir = prepare_reference_storage(output_dir, exam_name, paper_id, fingerprint)
-                profile_path = reference_dir / "reference_style_profile.json"
+                profile_path = (
+                    reference_dir / "reference_style_profile.json"
+                    if legacy_resume
+                    else state_dir / "reference" / paper_id / "reference_style_profile.json"
+                )
                 saved_hash = profile_hashes.get(paper_id)
                 if saved_hash is not None and (
                     not profile_path.is_file() or _sha256_file(profile_path) != saved_hash
@@ -1574,7 +1597,7 @@ class PaperBatchRunner:
                     f"test_{item['test_index']:03d}_{item['paper_id']}_"
                     f"attempt_{attempt_record['attempt']:02d}"
                 )
-                artifact_stem = f"{exam_token}_test_{item['test_index']:03d}_{item['paper_id']}"
+                artifact_stem = f"{output_stem}_test_{item['test_index']:03d}_{item['paper_id']}"
                 additional_prompt = (
                     f"\n\nBATCH GENERATION REQUIREMENTS:\n"
                     f"- This is test set {item['test_index']} of {test_count}, "

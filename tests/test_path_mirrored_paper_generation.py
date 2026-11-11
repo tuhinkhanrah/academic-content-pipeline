@@ -16,6 +16,9 @@ from run_path_mirrored_paper_generation import (
     main,
 )
 from academic_content_pipeline.unified_pipeline import main as pipeline_main
+from run_path_mirrored_extraction import infer_metadata_from_path as infer_extraction_metadata
+from run_path_mirrored_question_generation import infer_metadata_from_path as infer_question_metadata
+from run_path_mirrored_tutorial import infer_metadata_from_path as infer_tutorial_metadata
 
 
 class PathMirroredPaperGenerationTests(unittest.TestCase):
@@ -58,6 +61,9 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             "neet_ug/neet_ug.template.yaml": "neet_ug",
             "wbjee/mathematics.template.yaml": "wbjee",
             "other/custom_exam.yaml": "general",
+            "2026/21-06-2026/paper.yaml": "general",
+            "wbjee/2026/21-06-2026/paper.yaml": "wbjee",
+            "neet_ug/2027/01-01-2027/paper.yaml": "neet_ug",
         }
         for relative_path, expected_standard in cases.items():
             with self.subTest(relative_path=relative_path):
@@ -65,6 +71,21 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     expected_standard,
                     infer_standard_from_path(Path(relative_path)),
                 )
+
+    def test_metadata_inference_retains_year_tags_and_ignores_date_components(self):
+        cases = [
+            (Path("2026/21-06-2026/paper.pdf"), "general", ["year:2026"]),
+            (Path("wbjee/2026/21-06-2026/paper.pdf"), "wbjee", ["year:2026"]),
+            (Path("neet_ug/2027/01-01-2027/paper.pdf"), "neet_ug", ["year:2027"]),
+        ]
+        for path, standard, years in cases:
+            for infer in (
+                lambda p: infer_extraction_metadata(p, Path(".")),
+                infer_question_metadata,
+                infer_tutorial_metadata,
+            ):
+                with self.subTest(path=path, infer=infer):
+                    self.assertEqual(infer(path), (standard, years))
 
     def test_command_includes_batch_options(self):
         command = command_for_spec(

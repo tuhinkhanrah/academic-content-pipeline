@@ -65,7 +65,7 @@ def infer_metadata_from_path(input_path: Path) -> tuple[str, List[str]]:
     if standard == "general":
         for part in path_parts:
             normalized = normalize_standard(part)
-            if normalized not in {"", "general", "2026", "21_06_2026"} and any(
+            if normalized not in {"", "general"} and any(
                 token in part.lower() for token in ("neet", "jee", "wbjee")
             ):
                 standard = normalized

@@ -66,7 +66,7 @@ def infer_metadata_from_path(pdf_path: Path, source_root: Path) -> tuple[str, Li
     if standard == "general":
         for part in path_parts:
             normalized = normalize_standard(part)
-            if normalized and normalized not in {"general", "2026", "21_06_2026"} and any(token in part.lower() for token in ("neet", "jee", "wbjee")):
+            if normalized and normalized != "general" and any(token in part.lower() for token in ("neet", "jee", "wbjee")):
                 standard = normalized
                 break
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import yaml
 
 from academic_content_pipeline.content_processors import PaperGenerator
+from academic_content_pipeline.reference_paper import reference_fingerprint, reference_storage_dir
 from academic_content_pipeline.paper_batch import (
     REPOSITORY_ROOT,
     PaperBatchRunner,
@@ -123,6 +124,135 @@ class PaperBatchTests(unittest.TestCase):
         (root / "syllabus.md").write_text("Test syllabus", encoding="utf-8")
         return spec_path
 
+    def test_language_runs_have_independent_outputs_and_checkpoints(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "out"
+            cases = [
+                (["english"], "english"),
+                (["english", "bengali"], "english_bengali"),
+                (["english", "hindi"], "english_hindi"),
+            ]
+            for languages, suffix in cases:
+                generator = FakePaperGenerator([f"question {suffix}"])
+                generator.languages = languages
+                result = PaperBatchRunner(generator).run(spec, out, resume=True)
+                self.assertEqual(result[0].name, f"sample_exam_{suffix}_test_001_paper.xml")
+                self.assertTrue((out / f"sample_exam_{suffix}_batch_generation.json").is_file())
+                self.assertTrue((out / f".sample_exam_{suffix}_batch_generation").is_dir())
+            for languages, suffix in cases:
+                generator = FakePaperGenerator([])
+                generator.languages = languages
+                result = PaperBatchRunner(generator).run(spec, out, resume=True)
+                self.assertEqual(result[0].name, f"sample_exam_{suffix}_test_001_paper.xml")
+                self.assertFalse(generator.calls)
+
+            other_files = [
+                path for path in out.rglob("*")
+                if path.is_file() and "sample_exam_english_bengali" in str(path.relative_to(out))
+            ]
+            before_force = {path: path.read_bytes() for path in other_files}
+            PaperBatchRunner(FakePaperGenerator(["replacement"])).run(spec, out, force=True)
+            self.assertEqual({path: path.read_bytes() for path in other_files}, before_force)
+            bengali = FakePaperGenerator([])
+            bengali.languages = ["english", "bengali"]
+            PaperBatchRunner(bengali).run(spec, out, resume=True)
+            self.assertFalse(bengali.calls)
+
+    def test_legacy_checkpoint_resumes_without_affecting_other_languages(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(FakePaperGenerator(
+                    ["saved"], fail_after_saving_response=True
+                )).run(spec, out)
+            new_manifest = out / "sample_exam_english_batch_generation.json"
+            legacy_manifest = out / "sample_exam_batch_generation.json"
+            manifest = json.loads(new_manifest.read_text(encoding="utf-8"))
+            manifest["items"][0]["output_file"] = "sample_exam_test_001_paper.xml"
+            legacy_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+            new_manifest.unlink()
+            (out / ".sample_exam_english_batch_generation").rename(out / ".sample_exam_batch_generation")
+
+            other = FakePaperGenerator(["bengali"])
+            other.languages = ["english", "bengali"]
+            result = PaperBatchRunner(other).run(spec, out, resume=True)
+            self.assertEqual(result[0].name, "sample_exam_english_bengali_test_001_paper.xml")
+            resumed = FakePaperGenerator([])
+            result = PaperBatchRunner(resumed).run(spec, out, resume=True)
+            self.assertEqual(result[0].name, "sample_exam_test_001_paper.xml")
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
+            self.assertFalse(new_manifest.exists())
+
+    def test_paper_reference_profiles_do_not_conflict_across_languages(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            reference = root / "ref.md"
+            reference.write_text("1. Reference", encoding="utf-8")
+            analyses = []
+
+            def setup(languages, response, mode):
+                generator = FakePaperGenerator([response])
+                generator.languages = languages
+                generator.reference_papers = {"paper": reference}
+                generator.reference_analysis_mode = mode
+                generator.ocr_engine = object()
+                generator.communicator.generate = lambda **kwargs: analyses.append(mode) or json.dumps({
+                    "subjects": {"Biology": {"style": mode, "chapters": {}, "examples": []}}
+                })
+                return generator
+
+            out = root / "out"
+            PaperBatchRunner(setup(["english"], "first", "full")).run(spec, out)
+            PaperBatchRunner(setup(["english", "bengali"], "second", "batched")).run(spec, out)
+            self.assertEqual(analyses, ["full", "batched"])
+            english = setup(["english"], "unused", "full")
+            PaperBatchRunner(english).run(spec, out, num_tests=2, resume=True)
+            self.assertEqual(analyses, ["full", "batched"])
+            self.assertEqual(english.calls[0]["reference_profile"]["subjects"]["Biology"]["style"], "full")
+
+    def test_legacy_paper_reference_profile_resumes_without_reanalysis(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            reference = root / "reference.md"
+            reference.write_text("1. Reference", encoding="utf-8")
+            analyses = []
+
+            def setup(generator):
+                generator.reference_papers = {"paper": reference}
+                generator.ocr_engine = object()
+                generator.communicator.generate = lambda **kwargs: analyses.append(1) or json.dumps({
+                    "subjects": {"Biology": {"style": "Style", "chapters": {}, "examples": []}}
+                })
+                return generator
+
+            out = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(setup(FakePaperGenerator(
+                    ["saved"], fail_after_saving_response=True
+                ))).run(spec, out)
+            new_state = out / ".sample_exam_english_batch_generation"
+            profile = new_state / "reference" / "paper" / "reference_style_profile.json"
+            reference_dir = reference_storage_dir(out, "paper", reference_fingerprint(reference))
+            reference_dir.mkdir(parents=True, exist_ok=True)
+            (reference_dir / profile.name).write_bytes(profile.read_bytes())
+            new_manifest = out / "sample_exam_english_batch_generation.json"
+            manifest = json.loads(new_manifest.read_text(encoding="utf-8"))
+            manifest["items"][0]["output_file"] = "sample_exam_test_001_paper.xml"
+            (out / "sample_exam_batch_generation.json").write_text(json.dumps(manifest), encoding="utf-8")
+            new_manifest.unlink()
+            new_state.rename(out / ".sample_exam_batch_generation")
+            resumed = setup(FakePaperGenerator([]))
+            result = PaperBatchRunner(resumed).run(spec, out, resume=True)
+            self.assertEqual(result[0].name, "sample_exam_test_001_paper.xml")
+            self.assertEqual(analyses, [1])
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
+
     def test_batch_reference_defaults_cli_precedence_and_disable(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -166,7 +296,7 @@ class PaperBatchTests(unittest.TestCase):
                         for profile in (call["reference_profile"] for call in generator.calls)
                     ]
                     self.assertEqual(actual, expected)
-                    config = json.loads((out / "sample_exam_batch_generation.json").read_text(encoding="utf-8"))["configuration"]
+                    config = json.loads((out / "sample_exam_english_batch_generation.json").read_text(encoding="utf-8"))["configuration"]
                     if case in {"defaults", "keyed"}:
                         fingerprints = config["reference_papers"]
                         self.assertEqual(fingerprints["paper1"]["sha256"], hashlib.sha256((refs / f"{expected[0]}.md").read_bytes()).hexdigest())
@@ -257,25 +387,18 @@ class PaperBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "interrupted"):
                 PaperBatchRunner(interrupted).run(spec, out)
             self.assertEqual(analyses, ["FIRST_REFERENCE", "SECOND_REFERENCE"])
-            profiles1 = list((out / "reference" / "paper1").glob("*/reference_style_profile.json"))
-            profiles2 = list((out / "reference" / "paper2").glob("*/reference_style_profile.json"))
-            self.assertEqual(len(profiles1), 1)
-            self.assertEqual(len(profiles2), 1)
-            legacy_profiles = []
-            for profile in (profiles1[0], profiles2[0]):
-                legacy = out / "reference" / "sample_exam" / profile.parent.parent.name / profile.parent.name
-                legacy.parent.mkdir(parents=True, exist_ok=True)
-                profile.parent.rename(legacy)
-                legacy_profiles.append(legacy / profile.name)
-            original = legacy_profiles[1].read_text(encoding="utf-8")
-            legacy_profiles[1].write_text(original + " ", encoding="utf-8")
+            profile_root = out / ".sample_exam_english_batch_generation" / "reference"
+            profile1 = profile_root / "paper1" / "reference_style_profile.json"
+            profile2 = profile_root / "paper2" / "reference_style_profile.json"
+            self.assertTrue(profile1.is_file())
+            original = profile2.read_text(encoding="utf-8")
+            profile2.write_text(original + " ", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "paper2.*missing or changed"):
                 PaperBatchRunner(setup(FakePaperGenerator([]))).run(spec, out, resume=True)
-            profiles2[0].write_text(original, encoding="utf-8")
+            profile2.write_text(original, encoding="utf-8")
             resumed = setup(FakePaperGenerator(["response two"]))
             PaperBatchRunner(resumed).run(spec, out, resume=True)
             self.assertEqual(len(analyses), 2)
-            self.assertTrue(all(path.is_file() for path in legacy_profiles))
             self.assertEqual(
                 [call["reference_profile"]["subjects"]["Biology"]["style"] for call in resumed.calls],
                 ["FIRST_REFERENCE", "SECOND_REFERENCE"],
@@ -337,12 +460,6 @@ class PaperBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "analysis interrupted"):
                 PaperBatchRunner(setup(FakePaperGenerator([]), fail=True)).run(spec, root / "out")
             self.assertEqual(len(calls), 3)
-            for paper_id in ("paper1", "paper2"):
-                new_parent = root / "out" / "reference" / paper_id
-                existing = next(new_parent.iterdir())
-                old_parent = root / "out" / "reference" / "sample_exam" / paper_id
-                old_parent.mkdir(parents=True, exist_ok=True)
-                existing.rename(old_parent / existing.name)
             PaperBatchRunner(setup(FakePaperGenerator(["first", "second"]))).run(
                 spec, root / "out", resume=True
             )
@@ -420,7 +537,7 @@ class PaperBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "interrupted"):
                 PaperBatchRunner(generator).run(spec_path, root / "out")
             self.assertEqual(len(calls), 1)
-            manifest_path = root / "out" / "sample_exam_batch_generation.json"
+            manifest_path = root / "out" / "sample_exam_english_batch_generation.json"
             original_manifest = manifest_path.read_text(encoding="utf-8")
             manifest = json.loads(original_manifest)
             self.assertEqual(manifest["configuration"]["reference_analysis"]["batch_pages"], 20)
@@ -432,7 +549,7 @@ class PaperBatchTests(unittest.TestCase):
                     spec_path, root / "out", resume=True
                 )
             manifest_path.write_text(original_manifest, encoding="utf-8")
-            profile_path = root / "out" / ".sample_exam_batch_generation" / "reference_style_profile.json"
+            profile_path = root / "out" / ".sample_exam_english_batch_generation" / "reference_style_profile.json"
             saved_profile = profile_path.read_text(encoding="utf-8")
             profile_path.write_text(saved_profile + " ", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "reference style profile is missing or changed"):
@@ -502,7 +619,7 @@ class PaperBatchTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(len(generator.calls), 1)
             manifest = json.loads(
-                (output_dir / "sample_exam_batch_generation.json").read_text(
+                (output_dir / "sample_exam_english_batch_generation.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -530,14 +647,14 @@ class PaperBatchTests(unittest.TestCase):
             self.assertEqual(
                 [path.name for path in results],
                 [
-                    "sample_exam_test_001_paper.xml",
-                    "sample_exam_test_002_paper.xml",
+                    "sample_exam_english_test_001_paper.xml",
+                    "sample_exam_english_test_002_paper.xml",
                 ],
             )
             self.assertEqual(first_result[0].read_bytes(), first_content)
             self.assertTrue(results[1].is_file())
             manifest = json.loads(
-                (output_dir / "sample_exam_batch_generation.json").read_text(
+                (output_dir / "sample_exam_english_batch_generation.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -580,7 +697,7 @@ class PaperBatchTests(unittest.TestCase):
                 output_dir,
             )
 
-            manifest_path = output_dir / "sample_exam_batch_generation.json"
+            manifest_path = output_dir / "sample_exam_english_batch_generation.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             configuration = manifest["configuration"]
             serialized = json.dumps(manifest)
@@ -700,7 +817,7 @@ class PaperBatchTests(unittest.TestCase):
                 PaperBatchRunner(generator).run(spec_path, output_dir)
 
             manifest = json.loads(
-                (output_dir / "sample_exam_batch_generation.json").read_text(
+                (output_dir / "sample_exam_english_batch_generation.json").read_text(
                     encoding="utf-8"
                 )
             )

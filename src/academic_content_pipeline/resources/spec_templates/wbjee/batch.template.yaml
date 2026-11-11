@@ -4,5 +4,7 @@ uniqueness_scope: all_papers
 papers:
 - id: mathematics
   spec: mathematics.template.yaml
+  reference_paper: '../../../../../../question-papers-vault/wbjee/2023/2024010974.pdf'
 - id: physics_chemistry
   spec: physics_chemistry.template.yaml
+  reference_paper: '../../../../../../question-papers-vault/wbjee/2023/2024010970.pdf'

@@ -4,3 +4,4 @@ uniqueness_scope: all_papers
 papers:
 - id: paper1
   spec: jee_main.template.yaml
+  reference_paper: '../../../../../../question-papers-vault/jee_main/2026/2026-04-02/Shift_1/202604092096865379.pdf'
