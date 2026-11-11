@@ -51,6 +51,7 @@ from academic_content_pipeline.content_processors import (
     TutorialGenerator,
 )
 from academic_content_pipeline.paper_batch import PaperBatchRunner, is_batch_paper_spec
+from academic_content_pipeline.reference_paper import parse_reference_arguments
 from academic_content_pipeline.artifact_translator import (
     is_valid_moodle_xml_file,
     translate_assessment_artifact,
@@ -303,11 +304,19 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
-    p_syl.add_argument("--sample-pdf", type=Path, default=None, help="Optional sample exam PDF for pattern matching.")
+    reference_options = p_syl.add_mutually_exclusive_group()
+    reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
+    reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
+    reference_options.add_argument("--no-reference-paper", action="store_true", help="Ignore reference papers configured in the batch template.")
+    p_syl.add_argument("--reference-analysis-mode", choices=["batched", "full"], default="batched")
     p_syl.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
     p_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
-    p_syl.add_argument("--resume", action="store_true", help="Resume a checkpointed batch-paper run.")
+    p_syl.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a checkpointed batch-paper run, or start a new run if no checkpoint exists.",
+    )
     p_syl.add_argument("--max-paper-attempts", type=int, default=3, help="Maximum generation attempts per paper in this run.")
 
 
@@ -521,11 +530,19 @@ def main():
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
-    p_direct_syl.add_argument("--sample-pdf", type=Path, default=None)
+    reference_options = p_direct_syl.add_mutually_exclusive_group()
+    reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
+    reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
+    reference_options.add_argument("--no-reference-paper", action="store_true", help="Ignore reference papers configured in the batch template.")
+    p_direct_syl.add_argument("--reference-analysis-mode", choices=["batched", "full"], default="batched")
     p_direct_syl.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
-    p_direct_syl.add_argument("--resume", action="store_true", help="Resume a checkpointed batch-paper run.")
+    p_direct_syl.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a checkpointed batch-paper run, or start a new run if no checkpoint exists.",
+    )
     p_direct_syl.add_argument("--max-paper-attempts", type=int, default=3, help="Maximum generation attempts per paper in this run.")
 
     args = parser.parse_args()
@@ -961,6 +978,10 @@ def main():
                 logger.error("Please specify --spec (YAML spec or syllabus markdown/pdf).")
                 sys.exit(1)
 
+            reference_paper, reference_papers = parse_reference_arguments(args.reference_paper)
+            is_batch = is_batch_paper_spec(args.spec, args.num_tests)
+            if reference_papers and not is_batch:
+                raise ValueError("Paper-specific references require a batch run; use an unkeyed reference for a single paper.")
             mock_generator = PaperGenerator(
                 communicator=communicator,
                 ocr_engine=ocr_engine,
@@ -972,13 +993,16 @@ def main():
                 output_format=args.output_format,
                 pdf_engine=args.pdf_engine,
                 sample_pdf=args.sample_pdf,
+                reference_paper=reference_paper,
+                reference_papers=reference_papers,
+                reference_analysis_mode=args.reference_analysis_mode,
                 exam_duration_minutes=getattr(args, "exam_duration_minutes", None),
                 mcq_types_path=args.mcq_types,
                 watermark_text=getattr(args, "watermark_text", ""),
                 header_text=getattr(args, "header_text", ""),
                 footer_text=getattr(args, "footer_text", ""),
             )
-            if is_batch_paper_spec(args.spec, args.num_tests):
+            if is_batch:
                 PaperBatchRunner(mock_generator).run(
                     args.spec,
                     args.output_dir,
@@ -986,6 +1010,7 @@ def main():
                     resume=args.resume,
                     force=args.force,
                     max_attempts=args.max_paper_attempts,
+                    no_reference_papers=args.no_reference_paper,
                 )
             else:
                 mock_generator.process_spec(args.spec, args.output_dir)

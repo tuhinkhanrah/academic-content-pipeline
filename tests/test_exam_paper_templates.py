@@ -36,6 +36,65 @@ MCQ_TYPES_PATH = (
 
 
 class ExamPaperTemplateTests(unittest.TestCase):
+    def test_jee_main_physics_diagram_allocation(self):
+        paper = _read_spec(TEMPLATE_ROOT / "jee_main" / "jee_main.template.yaml")
+        for sections in (paper["sections"], paper["instruction_profile"]["sections"]):
+            section = next(item for item in sections if item["id"] == "physics_section_a")
+            counts = {item["type"]: item["count"] for item in section["question_types"]}
+            self.assertEqual(counts["diagram_image"], 7)
+            self.assertEqual(counts["standard_mcq"], 8)
+            self.assertEqual(sum(counts.values()), 20)
+        bank = _read_spec(
+            TEMPLATE_ROOT / "jee_main" / "physics_chapter_bank.template.yaml"
+        )
+        weights = {
+            item["type"]: item["weight"] for item in bank["question_types"]["types"]
+        }
+        self.assertAlmostEqual(weights["diagram_image"], 7 / 25)
+        self.assertAlmostEqual(weights["standard_mcq"], 8 / 25)
+
+    def test_physics_diagram_allocations_across_exams(self):
+        cases = {
+            "neet_ug": ({"neet_ug.template.yaml": (12, 45)}, 12 / 45),
+            "jee_main": ({"jee_main.template.yaml": (7, 25)}, 7 / 25),
+            "jee_advanced": (
+                {"paper1.template.yaml": (3, 16), "paper2.template.yaml": (3, 18)},
+                6 / 34,
+            ),
+            "wbjee": ({"physics_chemistry.template.yaml": (11, 40)}, 11 / 40),
+        }
+        for exam, (papers, expected_weight) in cases.items():
+            with self.subTest(exam=exam):
+                for filename, (expected_diagrams, expected_total) in papers.items():
+                    paper = _read_spec(TEMPLATE_ROOT / exam / filename)
+                    for sections in (
+                        paper["sections"],
+                        paper["instruction_profile"]["sections"],
+                    ):
+                        physics_sections = [
+                            section for section in sections
+                            if section.get("subject", "all") in {"Physics", "all"}
+                        ]
+                        self.assertEqual(
+                            sum(section["question_count"] for section in physics_sections),
+                            expected_total,
+                        )
+                        self.assertEqual(
+                            sum(
+                                allocation["count"]
+                                for section in physics_sections
+                                for allocation in section["question_types"]
+                                if allocation["type"] == "diagram_image"
+                            ),
+                            expected_diagrams,
+                        )
+                bank = _read_spec(TEMPLATE_ROOT / exam / "physics_chapter_bank.template.yaml")
+                weights = {
+                    item["type"]: item["weight"]
+                    for item in bank["question_types"]["types"]
+                }
+                self.assertAlmostEqual(weights["diagram_image"], expected_weight, places=6)
+
     def test_instruction_profile_converts_scoring_to_moodle_xml_fields(self):
         profile = {
             "sections": [
@@ -166,6 +225,20 @@ class ExamPaperTemplateTests(unittest.TestCase):
                     self.assertEqual(spec["total_questions"], 120)
                     profile = spec["question_types"]
                     self.assertEqual(profile["mode"], "adaptive")
+                    if exam in {"jee_advanced", "jee_main", "wbjee"} and subject in {
+                        "physics",
+                        "chemistry",
+                    }:
+                        configured_types = {
+                            item["type"] for item in profile["types"]
+                        }
+                        self.assertTrue(
+                            {
+                                "diagram_image",
+                                "match_list",
+                                "statement_based_2",
+                            }.issubset(configured_types)
+                        )
                     self.assertAlmostEqual(
                         sum(item["weight"] for item in profile["types"]),
                         1.0,

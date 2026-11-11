@@ -32,6 +32,9 @@ from .ai_communicators import (
 from .artifact_translator import translate_assessment_artifact
 from .mistral_ocr import MistralOCREngine
 from .output_renderers import OutputRenderer
+from .reference_paper import (
+    prepare_reference, prepare_reference_storage, reference_fingerprint, reference_guidance,
+)
 from .resource_paths import resource_path
 from .pipeline_utils import (
     assemble_prompt_files,
@@ -283,6 +286,7 @@ class TutorialGenerator:
             contents=multimodal_batch,
             output_filename=output_artifact_name,
             prompt_snapshot_path=snapshot_path,
+            purpose=f"generate tutorial for {input_file.name}",
         )
 
         final_pdf_path = self.renderer.render(
@@ -1058,6 +1062,7 @@ class QuestionPaperExtractor:
             contents=multimodal_batch,
             output_filename=f"{pdf_path.stem}_instruction_page_check.json",
             prompt_snapshot_path=snapshot_path,
+            purpose=f"classify instruction page {page_data.page_num} of {pdf_path.name}",
         )
         parsed_summary = self.parse_instruction_page_summary(raw_response)
         try:
@@ -1562,6 +1567,7 @@ class QuestionPaperExtractor:
                             contents=multimodal_batch,
                             output_filename=f"{batch_id}.xml",
                             prompt_snapshot_path=snapshot_path,
+                            purpose=f"extract questions from {pdf_path.name}, pages {batch_start}-{batch_end}",
                         )
                     except Exception as exc:
                         record["status"] = "failed"
@@ -1682,6 +1688,7 @@ class QuestionPaperExtractor:
             contents=multimodal_batch,
             output_filename=f"{output_stem}.{output_extension}",
             prompt_snapshot_path=snapshot_path,
+            purpose=f"extract questions from {pdf_path.name} for PDF output",
         )
         return OutputRenderer(
             "pdf",
@@ -2061,6 +2068,7 @@ class QuestionGenerator:
                 contents=multimodal_batch,
                 output_filename=f"{output_stem}.{extension}",
                 prompt_snapshot_path=snapshot_path,
+                purpose=f"generate chapter questions for {input_file.name} ({label}, {output_stem})",
             )
             if not generated or not generated.strip():
                 raise ValueError(
@@ -2242,6 +2250,7 @@ class QuestionGenerator:
                             f"{generation_stem}_question_type_allocation.json"
                         ),
                         prompt_snapshot_path=allocation_snapshot,
+                        purpose=f"plan question types for chapter {input_file.name}",
                     )
                     separate_type_allocations = (
                         parse_adaptive_question_type_plan(
@@ -2869,6 +2878,9 @@ class PaperGenerator:
         watermark_text: str = "",
         header_text: str = "",
         footer_text: str = "",
+        reference_paper: Optional[Path] = None,
+        reference_analysis_mode: str = "batched",
+        reference_papers: Optional[Dict[str, Path]] = None,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
@@ -2890,7 +2902,18 @@ class PaperGenerator:
             header_text=self.header_text,
             footer_text=self.footer_text,
         )
-        self.sample_pdf = sample_pdf
+        if sample_pdf is not None and reference_paper is not None:
+            raise ValueError("Use only one of sample_pdf and reference_paper.")
+        if sample_pdf is not None:
+            logger.warning("sample_pdf is deprecated; use reference_paper instead.")
+        self.reference_paper = Path(reference_paper or sample_pdf) if reference_paper or sample_pdf else None
+        self.reference_papers = {key: Path(path) for key, path in (reference_papers or {}).items()}
+        if self.reference_paper is not None and self.reference_papers:
+            raise ValueError("A shared reference cannot be combined with paper-specific references.")
+        if reference_analysis_mode not in {"batched", "full"}:
+            raise ValueError("Invalid reference analysis mode.")
+        self.reference_analysis_mode = reference_analysis_mode
+        self.reference_profile: Optional[Dict[str, Any]] = None
         self.staging_dir = Path(staging_dir)
         self.exam_duration_minutes = exam_duration_minutes
         self.mcq_types_path = Path(mcq_types_path)
@@ -2962,6 +2985,7 @@ class PaperGenerator:
 
         # 1. Aggregate syllabi
         syllabus_blocks = []
+        reference_chapters: Dict[str, List[str]] = {}
         for subj in subjects:
             subj_name = subj.get("name", "Subject")
             total_qs = subj.get("total_questions", 0)
@@ -3001,10 +3025,31 @@ class PaperGenerator:
                     syllabus_content=content,
                 )
             )
+            reference_chapters[subj_name] = [
+                match.group(1).strip()
+                for match in re.finditer(r"(?m)^\s*#{1,6}\s+(.+?)\s*#*\s*$", content)
+            ]
             syllabus_elapsed = time.perf_counter() - syllabus_start
             logger.info("⏱️ [GENERATE-PAPER SYLLABUS] %s completed in %.2f seconds (%.2f minutes)", s_file.name or subj_name, syllabus_elapsed, syllabus_elapsed / 60.0)
 
         all_syllabi_text = ("\n" + "=" * 40 + "\n").join(syllabus_blocks)
+        if self.reference_paper is not None or self.reference_profile is not None:
+            subject_names = [str(subject["name"]) for subject in subjects]
+            if self.reference_profile is None:
+                if self.reference_paper is None:
+                    raise ValueError("Reference profile requires a reference paper.")
+                reference_dir = prepare_reference_storage(
+                    output_dir, str(exam_name), "paper", reference_fingerprint(self.reference_paper)
+                )
+                self.reference_profile = prepare_reference(
+                    self.reference_paper, subject_names, self.communicator,
+                    self.ocr_engine, reference_dir,
+                    reference_dir / "reference_style_profile.json", reference_chapters,
+                    analysis_mode=self.reference_analysis_mode,
+                )
+            additional_prompt += reference_guidance(
+                self.reference_profile, subject_names, all_syllabi_text
+            )
 
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
@@ -3060,6 +3105,10 @@ class PaperGenerator:
                 contents=multimodal_batch,
                 output_filename=output_artifact_name,
                 prompt_snapshot_path=snapshot_path,
+                purpose=(
+                    f"generate paper questions for {', '.join(str(subject.get('name', 'Subject')) for subject in subjects)} "
+                    f"({generation_stem})"
+                ),
             )
             if not isinstance(raw_output, str) or not raw_output.strip():
                 raise ValueError(f"AI returned an empty response for spec: {spec_path}")

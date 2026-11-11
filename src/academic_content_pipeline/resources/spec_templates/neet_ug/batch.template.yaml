@@ -4,3 +4,4 @@ uniqueness_scope: all_papers
 papers:
 - id: full_paper
   spec: neet_ug.template.yaml
+  reference_paper: '../../../../../../question-papers-vault/neet_ug/2026/21-06-2026/NEET UG - 2026 [SET 80]/Paper_20260623155537.pdf'

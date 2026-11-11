@@ -317,6 +317,7 @@ def _translate_moodle_xml_in_chunks(
                     f"{Path(output_filename).stem}_part_{chunk_index:03d}.xml"
                 ),
                 prompt_snapshot_path=chunk_snapshot,
+                purpose=f"translate Moodle XML to {target_language}, chunk {chunk_index}/{chunk_count} ({output_filename})",
             )
         if not chunk_output or not chunk_output.strip():
             raise ValueError(
@@ -458,6 +459,7 @@ def translate_assessment_artifact(
             contents=prompt,
             output_filename=output_filename,
             prompt_snapshot_path=prompt_snapshot_path,
+            purpose=f"translate {artifact_format} artifact to {target_language} ({output_filename})",
         )
         if not translated_artifact or not translated_artifact.strip():
             raise ValueError(f"Translator returned an empty {artifact_format} artifact.")

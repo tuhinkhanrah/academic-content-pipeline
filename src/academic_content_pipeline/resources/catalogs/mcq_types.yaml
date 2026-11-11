@@ -2,7 +2,7 @@ mcq_types:
 - id: MCQ_STD_001
   name: standard_mcq
   display_name: Standard MCQ
-  description: Single-best-answer multiple choice question with four options.
+  description: Single-best-answer multiple-choice question with exactly one correct option, exported as Moodle multichoice. The stem may be conceptual, calculation-based, diagram-, graph-, or image-based, statement-based, assertion-reason, or matching/list-based. Honor any separately configured question-style allocations. Excludes Moodle numerical and multiple-correct questions.
 - id: MCQ_ASSERT_001
   name: assertion_reason
   display_name: Assertion-Reason

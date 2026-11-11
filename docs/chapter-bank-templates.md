@@ -40,12 +40,24 @@ validation accepts `--template-dir`.
 | WBJEE | Physics | [physics_chapter_bank.template.yaml](../src/academic_content_pipeline/resources/spec_templates/wbjee/physics_chapter_bank.template.yaml) |
 | WBJEE | Chemistry | [chemistry_chapter_bank.template.yaml](../src/academic_content_pipeline/resources/spec_templates/wbjee/chemistry_chapter_bank.template.yaml) |
 
-The NEET UG templates preserve the existing subject-specific type weights.
-JEE Main weights reflect its 20 MCQs to 5 numerical questions per subject.
+The NEET UG templates reflect the subject-specific paper allocations. JEE Main
+weights reflect its 20 MCQs to 5 numerical questions per subject.
 JEE Advanced weights aggregate the corresponding question formats in Papers 1
 and 2; linked numerical-stem questions are represented by the registered
 `numerical` type. WBJEE weights reflect the section counts and distinguish
 single-correct MCQs from multiple-correct questions.
+
+Physics and Chemistry paper templates explicitly allocate diagram/image-based,
+matching-list, and statement-based questions within their existing MCQ section
+counts. Physics has a higher diagram allocation than Chemistry. These
+allocations flow into the generated chapter-bank adaptive weights; those
+weights are preferences, so the generator may still adjust the mix to suit a
+chapter.
+
+Physics paper targets are 12 of 45 questions for NEET UG, 7 of 25 for JEE
+Main, 3 of 16 and 3 of 18 for JEE Advanced Papers 1 and 2, and 11 of 40 for
+WBJEE. JEE Advanced's diagram targets are limited to its single-correct
+section; numerical and multiple-correct allocations remain unchanged.
 
 Use the corresponding subject spec when generating questions from a chapter
 source file or directory. For example:

@@ -2,6 +2,9 @@
 schema_version: '1.0'
 exam_name: JEE Advanced
 paper_title: Paper 1
+chapter_generation:
+  enabled: true
+  max_questions_per_request: 15
 total_marks: 180
 paper_instructions:
   - This paper has Mathematics, Physics, and Chemistry sections.
@@ -37,13 +40,43 @@ instruction_profile:
       - ambiguous wording
       - out-of-syllabus concepts
   sections:
-    - id: single_correct
+    - id: mathematics_single_correct
       name: Single Correct Option
-      subject: all
+      subject: Mathematics
       question_count: 4
       question_types:
         - type: standard_mcq
           count: 4
+      scoring:
+        correct: 3
+        incorrect: -1
+        unanswered: 0
+    - id: physics_single_correct
+      name: Single Correct Option
+      subject: Physics
+      question_count: 4
+      question_types:
+        - type: diagram_image
+          count: 3
+        - type: statement_based_2
+          count: 1
+      scoring:
+        correct: 3
+        incorrect: -1
+        unanswered: 0
+    - id: chemistry_single_correct
+      name: Single Correct Option
+      subject: Chemistry
+      question_count: 4
+      question_types:
+        - type: standard_mcq
+          count: 1
+        - type: diagram_image
+          count: 1
+        - type: statement_based_2
+          count: 1
+        - type: statement_based_3
+          count: 1
       scoring:
         correct: 3
         incorrect: -1
@@ -92,13 +125,43 @@ instruction_profile:
         incorrect: -1
         unanswered: 0
 sections:
-  - id: single_correct
+  - id: mathematics_single_correct
     name: Single Correct Option
-    subject: all
+    subject: Mathematics
     question_count: 4
     question_types:
       - type: standard_mcq
         count: 4
+    scoring:
+      correct: 3
+      incorrect: -1
+      unanswered: 0
+  - id: physics_single_correct
+    name: Single Correct Option
+    subject: Physics
+    question_count: 4
+    question_types:
+      - type: diagram_image
+        count: 3
+      - type: statement_based_2
+        count: 1
+    scoring:
+      correct: 3
+      incorrect: -1
+      unanswered: 0
+  - id: chemistry_single_correct
+    name: Single Correct Option
+    subject: Chemistry
+    question_count: 4
+    question_types:
+      - type: standard_mcq
+        count: 1
+      - type: diagram_image
+        count: 1
+      - type: statement_based_2
+        count: 1
+      - type: statement_based_3
+        count: 1
     scoring:
       correct: 3
       incorrect: -1
@@ -160,7 +223,13 @@ question_types:
   mode: exact
   types:
     - type: standard_mcq
-      count: 12
+      count: 5
+    - type: diagram_image
+      count: 4
+    - type: statement_based_2
+      count: 2
+    - type: statement_based_3
+      count: 1
     - type: multiple_correct
       count: 12
     - type: numerical

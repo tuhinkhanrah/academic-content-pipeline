@@ -1,7 +1,10 @@
-# Question-type proportions are scaled from the subject chapter-bank templates.
+# Subject chapter-bank weights are derived from these question-type counts.
 schema_version: '1.0'
 exam_name: NEET UG
 paper_title: Full Mock Test
+chapter_generation:
+  enabled: true
+  max_questions_per_request: 15
 total_marks: 720
 paper_instructions:
   - The paper contains 180 questions across Physics, Chemistry, and Biology.
@@ -14,7 +17,7 @@ instruction_profile:
     total_marks: 720
   global_instructions:
     - Generate exactly 45 Physics, 45 Chemistry, and 90 Biology questions.
-    - Use the question-type counts in each subject section; they are scaled from the respective chapter-bank templates.
+    - Use the question-type counts in each subject section.
     - Award 4 marks for a correct answer, deduct 1 mark for an incorrect answer, and award 0 for an unanswered question.
     - Keep questions syllabus-bound and avoid ambiguous wording.
   generation_policy:
@@ -41,7 +44,7 @@ instruction_profile:
       question_count: 45
       question_types:
         - type: standard_mcq
-          count: 18
+          count: 8
         - type: numerical
           count: 14
         - type: assertion_reason
@@ -53,7 +56,7 @@ instruction_profile:
         - type: match_list
           count: 1
         - type: diagram_image
-          count: 2
+          count: 12
         - type: sequencing
           count: 2
       scoring:
@@ -123,7 +126,7 @@ sections:
     question_number_end: 45
     question_types:
       - type: standard_mcq
-        count: 18
+        count: 8
       - type: numerical
         count: 14
       - type: assertion_reason
@@ -135,7 +138,7 @@ sections:
       - type: match_list
         count: 1
       - type: diagram_image
-        count: 2
+        count: 12
       - type: sequencing
         count: 2
     scoring:
@@ -217,7 +220,7 @@ question_types:
   mode: exact
   types:
     - type: standard_mcq
-      count: 73
+      count: 63
     - type: numerical
       count: 22
     - type: assertion_reason
@@ -233,6 +236,6 @@ question_types:
     - type: match_list
       count: 12
     - type: diagram_image
-      count: 7
+      count: 17
     - type: sequencing
       count: 7

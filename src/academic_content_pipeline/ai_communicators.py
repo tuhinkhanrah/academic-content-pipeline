@@ -21,10 +21,82 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
+import httpx
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 logger = logging.getLogger("academic_content_pipeline")
+
+
+def _usage_value(value: Any, *names: str) -> Any:
+    for name in names:
+        result = value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+        if result is not None:
+            return result
+    return None
+
+
+def _log_token_usage(response: Any, purpose: str, attempt: int) -> None:
+    usage = _usage_value(response, "usage_metadata", "usageMetadata", "usage")
+    fields = {
+        "input": ("prompt_token_count", "promptTokenCount", "total_input_tokens"),
+        "output": ("candidates_token_count", "candidatesTokenCount", "total_output_tokens"),
+        "total": ("total_token_count", "totalTokenCount", "total_tokens"),
+        "thinking": ("thoughts_token_count", "thoughtsTokenCount", "total_thought_tokens"),
+        "cached": ("cached_content_token_count", "cachedContentTokenCount", "total_cached_tokens"),
+        "tool_input": ("tool_use_prompt_token_count", "toolUsePromptTokenCount", "total_tool_use_tokens"),
+    }
+    counts = {name: _usage_value(usage, *keys) for name, keys in fields.items()}
+    logger.info(
+        "AI token usage after request: %s (attempt %s): %s",
+        purpose, attempt,
+        ", ".join(f"{name}={value if value is not None else 'unavailable'}" for name, value in counts.items()),
+    )
+
+
+def _log_token_count(
+    client: Any, model: str, contents: Any, system_instruction: Optional[str],
+    purpose: str, attempt: int, scope: str,
+) -> None:
+    models = getattr(client, "models", None)
+    if models is None or not callable(getattr(models, "count_tokens", None)):
+        logger.warning("AI input token count before request: %s (attempt %s): unavailable (count_tokens not supported).", purpose, attempt)
+        return
+    try:
+        count_contents = list(contents)
+        if system_instruction:
+            count_contents.insert(0, [system_instruction])
+        result = models.count_tokens(
+            model=model,
+            contents=count_contents,
+        )
+    except (errors.APIError, httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "AI input token count before request: %s (attempt %s): unavailable (%s: %s).",
+            purpose, attempt, type(exc).__name__, exc,
+        )
+        return
+    count = _usage_value(result, "total_tokens", "totalTokens")
+    if count is None:
+        logger.warning("AI input token count before request: %s (attempt %s): unavailable (empty count).", purpose, attempt)
+        return
+    logger.info(
+        "AI input token count before request: %s (attempt %s): %s tokens "
+        "(estimate: %s; system text counted as message if present).",
+        purpose, attempt, count, scope,
+    )
+
+
+def _interaction_count_contents(multimodal_input: List[Dict[str, Any]]) -> List[Any]:
+    parts: List[Any] = []
+    for item in multimodal_input:
+        if item.get("type") == "text":
+            parts.append(item["text"])
+        elif item.get("type") == "image":
+            parts.append(types.Part.from_bytes(
+                data=base64.b64decode(item["data"]), mime_type=item["mime_type"]
+            ))
+    return parts
 
 
 def create_genai_client(api_key: Optional[str] = None) -> Optional[genai.Client]:
@@ -188,7 +260,7 @@ class BaseAICommunicator(ABC):
         contents: Union[MultimodalBatch, List[Any], str],
         **kwargs,
     ) -> str:
-        """Sends content to the model/agent and returns raw generated response text."""
+        """Send content to the model/agent. The optional purpose keyword labels logs."""
         pass
 
     def close(self) -> None:
@@ -268,6 +340,7 @@ class ContextChatBackend(BaseAICommunicator):
         **kwargs,
     ) -> str:
         batch = MultimodalBatch.from_contents(contents)
+        purpose = kwargs.get("purpose", "unspecified request")
 
         if reset_session or not self.chat_session or self.active_system_instruction != system_instruction:
             self.active_system_instruction = system_instruction
@@ -282,14 +355,25 @@ class ContextChatBackend(BaseAICommunicator):
 
         for attempt in range(1, self.attempt_limit + 1):
             try:
-                logger.info(f"💬 Chat generation (attempt {attempt}/{self.attempt_limit})...")
+                logger.info("💬 Chat generation: %s (attempt %s/%s)...", purpose, attempt, self.attempt_limit)
+                try:
+                    history = self.chat_session.get_history()
+                except (AttributeError, TypeError, ValueError) as exc:
+                    logger.warning("AI input token count before request: %s (attempt %s): unavailable (chat history: %s).", purpose, attempt, exc)
+                else:
+                    _log_token_count(
+                        self.client, self.model_name, list(history) + [chat_message],
+                        system_instruction, purpose, attempt, "system, retained chat history and current message",
+                    )
                 response = self.chat_session.send_message(message=chat_message)
+                _log_token_usage(response, purpose, attempt)
                 if response and response.text:
                     return self.strip_code_fences(response.text)
                 else:
                     logger.warning(f"Empty response received on attempt {attempt}.")
                     return str()
             except Exception as e:
+                logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
@@ -338,11 +422,13 @@ class SingleShotBackend(BaseAICommunicator):
         **kwargs,
     ) -> str:
         batch = MultimodalBatch.from_contents(contents)
+        purpose = kwargs.get("purpose", "unspecified request")
         prompt_contents = batch.to_chat_contents()
 
         for attempt in range(1, self.attempt_limit + 1):
             try:
-                logger.info(f"⚡ Single-shot generation (attempt {attempt}/{self.attempt_limit})...")
+                logger.info("⚡ Single-shot generation: %s (attempt %s/%s)...", purpose, attempt, self.attempt_limit)
+                _log_token_count(self.client, self.model_name, [prompt_contents], system_instruction, purpose, attempt, "system and current message")
                 response = self.client.models.generate_content(
                     model=self.model_name,
                     contents=prompt_contents,
@@ -352,11 +438,13 @@ class SingleShotBackend(BaseAICommunicator):
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                     ),
                 )
+                _log_token_usage(response, purpose, attempt)
                 if response and getattr(response, "text", None):
                     return self.strip_code_fences(response.text)
                 logger.warning(f"Empty response received on attempt {attempt}.")
                 return str()
             except Exception as e:
+                logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
@@ -414,11 +502,12 @@ class AgentSessionBackend(BaseAICommunicator):
         **kwargs,
     ) -> str:
         batch = MultimodalBatch.from_contents(contents)
+        purpose = kwargs.get("purpose", "unspecified request")
         self.turn_counter += 1
 
         system_changed = getattr(self, "active_system_instruction", None) != system_instruction
         if reset_session or system_changed or (self.turn_counter > 1 and (self.turn_counter - 1) % self.context_reset_interval == 0):
-            logger.info("🔄 Resetting agent turn history to keep session aligned with the current system prompt...")
+            logger.info("🔄 Resetting agent turn history for %s to align with the current system prompt...", purpose)
             self.last_interaction_id = None
             self.active_system_instruction = system_instruction
 
@@ -431,7 +520,10 @@ class AgentSessionBackend(BaseAICommunicator):
 
         for attempt in range(1, self.attempt_limit + 1):
             try:
-                logger.info(f"🤖 Agent interaction (attempt {attempt}/{self.attempt_limit}, env: {self.environment_id or 'remote'})...")
+                logger.info(
+                    "🤖 Agent interaction: %s (attempt %s/%s, env: %s)...",
+                    purpose, attempt, self.attempt_limit, self.environment_id or "remote",
+                )
 
                 env_param = self.environment_id if self.environment_id else "remote"
                 interaction_params: Dict[str, Any] = {
@@ -449,7 +541,13 @@ class AgentSessionBackend(BaseAICommunicator):
                 if self.last_interaction_id:
                     interaction_params["previous_interaction_id"] = self.last_interaction_id
 
+                _log_token_count(
+                    self.client, self.model_name, [_interaction_count_contents(multimodal_input)],
+                    interaction_params.get("system_instruction"), purpose, attempt,
+                    "visible current input only; agent history, tools and internal instructions excluded",
+                )
                 interaction = self.client.interactions.create(**interaction_params)
+                _log_token_usage(interaction, purpose, attempt)
 
                 self.environment_id = getattr(interaction, "environment_id", self.environment_id)
                 self.last_interaction_id = getattr(interaction, "id", self.last_interaction_id)
@@ -465,6 +563,7 @@ class AgentSessionBackend(BaseAICommunicator):
                     return self.strip_code_fences(output_text)
 
             except Exception as e:
+                logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
@@ -610,6 +709,7 @@ class BatchAPIBackend(BaseAICommunicator):
         **kwargs,
     ) -> str:
         batch = MultimodalBatch.from_contents(contents)
+        purpose = kwargs.get("purpose", "unspecified request")
         batch_contents = batch.to_chat_contents()
 
         request = types.InlinedRequest(
@@ -626,7 +726,8 @@ class BatchAPIBackend(BaseAICommunicator):
             job_name = None
             terminal_job = False
             try:
-                logger.info(f"📦 Batch API request (attempt {attempt}/{self.attempt_limit})...")
+                logger.info("📦 Batch API request: %s (attempt %s/%s)...", purpose, attempt, self.attempt_limit)
+                _log_token_count(self.client, self.model_name, [batch_contents], system_instruction, purpose, attempt, "system and current message")
                 job = self.client.batches.create(
                     model=self.model_name,
                     src=[request],
@@ -659,12 +760,16 @@ class BatchAPIBackend(BaseAICommunicator):
                 dest = getattr(current_job, "dest", None)
                 if getattr(dest, "inlined_responses", None):
                     for item in dest.inlined_responses:
+                        response = _usage_value(item, "response")
+                        _log_token_usage(response, purpose, attempt)
                         text = self._extract_text_from_batch_response(item)
                         if text:
                             return text
                 elif getattr(dest, "gcs_uri", None):
                     logger.warning("Batch job output is GCS-backed; direct inline response extraction is unavailable.")
 
+                if not getattr(dest, "inlined_responses", None):
+                    _log_token_usage(None, purpose, attempt)
                 if getattr(current_job, "state", None) is None:
                     logger.warning("Batch job state was unavailable; returning empty response.")
                 return ""
@@ -672,6 +777,7 @@ class BatchAPIBackend(BaseAICommunicator):
             except self._BatchJobCleanupError:
                 raise
             except Exception as e:
+                logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
@@ -771,6 +877,7 @@ class RemoteSandboxBackend(BaseAICommunicator):
         Uploads generated artifact to GCS and downloads to local destination.
         """
         batch = MultimodalBatch.from_contents(contents)
+        purpose = kwargs.get("purpose", "unspecified request")
         gcp_token = self.get_gcloud_access_token()
         api_key = os.environ.get("GEMINI_API_KEY")
         gcs_upload_path = f"output/{output_filename}"
@@ -821,9 +928,15 @@ if resp.status_code not in [200, 201]:
             )
             logger.info("📝 Wrote remote AI prompt snapshot: %s", snapshot_path)
 
-        logger.info("🚀 Provisioning remote execution sandbox...")
+        logger.info("🚀 Provisioning remote execution sandbox for %s...", purpose)
         for attempt in range(1, self.attempt_limit + 1):
+            logger.info("Remote interaction: %s (attempt %s/%s)...", purpose, attempt, self.attempt_limit)
             try:
+                logger.warning(
+                    "AI input token count before request: %s (attempt %s): unavailable "
+                    "(remote agent model is not specified; managed context and tools are not visible).",
+                    purpose, attempt,
+                )
                 interaction = self.client.interactions.create(
                     agent=self.agent_name,
                     input=remote_input,
@@ -850,6 +963,7 @@ if resp.status_code not in [200, 201]:
                         },
                     },
                 )
+                _log_token_usage(interaction, purpose, attempt)
 
                 if self.verbose:
                     logger.info("\n🔍 Agent Finished Execution. Output:\n" + "=" * 60)
@@ -865,6 +979,7 @@ if resp.status_code not in [200, 201]:
                 return getattr(interaction, "output_text", "")
 
             except Exception as e:
+                logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
                 logger.warning(f"⚠️ Remote Sandbox Error (Attempt {attempt}/{self.attempt_limit}): {e}")
                 if attempt < self.attempt_limit:
                     time.sleep(self.retry_delay)

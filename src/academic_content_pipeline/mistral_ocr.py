@@ -389,10 +389,10 @@ class MistralOCREngine:
             start_page_offset = page_range[0] if (page_range and len(page_range) >= 1) else 1
 
             image_counter = 0
+            used_image_ids = set()
             for page_idx, page in enumerate(ocr_response.pages):
                 current_page_num = start_page_offset + page_idx
                 page_markdown = page.markdown or ""
-                full_markdown += page_markdown + "\n\n"
                 page_images: Dict[str, str] = {}
 
                 for img in (page.images or []):
@@ -400,6 +400,15 @@ class MistralOCREngine:
                     img_data = base64.b64decode(raw_b64)
 
                     clean_id = img.id.replace(".jpeg", "").replace(".jpg", "").replace(".png", "")
+                    if clean_id in used_image_ids:
+                        original_id = clean_id
+                        clean_id = f"{clean_id}-page-{current_page_num}"
+                        suffix = 2
+                        while clean_id in used_image_ids:
+                            clean_id = f"{original_id}-page-{current_page_num}-{suffix}"
+                            suffix += 1
+                        page_markdown = page_markdown.replace(img.id, f"{clean_id}.jpeg")
+                    used_image_ids.add(clean_id)
                     file_name = f"{clean_id}.jpeg"
                     file_path = str(img_output_dir / file_name)
                     with open(file_path, "wb") as f:
@@ -411,6 +420,7 @@ class MistralOCREngine:
                     page_images[clean_id] = file_path
                     image_counter += 1
 
+                full_markdown += page_markdown + "\n\n"
                 pages_data.append(OCRPageData(
                     page_num=current_page_num,
                     markdown=page_markdown,

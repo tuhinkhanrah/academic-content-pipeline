@@ -2,6 +2,9 @@
 schema_version: '1.0'
 exam_name: JEE Main
 paper_title: Paper 1 - B.E./B.Tech.
+chapter_generation:
+  enabled: true
+  max_questions_per_request: 15
 total_marks: 300
 paper_instructions:
   - The paper contains Mathematics, Physics, and Chemistry.
@@ -62,7 +65,15 @@ instruction_profile:
       question_count: 20
       question_types:
         - type: standard_mcq
-          count: 20
+          count: 8
+        - type: diagram_image
+          count: 7
+        - type: match_list
+          count: 2
+        - type: statement_based_2
+          count: 2
+        - type: statement_based_3
+          count: 1
       scoring:
         correct: 4
         incorrect: -1
@@ -84,7 +95,15 @@ instruction_profile:
       question_count: 20
       question_types:
         - type: standard_mcq
-          count: 20
+          count: 15
+        - type: diagram_image
+          count: 1
+        - type: match_list
+          count: 1
+        - type: statement_based_2
+          count: 2
+        - type: statement_based_3
+          count: 1
       scoring:
         correct: 4
         incorrect: -1
@@ -135,7 +154,15 @@ sections:
     question_number_end: 45
     question_types:
       - type: standard_mcq
-        count: 20
+        count: 8
+      - type: diagram_image
+        count: 7
+      - type: match_list
+        count: 2
+      - type: statement_based_2
+        count: 2
+      - type: statement_based_3
+        count: 1
     scoring:
       correct: 4
       incorrect: -1
@@ -161,7 +188,15 @@ sections:
     question_number_end: 70
     question_types:
       - type: standard_mcq
-        count: 20
+        count: 15
+      - type: diagram_image
+        count: 1
+      - type: match_list
+        count: 1
+      - type: statement_based_2
+        count: 2
+      - type: statement_based_3
+        count: 1
     scoring:
       correct: 4
       incorrect: -1
@@ -196,6 +231,14 @@ question_types:
   mode: exact
   types:
     - type: standard_mcq
-      count: 60
+      count: 43
+    - type: diagram_image
+      count: 8
+    - type: match_list
+      count: 3
+    - type: statement_based_2
+      count: 4
+    - type: statement_based_3
+      count: 2
     - type: numerical
       count: 15

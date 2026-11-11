@@ -2,6 +2,9 @@
 schema_version: '1.0'
 exam_name: WBJEE
 paper_title: Physics and Chemistry
+chapter_generation:
+  enabled: true
+  max_questions_per_request: 15
 duration_minutes: 120
 total_marks: 100
 paper_instructions:
@@ -44,7 +47,15 @@ instruction_profile:
       question_count: 30
       question_types:
         - type: standard_mcq
-          count: 30
+          count: 14
+        - type: diagram_image
+          count: 9
+        - type: match_list
+          count: 2
+        - type: statement_based_2
+          count: 3
+        - type: statement_based_3
+          count: 2
       scoring:
         correct: 1
         incorrect: -0.25
@@ -55,7 +66,11 @@ instruction_profile:
       question_count: 5
       question_types:
         - type: standard_mcq
-          count: 5
+          count: 2
+        - type: diagram_image
+          count: 2
+        - type: statement_based_2
+          count: 1
       scoring:
         correct: 2
         incorrect: -0.5
@@ -81,7 +96,15 @@ instruction_profile:
       question_count: 30
       question_types:
         - type: standard_mcq
-          count: 30
+          count: 23
+        - type: diagram_image
+          count: 1
+        - type: match_list
+          count: 1
+        - type: statement_based_2
+          count: 3
+        - type: statement_based_3
+          count: 2
       scoring:
         correct: 1
         incorrect: -0.25
@@ -92,7 +115,9 @@ instruction_profile:
       question_count: 5
       question_types:
         - type: standard_mcq
-          count: 5
+          count: 4
+        - type: match_list
+          count: 1
       scoring:
         correct: 2
         incorrect: -0.5
@@ -121,7 +146,15 @@ sections:
     question_number_end: 30
     question_types:
       - type: standard_mcq
-        count: 30
+        count: 14
+      - type: diagram_image
+        count: 9
+      - type: match_list
+        count: 2
+      - type: statement_based_2
+        count: 3
+      - type: statement_based_3
+        count: 2
     scoring:
       correct: 1
       incorrect: -0.25
@@ -134,7 +167,11 @@ sections:
     question_number_end: 35
     question_types:
       - type: standard_mcq
-        count: 5
+        count: 2
+      - type: diagram_image
+        count: 2
+      - type: statement_based_2
+        count: 1
     scoring:
       correct: 2
       incorrect: -0.5
@@ -164,7 +201,15 @@ sections:
     question_number_end: 70
     question_types:
       - type: standard_mcq
-        count: 30
+        count: 23
+      - type: diagram_image
+        count: 1
+      - type: match_list
+        count: 1
+      - type: statement_based_2
+        count: 3
+      - type: statement_based_3
+        count: 2
     scoring:
       correct: 1
       incorrect: -0.25
@@ -177,7 +222,9 @@ sections:
     question_number_end: 75
     question_types:
       - type: standard_mcq
-        count: 5
+        count: 4
+      - type: match_list
+        count: 1
     scoring:
       correct: 2
       incorrect: -0.5
@@ -210,6 +257,14 @@ question_types:
   mode: exact
   types:
     - type: standard_mcq
-      count: 70
+      count: 43
+    - type: diagram_image
+      count: 12
+    - type: match_list
+      count: 4
+    - type: statement_based_2
+      count: 7
+    - type: statement_based_3
+      count: 4
     - type: multiple_correct
       count: 10

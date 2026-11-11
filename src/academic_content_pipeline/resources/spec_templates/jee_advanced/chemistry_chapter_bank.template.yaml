@@ -4,6 +4,8 @@ total_questions: 120
 question_types:
   mode: adaptive
   types:
+  - type: diagram_image
+    weight: 0.058824
   - type: match_list
     weight: 0.117647
   - type: multiple_correct
@@ -11,4 +13,8 @@ question_types:
   - type: numerical
     weight: 0.382353
   - type: standard_mcq
-    weight: 0.235294
+    weight: 0.058824
+  - type: statement_based_2
+    weight: 0.058824
+  - type: statement_based_3
+    weight: 0.058822
