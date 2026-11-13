@@ -215,6 +215,55 @@ class PaperBatchTests(unittest.TestCase):
             self.assertEqual(analyses, ["full", "batched"])
             self.assertEqual(english.calls[0]["reference_profile"]["subjects"]["Biology"]["style"], "full")
 
+    def test_analysis_model_isolated_from_generation_and_checkpointed(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            reference = root / "reference.md"
+            reference.write_text("1. Reference", encoding="utf-8")
+            calls = []
+
+            def setup(model, responses, interrupted=False):
+                generator = FakePaperGenerator(responses, fail_after_saving_response=interrupted)
+                generator.reference_paper = reference
+                generator.ocr_engine = object()
+                generator.analysis_communicator = SimpleNamespace(
+                    model_name=model,
+                    generate=lambda **kwargs: calls.append(kwargs) or json.dumps({
+                        "subjects": {"Biology": {"style": "Style", "chapters": {}, "examples": []}}
+                    }),
+                )
+                generator.communicator.generate = lambda **kwargs: self.fail("generation backend used for analysis")
+                return generator
+
+            out = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(setup("first", ["saved"], True)).run(spec, out)
+            self.assertEqual(len(calls), 1)
+            different_backend = setup("first", [])
+            different_backend.analysis_communicator = type(
+                "OtherAnalysisBackend", (), {"model_name": "first"}
+            )()
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(different_backend).run(spec, out, resume=True)
+            manifest_path = out / "sample_exam_english_batch_generation.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            original = manifest_path.read_text(encoding="utf-8")
+            manifest["configuration"].pop("analysis_communicator")
+            manifest["configuration_sha256"] = "legacy"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(setup("first", [])).run(spec, out, resume=True)
+            manifest_path.write_text(original, encoding="utf-8")
+            resumed = setup("second", [])
+            PaperBatchRunner(resumed).run(spec, out, resume=True)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
+            self.assertEqual(
+                json.loads(manifest_path.read_text(encoding="utf-8"))["configuration"]["analysis_communicator"]["model_name"],
+                "second",
+            )
+
     def test_legacy_paper_reference_profile_resumes_without_reanalysis(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -315,6 +364,45 @@ class PaperBatchTests(unittest.TestCase):
             first.write_text("1. changed", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "settings differ"):
                 PaperBatchRunner(FakePaperGenerator([])).run(spec, root / "defaults", resume=True)
+
+    def test_resume_compares_reference_content_not_template_path_spelling(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            reference = root / "reference.md"
+            reference.write_text("1. Reference", encoding="utf-8")
+            spec.write_text(
+                "exam_name: Sample Exam\ntest_count: 1\npapers:\n"
+                "  - id: paper\n    spec: paper.yaml\n    reference_paper: reference.md\n",
+                encoding="utf-8",
+            )
+            analyses = []
+
+            def setup(generator):
+                generator.ocr_engine = object()
+                generator.communicator.generate = lambda **kwargs: analyses.append(1) or json.dumps({
+                    "subjects": {"Biology": {"style": "Style", "chapters": {}, "examples": []}}
+                })
+                return generator
+
+            output = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(setup(FakePaperGenerator(
+                    ["saved"], fail_after_saving_response=True
+                ))).run(spec, output)
+            self.assertEqual(analyses, [1])
+            manifest_path = output / "sample_exam_english_batch_generation.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["configuration"]["batch_spec"]["papers"][0]["reference_paper"] = (
+                "../question-papers-vault/neet_ug/2026/previous-reference.pdf"
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            resumed = setup(FakePaperGenerator([]))
+            result = PaperBatchRunner(resumed).run(spec, output, resume=True)
+            self.assertEqual(result[0].name, "sample_exam_english_test_001_paper.xml")
+            self.assertEqual(analyses, [1])
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
 
     def test_overridden_or_disabled_defaults_need_not_exist(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -454,7 +542,9 @@ class PaperBatchTests(unittest.TestCase):
                         "style": "Style", "chapters": {}, "examples": []
                     }}})
 
-                generator.communicator.generate = generate
+                generator.analysis_communicator = SimpleNamespace(
+                    model_name="first" if fail else "second", generate=generate
+                )
                 return generator
 
             with self.assertRaisesRegex(RuntimeError, "analysis interrupted"):
@@ -465,6 +555,11 @@ class PaperBatchTests(unittest.TestCase):
             )
             self.assertEqual(len(calls), 4)
             self.assertIn("paper paper2, batch 2/2", calls[-1])
+            profile_path = root / "out" / ".sample_exam_english_batch_generation" / "reference" / "paper2" / "reference_style_profile.json"
+            self.assertEqual(
+                json.loads(profile_path.read_text(encoding="utf-8"))["batch_analysis_models"],
+                ["first", "second"],
+            )
 
     def test_real_generator_receives_only_corresponding_paper_profile(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -498,10 +593,20 @@ class PaperBatchTests(unittest.TestCase):
                     '</answer></question></quiz>'
                 )
 
-            communicator = SimpleNamespace(model_name="test", generate=generate)
+            def generate_questions(**kwargs):
+                self.assertNotIn("assessment style", kwargs["system_instruction"])
+                return generate(**kwargs)
+
+            def analyze_reference(**kwargs):
+                self.assertIn("assessment style", kwargs["system_instruction"])
+                return generate(**kwargs)
+
+            communicator = SimpleNamespace(model_name="test", generate=generate_questions)
+            analysis = SimpleNamespace(model_name="analysis", generate=analyze_reference)
             generator = PaperGenerator(
                 communicator=communicator, ocr_engine=object(),
                 reference_papers={"paper1": first},
+                analysis_communicator=analysis,
             )
             result = PaperBatchRunner(generator).run(spec, root / "out")
             self.assertEqual(len(result), 2)
@@ -602,6 +707,35 @@ class PaperBatchTests(unittest.TestCase):
                 ],
                 ["saved response", None],
             )
+
+    def test_resume_ignores_legacy_runtime_configuration_fields(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            output = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(FakePaperGenerator(
+                    ["saved"], fail_after_saving_response=True
+                )).run(spec, output)
+            different_backend = FakePaperGenerator([])
+            different_backend.communicator = type("OtherBackend", (), {"model_name": "test-model"})()
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(different_backend).run(spec, output, resume=True)
+            manifest_path = output / "sample_exam_english_batch_generation.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["configuration"].update({
+                "agent_type": "old-agent-type",
+                "bucket_name": "old-bucket",
+                "ocr_model": "old-ocr",
+                "verify_online": True,
+            })
+            manifest["configuration_sha256"] = hashlib.sha256(
+                json.dumps(manifest["configuration"], sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            resumed = FakePaperGenerator([])
+            PaperBatchRunner(resumed).run(spec, output, resume=True)
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
 
     def test_resume_without_checkpoint_starts_new_run(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -994,11 +1128,102 @@ class PaperBatchTests(unittest.TestCase):
                 calls.append(kwargs)
                 return json.dumps({"chapters": [{"id": "ch001-cells", "questions": 1}]})
 
-            generator.communicator.generate = plan
+            generator.analysis_communicator = SimpleNamespace(model_name="planner", generate=plan)
+            generator.communicator.generate = lambda **kwargs: self.fail("agent used for planning")
             PaperBatchRunner(generator).run(spec, root / "output")
             self.assertEqual(len(calls), 1)
             self.assertIn("plan chapter question allocations for Biology", calls[0]["purpose"])
             self.assertIn("paper paper", calls[0]["purpose"])
+            manifest = json.loads((root / "output" / "sample_exam_english_batch_generation.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["configuration"]["analysis_communicator"]["model_name"], "planner")
+            generator.analysis_communicator.model_name = "different-planner"
+            PaperBatchRunner(generator).run(spec, root / "output", resume=True)
+            self.assertEqual(len(calls), 1)
+
+    def test_invalid_chapter_allocation_is_retried_with_feedback(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            (root / "paper.yaml").write_text(
+                "exam_name: Sample Exam\nchapter_generation:\n  enabled: true\n"
+                "  max_questions_per_request: 45\n"
+                "subjects:\n  - name: Chemistry\n    total_questions: 45\n    syllabus_file: syllabus.md\n"
+                "sections:\n  - id: chemistry\n    name: Chemistry\n    subject: Chemistry\n"
+                "    question_count: 45\n    question_types:\n"
+                "      - type: standard_mcq\n        count: 45\n"
+                "    scoring:\n      correct: 4\n      incorrect: -1\n",
+                encoding="utf-8",
+            )
+            (root / "syllabus.md").write_text(
+                "# Chemistry\n## Chapter One\nOne.\n## Chapter Two\nTwo.\n", encoding="utf-8"
+            )
+            generator = FakePaperGenerator(["generated"])
+            calls = []
+
+            def plan(**kwargs):
+                calls.append(kwargs)
+                return json.dumps({"chapters": [
+                    {"id": "ch001-chapter-one", "questions": 20},
+                    {"id": "ch002-chapter-two", "questions": 23 if len(calls) == 1 else 25},
+                ]})
+
+            generator.analysis_communicator = SimpleNamespace(model_name="planner", generate=plan)
+            PaperBatchRunner(generator).run(spec, root / "out")
+            self.assertEqual(len(calls), 2)
+            self.assertIn("totals 43; expected 45", calls[1]["contents"])
+            manifest = json.loads((root / "out" / "sample_exam_english_batch_generation.json").read_text(encoding="utf-8"))
+            self.assertEqual(sum(manifest["chapter_plans"]["paper:chemistry"].values()), 45)
+            self.assertEqual(len(generator.calls), 1)
+
+    def test_chapter_allocation_retry_exhaustion_preserves_resume(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            (root / "paper.yaml").write_text(
+                "exam_name: Sample Exam\nchapter_generation:\n  enabled: true\n"
+                "subjects:\n  - name: Biology\n    total_questions: 1\n    syllabus_file: syllabus.md\n"
+                "  - name: Chemistry\n    total_questions: 1\n    syllabus_file: syllabus.md\n"
+                "sections:\n  - id: biology\n    name: Biology\n    subject: Biology\n"
+                "    question_count: 1\n    question_types:\n"
+                "      - type: standard_mcq\n        count: 1\n"
+                "    scoring:\n      correct: 4\n      incorrect: -1\n"
+                "  - id: chemistry\n    name: Chemistry\n    subject: Chemistry\n"
+                "    question_count: 1\n    question_types:\n"
+                "      - type: standard_mcq\n        count: 1\n"
+                "    scoring:\n      correct: 4\n      incorrect: -1\n",
+                encoding="utf-8",
+            )
+            (root / "syllabus.md").write_text("# Biology\n## Cells\nCells.\n", encoding="utf-8")
+            generator = FakePaperGenerator(["biology", "chemistry"])
+            calls = []
+
+            def plan(**kwargs):
+                calls.append(kwargs)
+                if "for Biology" in kwargs["purpose"]:
+                    return json.dumps({"chapters": [{"id": "ch001-cells", "questions": 1}]})
+                if len(calls) == 2:
+                    return json.dumps({"chapters": [{"id": [], "questions": 1}]})
+                return "not JSON"
+
+            generator.analysis_communicator = SimpleNamespace(
+                model_name="planner", generate=plan
+            )
+            with self.assertRaisesRegex(ValueError, "chapter allocation.*3 attempts"):
+                PaperBatchRunner(generator).run(spec, root / "out")
+            self.assertEqual(len(calls), 4)
+            self.assertIn("Unknown chapter ID", calls[2]["contents"])
+            manifest = json.loads((root / "out" / "sample_exam_english_batch_generation.json").read_text(encoding="utf-8"))
+            self.assertIn("paper:biology", manifest["chapter_plans"])
+            self.assertNotIn("paper:chemistry", manifest["chapter_plans"])
+            self.assertFalse(generator.calls)
+            def resume_plan(**kwargs):
+                calls.append(kwargs)
+                return json.dumps({"chapters": [{"id": "ch001-cells", "questions": 1}]})
+            generator.analysis_communicator.generate = resume_plan
+            PaperBatchRunner(generator).run(spec, root / "out", resume=True)
+            self.assertEqual(len(calls), 5)
+            self.assertIn("for Chemistry", calls[-1]["purpose"])
+            self.assertEqual(len(generator.calls), 2)
 
     def test_resume_rejects_changed_syllabus(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

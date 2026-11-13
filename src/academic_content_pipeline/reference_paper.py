@@ -224,6 +224,20 @@ def _validate_profile(value: Any, subjects: list[str]) -> dict[str, Any]:
     return value
 
 
+def analysis_communicator_identity(communicator: Any) -> dict[str, Any]:
+    return {
+        "backend": type(communicator).__name__,
+        "model_name": getattr(communicator, "model_name", None),
+        "agent_name": getattr(communicator, "agent_name", None),
+    }
+
+
+def analysis_communicator_for_comparison(identity: Any) -> Any:
+    if not isinstance(identity, dict):
+        return identity
+    return {key: value for key, value in identity.items() if key != "model_name"}
+
+
 def prepare_reference(
     path: Path, subjects: list[str], communicator: Any, ocr_engine: Any,
     staging_dir: Path, cache_path: Path, chapter_titles: dict[str, list[str]] | None = None,
@@ -243,17 +257,36 @@ def prepare_reference(
         "version": _PROFILE_VERSION, "reference": fingerprint, "subjects": subjects,
         "chapter_titles": chapter_titles, "mode": analysis_mode,
         "batch_pages": REFERENCE_BATCH_SIZE, "batch_questions": REFERENCE_BATCH_SIZE,
+        "analysis_communicator": analysis_communicator_identity(communicator),
     }
     cached: Any = None
+    identity_matches = False
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid reference profile cache: {cache_path}") from exc
-        if isinstance(cached, dict) and cached.get("identity") == identity:
+        saved_identity = cached.get("identity") if isinstance(cached, dict) else None
+        if isinstance(saved_identity, dict):
+            saved_comparable = dict(saved_identity)
+            current_comparable = dict(identity)
+            for value in (saved_comparable, current_comparable):
+                if "analysis_communicator" in value:
+                    value["analysis_communicator"] = analysis_communicator_for_comparison(
+                        value["analysis_communicator"]
+                    )
+            identity_matches = saved_comparable == current_comparable
+        if identity_matches:
             logger.info("Reusing reference style profile: %s", cache_path)
             if cached.get("status") == "completed":
                 return _validate_profile(cached.get("profile"), subjects)
+            if saved_identity != identity:
+                logger.warning(
+                    "Resuming partial reference analysis with a different model; "
+                    "the profile may combine analyses from multiple models."
+                )
+        else:
+            logger.info("Reference profile settings changed; analyzing again: %s", cache_path)
     units = _read_reference(path, ocr_engine, staging_dir)
     extracted_digest = hashlib.sha256()
     for unit in units:
@@ -265,7 +298,7 @@ def prepare_reference(
             extracted_digest.update(data)
     input_sha256 = extracted_digest.hexdigest()
     if (
-        isinstance(cached, dict) and cached.get("identity") == identity
+        identity_matches and isinstance(cached, dict)
         and cached.get("status") == "in_progress"
         and cached.get("input_sha256") != input_sha256
     ):
@@ -273,12 +306,24 @@ def prepare_reference(
     batch_size = len(units) if analysis_mode == "full" else REFERENCE_BATCH_SIZE
     batches = [units[start:start + batch_size] for start in range(0, len(units), batch_size)]
     saved_batches: list[Any] = []
-    if isinstance(cached, dict) and cached.get("identity") == identity:
+    batch_analysis_models: list[str | None] = []
+    if identity_matches and isinstance(cached, dict):
         saved_batches = cached.get("batches", [])
         if not isinstance(saved_batches, list) or len(saved_batches) > len(batches):
             raise ValueError(f"Invalid reference analysis batches: {cache_path}")
         for saved in saved_batches:
             _validate_profile(saved, subjects)
+        if "batch_analysis_models" in cached:
+            saved_models = cached["batch_analysis_models"]
+        else:
+            saved_models = [cached["identity"]["analysis_communicator"].get("model_name")] * len(saved_batches)
+        if (
+            not isinstance(saved_models, list)
+            or len(saved_models) != len(saved_batches)
+            or any(model is not None and not isinstance(model, str) for model in saved_models)
+        ):
+            raise ValueError(f"Invalid reference analysis model history: {cache_path}")
+        batch_analysis_models = list(saved_models)
     partials = list(saved_batches)
     for batch_index in range(len(partials), len(batches)):
         batch = batches[batch_index]
@@ -348,9 +393,10 @@ def prepare_reference(
                 })
             item["examples"] = resolved_examples
         partials.append(_validate_profile(partial, subjects))
+        batch_analysis_models.append(identity["analysis_communicator"]["model_name"])
         if reference_fingerprint(path) != fingerprint:
             raise ValueError("Reference paper or its images changed during style analysis.")
-        _write_cache(cache_path, {"identity": identity, "status": "in_progress", "input_sha256": input_sha256, "batches": partials})
+        _write_cache(cache_path, {"identity": identity, "status": "in_progress", "input_sha256": input_sha256, "batches": partials, "batch_analysis_models": batch_analysis_models})
     profile = {"subjects": {}}
     for subject in subjects:
         items = [partial["subjects"][subject] for partial in partials]
@@ -370,7 +416,7 @@ def prepare_reference(
             "style": " ".join(styles), "chapters": chapters,
             "examples": examples_merged[:6],
         }
-    _write_cache(cache_path, {"identity": identity, "status": "completed", "input_sha256": input_sha256, "batches": partials, "profile": profile})
+    _write_cache(cache_path, {"identity": identity, "status": "completed", "input_sha256": input_sha256, "batches": partials, "batch_analysis_models": batch_analysis_models, "profile": profile})
     return profile
 
 

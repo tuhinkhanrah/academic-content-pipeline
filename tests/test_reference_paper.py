@@ -210,19 +210,22 @@ class ReferencePaperTests(unittest.TestCase):
                 return "<quiz />"
 
             communicator.generate = generate
+            analysis = ReferenceCommunicator()
             generator = PaperGenerator(
                 communicator=communicator, ocr_engine=object(),
                 reference_paper=paper, staging_dir=root,
+                analysis_communicator=analysis,
             )
             generator.renderer = SimpleNamespace(
                 render=lambda output, directory, stem: directory / f"{stem}.xml"
             )
             with patch("academic_content_pipeline.content_processors.write_prompt_snapshot"):
                 generator.process_spec(spec, root / "out")
-            self.assertEqual(len(communicator.calls), 2)
+            self.assertEqual(len(communicator.calls), 1)
+            self.assertEqual(len(analysis.calls), 1)
             generated_prompt = communicator.calls[-1]["contents"].text
             self.assertIn("generate paper questions for Physics", communicator.calls[-1]["purpose"])
-            self.assertIn("analyze reference paper style", communicator.calls[0]["purpose"])
+            self.assertIn("analyze reference paper style", analysis.calls[0]["purpose"])
             self.assertIn("Use multi-step calculations and circuits", generated_prompt)
             self.assertIn("Use velocity graphs", generated_prompt)
             self.assertIn("A circuit question", generated_prompt)
@@ -329,6 +332,49 @@ class ReferencePaperTests(unittest.TestCase):
             prepare_reference(paper, ["Physics"], resumed, None, root, cache)
             self.assertEqual(len(resumed.calls), 2)
             self.assertIn("Question 45", resumed.calls[-1]["contents"].text)
+
+    def test_analysis_model_change_reuses_partial_and_completed_profiles(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            paper = root / "reference.md"
+            paper.write_text("\n".join(f"{i}. Question {i}" for i in range(1, 23)), encoding="utf-8")
+            cache = root / "profile.json"
+            first = ReferenceCommunicator()
+            first.model_name = "first-model"
+            generate = first.generate
+
+            def failing(**kwargs):
+                if first.calls:
+                    raise RuntimeError("interrupted")
+                return generate(**kwargs)
+
+            first.generate = failing
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                prepare_reference(paper, ["Physics"], first, None, root, cache)
+            legacy = json.loads(cache.read_text(encoding="utf-8"))
+            legacy.pop("batch_analysis_models")
+            cache.write_text(json.dumps(legacy), encoding="utf-8")
+            second = ReferenceCommunicator()
+            second.model_name = "second-model"
+            prepare_reference(paper, ["Physics"], second, None, root, cache)
+            self.assertEqual(len(second.calls), 1)
+            self.assertIn("Question 21", second.calls[0]["contents"].text)
+            self.assertEqual(
+                json.loads(cache.read_text(encoding="utf-8"))["batch_analysis_models"],
+                ["first-model", "second-model"],
+            )
+            previous_cache = cache.read_bytes()
+            third = ReferenceCommunicator()
+            third.model_name = "third-model"
+            prepare_reference(paper, ["Physics"], third, None, root, cache)
+            self.assertEqual(len(third.calls), 0)
+            self.assertEqual(cache.read_bytes(), previous_cache)
+            class OtherBackend(ReferenceCommunicator):
+                pass
+            other = OtherBackend()
+            other.model_name = "third-model"
+            prepare_reference(paper, ["Physics"], other, None, root, cache)
+            self.assertEqual(len(other.calls), 2)
 
     def test_markdown_analysis_uses_fixed_twenty_question_batches_or_full(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

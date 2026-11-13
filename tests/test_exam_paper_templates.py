@@ -55,7 +55,7 @@ class ExamPaperTemplateTests(unittest.TestCase):
 
     def test_physics_diagram_allocations_across_exams(self):
         cases = {
-            "neet_ug": ({"neet_ug.template.yaml": (12, 45)}, 12 / 45),
+            "neet_ug": ({"neet_ug.template.yaml": (16, 45)}, 16 / 45),
             "jee_main": ({"jee_main.template.yaml": (7, 25)}, 7 / 25),
             "jee_advanced": (
                 {"paper1.template.yaml": (3, 16), "paper2.template.yaml": (3, 18)},

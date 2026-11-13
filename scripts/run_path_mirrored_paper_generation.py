@@ -155,6 +155,7 @@ def command_for_spec(
     reference_analysis_mode: str = "batched",
     reference_papers: List[str] | None = None,
     no_reference_papers: bool = False,
+    reference_analysis_model_name: str | None = None,
 ) -> List[str]:
     """Build the CLI command for one paper spec."""
     command = [
@@ -182,6 +183,8 @@ def command_for_spec(
     ]
     if model_name:
         command.extend(["--model-name", model_name])
+    if reference_analysis_model_name:
+        command.extend(["--reference-analysis-model-name", reference_analysis_model_name])
     if standards:
         command.extend(["--standards", standards])
     if sample_pdf or reference_papers:
@@ -272,6 +275,10 @@ def main(argv: List[str] | None = None) -> int:
     reference_options.add_argument("--no-reference-paper", action="store_true", help="Ignore reference papers configured in batch templates.")
     parser.add_argument("--reference-analysis-mode", choices=["batched", "full"], default="batched")
     parser.add_argument(
+        "--reference-analysis-model-name", default=None,
+        help="Gemini model for reference analysis and chapter planning (defaults to --model-name).",
+    )
+    parser.add_argument(
         "--exam-duration-minutes",
         type=int,
         default=None,
@@ -355,6 +362,7 @@ def main(argv: List[str] | None = None) -> int:
             resume=args.resume,
             force=args.force,
             reference_analysis_mode=args.reference_analysis_mode,
+            reference_analysis_model_name=args.reference_analysis_model_name,
             reference_papers=args.reference_paper,
             no_reference_papers=args.no_reference_paper,
         )

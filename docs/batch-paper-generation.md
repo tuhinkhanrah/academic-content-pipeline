@@ -26,8 +26,9 @@ reference-profile checkpoints. They generate separate papers, not translations
 of one English paper. `--force` affects the selected language's batch.
 
 On `--resume`, if no language-specific checkpoint exists and an older
-language-independent checkpoint has the same language settings, the runner
-continues that legacy batch with its original filenames and state. Other
+language-independent checkpoint has compatible settings, the runner
+continues that legacy batch with its original filenames and state. Checkpoints
+without a recorded analysis model have the limitations described below. Other
 language combinations start their own new checkpoints. To obtain
 language-specific names for an existing legacy batch, run a new batch rather
 than resuming it.
@@ -64,6 +65,10 @@ asks the configured model for a chapter allocation whose integer counts sum to
 the subject total. This allocation is saved in the batch checkpoint and reused
 for every test set in that run. To supply a reviewed allocation instead, add a
 `chapter_counts` mapping keyed by chapter heading or generated chapter ID.
+If the model returns an invalid allocation, the runner requests a correction
+with validation feedback, up to three total planning attempts. If all attempts
+fail, the error is reported and `--resume` can retry without discarding earlier
+valid plans. These additional requests may incur token usage and cost.
 
 Chapters are grouped in syllabus order up to the configured question target.
 Each group request receives its chapter text, exact chapter quotas, and a
@@ -72,7 +77,7 @@ counts. The model must prefix every Moodle question name with its chapter ID
 (for example, `[ch001-kinematics]`); the runner checks the per-chapter counts
 before accepting the group. Valid group responses are saved and reused during
 resume/retry. Each checkpoint is tied to its source syllabus, paper spec,
-allocation settings, and model configuration.
+allocation settings, and analysis backend configuration.
 
 The AI-generated chapter distribution is a proposal based on syllabus scope,
 not official exam weighting. Review and pin it with `chapter_counts` when a
@@ -158,6 +163,21 @@ Keep local vault paths in a separate local batch configuration rather than
 committing machine-specific paths to shared templates. Individual paper
 blueprints do not provide reference defaults.
 
+Reference analysis and AI chapter allocation use a stateless Gemini request,
+separate from the question-generation backend. Set
+`--reference-analysis-model-name` to choose their model; otherwise they use
+`--model-name`. In agent mode, the agent is used for question generation, not
+for reference analysis or chapter allocation. PDF OCR remains a separate
+Mistral operation.
+
+```powershell
+python scripts/run_path_mirrored_paper_generation.py `
+  --mode agent --model-name gemini-3.8-flash `
+  --reference-analysis-model-name gemini-2.5-flash `
+  --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --num-tests 1 --output-root output --resume
+```
+
 By default, the pipeline analyzes the whole reference in fixed batches of 20 PDF
 pages or 20 recognized Markdown questions. Use `--reference-analysis-mode full`
 to send all text and diagrams in one request.
@@ -176,15 +196,23 @@ a guarantee of question quality or an exact style mix. The spec, syllabus and
 marking rules remain authoritative, and the model is instructed to produce
 original questions rather than copy reference questions.
 
-The profile is saved in batch state and reused on resume. Checkpoints include
-the analysis mode, fixed batch size, reference content hash and Markdown image hashes; changing the reference or
-an associated image requires a fresh batch. Keep the reference available when
+The profile is saved in batch state and reused on resume. Checkpoints record
+the analysis model and backend, analysis mode, fixed batch size, reference content
+hash and Markdown image hashes. Changing the analysis model does not prevent
+resume or invalidate an existing profile. Partial analyses resumed with a
+different model may combine results from multiple models; the profile records
+the model used for each batch. Changing the analysis backend, reference or an
+associated image requires a fresh batch. Keep the reference available when
 resuming. Reference content and selected images are sent to the configured AI
 service (and PDFs to the configured OCR service); ensure you have permission to
 use them. Generated prompts and the saved profile may contain short reference
 excerpts, so protect those files accordingly.
 
-Existing checkpoints using the former default batch sizes remain resumable.
+Older checkpoints with references or AI chapter planning do not record the
+analysis backend and cannot safely resume with this version. Use a new output
+directory or `--force` to start a fresh batch; `--force` replaces that
+language's existing batch outputs. Older checkpoints without reference analysis
+or AI chapter planning remain resumable when their other settings match.
 Checkpoints created with custom batch sizes require a fresh run.
 
 PDF OCR artifacts and their local OCR cache are isolated under the exam output
@@ -280,7 +308,7 @@ python -m academic_content_pipeline.unified_pipeline agent generate-paper `
   --spec path/to/paper.yaml --num-tests 100 --output-dir output/mock_tests
 ```
 
-Resume an interrupted run with the same spec, output directory, model, and
+Resume an interrupted run with the same spec, output directory, and compatible
 generation settings:
 
 ```powershell
@@ -292,8 +320,11 @@ To append more test sets while keeping completed outputs, increase
 `--num-tests` and resume. For example, after generating one set, use
 `--num-tests 2 --resume` to retain test 001 and generate test 002. The requested
 count is the desired total, not the number of additional sets. The spec,
-syllabus, model, and other generation settings must remain unchanged; lowering
-the count below the checkpoint's current total is rejected.
+syllabus, analysis backend, and other generation settings must remain unchanged;
+lowering the count below the checkpoint's current total is rejected. The
+question-generation and analysis models and generation agent name can change;
+saved responses, chapter plans, reference profiles, and completed outputs
+remain in use. The generation and analysis backends must still match.
 If resume settings do not match, the runner logs each differing configuration
 field with its saved and requested values to help diagnose the mismatch.
 

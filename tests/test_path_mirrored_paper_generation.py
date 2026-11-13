@@ -155,12 +155,14 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     "--spec-root", str(root / "specs"), "--output-root", str(root / "out"),
                     "--reference-paper", str(root / "reference.md"),
                     "--reference-analysis-mode", "full",
+                    "--reference-analysis-model-name", "analysis-model",
                     "--dry-run",
                 ])
             self.assertEqual(result, 0)
             self.assertIn("--reference-paper", output.getvalue())
             self.assertIn("reference.md", output.getvalue())
             self.assertIn("--reference-analysis-mode full", output.getvalue())
+            self.assertIn("--reference-analysis-model-name analysis-model", output.getvalue())
             self.assertNotIn("--reference-batch-pages", output.getvalue())
             self.assertNotIn("--reference-batch-questions", output.getvalue())
 
@@ -215,22 +217,33 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             root = Path(temporary_directory)
             spec = root / "batch.yaml"
             spec.write_text("exam_name: Test\ntest_count: 1\npapers: []\n", encoding="utf-8")
-            for prefix in (["generate-paper"], ["agent", "generate-paper"]):
-                with self.subTest(prefix=prefix):
+            for prefix, analysis_model in (
+                (prefix, model)
+                for prefix in (["generate-paper"], ["agent", "generate-paper"])
+                for model in (None, "analysis-model")
+            ):
+                with self.subTest(prefix=prefix, analysis_model=analysis_model):
                     argv = [
                         "pipeline", *prefix, "--spec", str(spec), "--output-dir", str(root / "out"),
                         "--no-reference-paper", "--reference-analysis-mode", "full",
+                        "--model-name", "generation-model",
                     ]
+                    if analysis_model:
+                        argv.extend(["--reference-analysis-model-name", analysis_model])
                     with patch("sys.argv", argv), \
                          patch.dict("os.environ", {"GEMINI_API_KEY": "test", "MISTRAL_API_KEY": "test"}), \
                          patch("academic_content_pipeline.unified_pipeline.logger"), \
                          patch("academic_content_pipeline.unified_pipeline.setup_logger"), \
-                         patch("academic_content_pipeline.unified_pipeline.build_communicator"), \
+                         patch("academic_content_pipeline.unified_pipeline.build_communicator") as build, \
+                         patch("academic_content_pipeline.unified_pipeline.SingleShotBackend") as analysis, \
                          patch("academic_content_pipeline.unified_pipeline.MistralOCREngine"), \
                          patch("academic_content_pipeline.unified_pipeline.PaperGenerator") as generator, \
                          patch("academic_content_pipeline.unified_pipeline.PaperBatchRunner") as runner:
                         pipeline_main()
                     self.assertEqual(generator.call_args.kwargs["reference_analysis_mode"], "full")
+                    self.assertIs(generator.call_args.kwargs["communicator"], build.return_value)
+                    self.assertIs(generator.call_args.kwargs["analysis_communicator"], analysis.return_value)
+                    self.assertEqual(analysis.call_args.kwargs["model_name"], analysis_model or "generation-model")
                     self.assertTrue(runner.return_value.run.call_args.kwargs["no_reference_papers"])
 
 

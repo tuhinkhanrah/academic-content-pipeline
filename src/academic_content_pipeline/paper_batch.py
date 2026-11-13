@@ -26,12 +26,14 @@ from .chapter_generation import (
 )
 from .content_processors import build_generated_output_stem
 from .reference_paper import (
-    REFERENCE_BATCH_SIZE, prepare_reference, prepare_reference_storage, reference_fingerprint,
+    REFERENCE_BATCH_SIZE, analysis_communicator_for_comparison, analysis_communicator_identity, prepare_reference,
+    prepare_reference_storage, reference_fingerprint,
 )
 
 logger = logging.getLogger("academic_content_pipeline")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ABSOLUTE_PATH_IN_TEXT = re.compile(r"(?<![\w:])(?:[A-Za-z]:[\\/]|/)[^\s\"'<>]+")
+CHAPTER_PLAN_ATTEMPTS = 3
 
 
 def _absolute_path_parts(value: str) -> Optional[Tuple[str, ...]]:
@@ -677,7 +679,7 @@ def _decode_chapter_plan(raw_response: str, chapters: List[Dict[str, str]], tota
             raise ValueError("Each chapter allocation must be a JSON object.")
         chapter_id = entry.get("id")
         count = entry.get("questions")
-        if chapter_id not in expected_ids:
+        if not isinstance(chapter_id, str) or chapter_id not in expected_ids:
             raise ValueError(f"Unknown chapter ID in AI allocation: {chapter_id!r}.")
         if chapter_id in counts:
             raise ValueError(f"Duplicate chapter ID in AI allocation: {chapter_id!r}.")
@@ -965,6 +967,7 @@ class PaperBatchRunner:
         reference_papers: Dict[str, Path],
     ) -> Dict[str, Any]:
         communicator = self.generator.communicator
+        analysis_communicator = getattr(self.generator, "analysis_communicator", communicator)
         configuration = {
             "generation_strategy": (
                 "chapter-grouped"
@@ -998,6 +1001,12 @@ class PaperBatchRunner:
             ),
             "batch_spec": _portable_configuration_value(batch_spec),
         }
+        if reference_paper is not None or reference_papers or any(
+            paper.get("chapter_generation", {}).get("enabled")
+            and not isinstance(paper["chapter_generation"].get("chapter_counts"), dict)
+            for paper in papers
+        ):
+            configuration["analysis_communicator"] = analysis_communicator_identity(analysis_communicator)
         if reference_paper is not None:
             configuration["reference_paper"] = reference_fingerprint(reference_paper)
             configuration["reference_analysis"] = {
@@ -1016,6 +1025,38 @@ class PaperBatchRunner:
                 "batch_questions": REFERENCE_BATCH_SIZE,
             }
         return configuration
+
+    @staticmethod
+    def _checkpoint_configuration_for_resume(configuration: Dict[str, Any]) -> Dict[str, Any]:
+        ignored_keys = {
+            "test_count",
+            "model_name",
+            "agent_name",
+            "agent_type",
+            "bucket_name",
+            "ocr_model",
+            "verify_online",
+        }
+        result = copy.deepcopy({
+            key: value for key, value in configuration.items() if key not in ignored_keys
+        })
+        if "analysis_communicator" in result:
+            result["analysis_communicator"] = analysis_communicator_for_comparison(
+                result["analysis_communicator"]
+            )
+        batch_spec = result.get("batch_spec")
+        if isinstance(batch_spec, dict) and isinstance(batch_spec.get("papers"), list):
+            batch_spec["papers"] = [
+                {
+                    key: value
+                    for key, value in paper.items()
+                    if key != "reference_paper"
+                }
+                if isinstance(paper, dict)
+                else paper
+                for paper in batch_spec["papers"]
+            ]
+        return result
 
     @staticmethod
     def _scope_items(
@@ -1211,18 +1252,11 @@ class PaperBatchRunner:
             ):
                 saved_test_count = None
             saved_compatible_configuration = (
-                dict(normalized_saved_configuration)
+                self._checkpoint_configuration_for_resume(normalized_saved_configuration)
                 if isinstance(normalized_saved_configuration, dict)
                 else None
             )
-            ignored_resume_fields = {"model_name", "agent_name"}
-            if saved_compatible_configuration is not None:
-                saved_compatible_configuration.pop("test_count", None)
-                for key in ignored_resume_fields:
-                    saved_compatible_configuration.pop(key, None)
-            current_configuration.pop("test_count", None)
-            for key in ignored_resume_fields:
-                current_configuration.pop(key, None)
+            current_configuration = self._checkpoint_configuration_for_resume(current_configuration)
             same_configuration_except_count = (
                 saved_compatible_configuration is not None
                 and saved_compatible_configuration == current_configuration
@@ -1237,6 +1271,16 @@ class PaperBatchRunner:
                 or saved_test_count is None
             )
             if incompatible_checkpoint:
+                if (
+                    isinstance(normalized_saved_configuration, dict)
+                    and "analysis_communicator" not in normalized_saved_configuration
+                    and "analysis_communicator" in configuration
+                ):
+                    raise ValueError(
+                        "Cannot resume batch generation: settings differ because the checkpoint "
+                        "does not record the reference analysis/chapter planning model. "
+                        "Use a new output directory or --force to start a fresh batch."
+                    )
                 differences = []
                 if not isinstance(manifest, dict):
                     differences.append("checkpoint: expected a JSON object")
@@ -1350,6 +1394,7 @@ class PaperBatchRunner:
         batch_was_complete = bool(items) and all(
             item.get("status") == "completed" for item in items
         )
+        analysis_communicator = getattr(self.generator, "analysis_communicator", self.generator.communicator)
         if reference_paper is not None and not batch_was_complete:
             profile_path = state_dir / "reference_style_profile.json"
             saved_profile_hash = manifest.get("reference_profile_sha256")
@@ -1370,7 +1415,7 @@ class PaperBatchRunner:
                         if chapter["title"] not in titles:
                             titles.append(chapter["title"])
             self.generator.reference_profile = prepare_reference(
-                reference_paper, subject_names, self.generator.communicator,
+                reference_paper, subject_names, analysis_communicator,
                 self.generator.ocr_engine, prepare_reference_storage(
                     output_dir, exam_name, "shared", configuration["reference_paper"]
                 ),
@@ -1413,7 +1458,7 @@ class PaperBatchRunner:
                         if chapter["title"] not in titles:
                             titles.append(chapter["title"])
                 paper_profiles[paper_id] = prepare_reference(
-                    path, subject_names, self.generator.communicator,
+                    path, subject_names, analysis_communicator,
                     self.generator.ocr_engine, reference_dir, profile_path, chapter_titles,
                     analysis_mode=getattr(self.generator, "reference_analysis_mode", "batched"),
                     purpose_label=paper_id,
@@ -1464,24 +1509,43 @@ class PaperBatchRunner:
                             subject["question_count"],
                             subject["chapters"],
                         )
-                        raw_plan = self.generator.communicator.generate(
-                            system_instruction=(
-                                "You are an exam-paper blueprint planner. Return only "
-                                "valid JSON matching the requested chapter allocation "
-                                "schema. Do not write questions."
-                            ),
-                            contents=prompt,
-                            reset_session=True,
-                            purpose=(
-                                f"plan chapter question allocations for {subject['name']} "
-                                f"(paper {paper['id']}, {subject['question_count']} questions)"
-                            ),
-                        )
-                        chapter_counts = _decode_chapter_plan(
-                            str(raw_plan),
-                            subject["chapters"],
-                            subject["question_count"],
-                        )
+                        retry_prompt = prompt
+                        for attempt in range(1, CHAPTER_PLAN_ATTEMPTS + 1):
+                            raw_plan = analysis_communicator.generate(
+                                system_instruction=(
+                                    "You are an exam-paper blueprint planner. Return only "
+                                    "valid JSON matching the requested chapter allocation "
+                                    "schema. Do not write questions."
+                                ),
+                                contents=retry_prompt,
+                                reset_session=True,
+                                purpose=(
+                                    f"plan chapter question allocations for {subject['name']} "
+                                    f"(paper {paper['id']}, {subject['question_count']} questions; "
+                                    f"plan attempt {attempt}/{CHAPTER_PLAN_ATTEMPTS})"
+                                ),
+                            )
+                            try:
+                                chapter_counts = _decode_chapter_plan(
+                                    str(raw_plan), subject["chapters"], subject["question_count"]
+                                )
+                                break
+                            except ValueError as exc:
+                                logger.warning(
+                                    "Invalid chapter allocation for %s (paper %s), attempt %d/%d: %s",
+                                    subject["name"], paper["id"], attempt, CHAPTER_PLAN_ATTEMPTS, exc,
+                                )
+                                if attempt == CHAPTER_PLAN_ATTEMPTS:
+                                    raise ValueError(
+                                        f"AI chapter allocation for {subject['name']} (paper {paper['id']}) "
+                                        f"failed validation after {CHAPTER_PLAN_ATTEMPTS} attempts: {exc}"
+                                    ) from exc
+                                retry_prompt = (
+                                    f"{prompt}\n\nThe previous allocation failed validation: {exc}\n"
+                                    f"Previous response:\n{raw_plan}\n\n"
+                                    "Correct the allocation and return the complete JSON object. "
+                                    f"The counts must sum to exactly {subject['question_count']}."
+                                )
                     manifest["chapter_plans"][plan_key] = chapter_counts
                     self._write_manifest(manifest_path, manifest)
 

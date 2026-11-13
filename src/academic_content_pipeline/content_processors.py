@@ -2881,8 +2881,10 @@ class PaperGenerator:
         reference_paper: Optional[Path] = None,
         reference_analysis_mode: str = "batched",
         reference_papers: Optional[Dict[str, Path]] = None,
+        analysis_communicator: Optional[BaseAICommunicator] = None,
     ):
         self.communicator = communicator
+        self.analysis_communicator = analysis_communicator or communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
         self.rules_dict = rules_dict or {}
         self._base_rules_dict = dict(self.rules_dict)
@@ -3042,7 +3044,7 @@ class PaperGenerator:
                     output_dir, str(exam_name), "paper", reference_fingerprint(self.reference_paper)
                 )
                 self.reference_profile = prepare_reference(
-                    self.reference_paper, subject_names, self.communicator,
+                    self.reference_paper, subject_names, self.analysis_communicator,
                     self.ocr_engine, reference_dir,
                     reference_dir / "reference_style_profile.json", reference_chapters,
                     analysis_mode=self.reference_analysis_mode,

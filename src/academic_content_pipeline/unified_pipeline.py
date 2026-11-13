@@ -309,6 +309,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
     reference_options.add_argument("--no-reference-paper", action="store_true", help="Ignore reference papers configured in the batch template.")
     p_syl.add_argument("--reference-analysis-mode", choices=["batched", "full"], default="batched")
+    p_syl.add_argument("--reference-analysis-model-name", default=None, help="Gemini model for reference analysis and chapter planning (defaults to --model-name).")
     p_syl.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3", help="Difficulty ratio breakdown.")
     p_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
@@ -535,6 +536,7 @@ def main():
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
     reference_options.add_argument("--no-reference-paper", action="store_true", help="Ignore reference papers configured in the batch template.")
     p_direct_syl.add_argument("--reference-analysis-mode", choices=["batched", "full"], default="batched")
+    p_direct_syl.add_argument("--reference-analysis-model-name", default=None, help="Gemini model for reference analysis and chapter planning (defaults to --model-name).")
     p_direct_syl.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_syl.add_argument("--difficulty-mix", default="easy:0.2,medium:0.5,hard:0.3")
     p_direct_syl.add_argument("--num-tests", type=int, default=None, help="Generate this many test sets from the spec.")
@@ -982,8 +984,16 @@ def main():
             is_batch = is_batch_paper_spec(args.spec, args.num_tests)
             if reference_papers and not is_batch:
                 raise ValueError("Paper-specific references require a batch run; use an unkeyed reference for a single paper.")
+            analysis_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            analysis_communicator = SingleShotBackend(
+                client=analysis_client,
+                model_name=args.reference_analysis_model_name or args.model_name,
+                attempt_limit=args.retry_limit,
+                verbose=args.verbose,
+            )
             mock_generator = PaperGenerator(
                 communicator=communicator,
+                analysis_communicator=analysis_communicator,
                 ocr_engine=ocr_engine,
                 rules_dict=rules_dict,
                 languages=languages_list,

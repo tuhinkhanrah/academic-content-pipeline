@@ -7,15 +7,13 @@ question_types:
   - type: assertion_reason
     weight: 0.088889
   - type: diagram_image
-    weight: 0.044444
-  - type: match_list
     weight: 0.088889
-  - type: numerical
-    weight: 0.177778
+  - type: match_list
+    weight: 0.133333
   - type: sequencing
     weight: 0.066667
   - type: standard_mcq
-    weight: 0.422222
+    weight: 0.511111
   - type: statement_based_2
     weight: 0.066667
   - type: statement_based_3

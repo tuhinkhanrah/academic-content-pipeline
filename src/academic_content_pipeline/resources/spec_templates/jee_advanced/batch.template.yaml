@@ -1,5 +1,5 @@
 exam_name: JEE Advanced
-test_count: 100
+test_count: 50
 uniqueness_scope: all_papers
 papers:
 - id: paper1

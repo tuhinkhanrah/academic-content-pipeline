@@ -1,5 +1,5 @@
 exam_name: NEET UG
-test_count: 100
+test_count: 50
 uniqueness_scope: all_papers
 papers:
 - id: full_paper
