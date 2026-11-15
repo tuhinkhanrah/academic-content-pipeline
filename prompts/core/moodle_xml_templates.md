@@ -69,15 +69,41 @@ Fixed 4-option pattern — always use exactly these option texts in this order:
 
 ### 6.1 Native (`type="matching"`)
 
+Use one `<subquestion>` for each item and its correct match. Repeat as needed.
+Translate language-dependent item and match text according to the requested
+languages; keep language-independent symbols and units canonical. If the source
+includes an extra unmatched choice, add it as a subquestion with an empty
+`<text>` and its distractor inside `<answer><text>`.
+
 <question type="matching">
   <name><text>NAME</text></name>
-  <questiontext format="html"><text><![CDATA[<p>Match Column A with Column B:</p>]]></text></questiontext>
+  <questiontext format="html"><text><![CDATA[<p>QUESTION</p>]]></text></questiontext>
   <generalfeedback format="html"><text><![CDATA[<p>EXPLANATION</p>]]></text></generalfeedback>
   <defaultgrade>1.0000000</defaultgrade>
+  <penalty>0.2500000</penalty>
+  <hidden>0</hidden>
   <shuffleanswers>true</shuffleanswers>
-  <subquestion format="html"><text><![CDATA[<p>ITEM_A</p>]]></text><answer><text>MATCH_B</text></answer></subquestion>
+  <subquestion format="html">
+    <text><![CDATA[<p>ITEM_1</p>]]></text>
+    <answer><text>MATCH_1</text></answer>
+  </subquestion>
+  <subquestion format="html">
+    <text><![CDATA[<p>ITEM_2</p>]]></text>
+    <answer><text>MATCH_2</text></answer>
+  </subquestion>
+  <subquestion format="html">
+    <text><![CDATA[<p>ITEM_3</p>]]></text>
+    <answer><text>MATCH_3</text></answer>
+  </subquestion>
   <tags><tag><text>typology:matching-native</text></tag></tags>
 </question>
+
+Optional distractor (include inside the question only when present in the source):
+
+<subquestion format="html">
+  <text></text>
+  <answer><text>DISTRACTOR</text></answer>
+</subquestion>
 
 ### 6.2 Via Standard MCQ (`type="multichoice"`)
 

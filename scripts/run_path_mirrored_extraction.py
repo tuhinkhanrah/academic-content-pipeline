@@ -86,6 +86,34 @@ def should_skip(output_xml: Path, force: bool = False) -> bool:
     return output_xml.exists() and output_xml.stat().st_size > 0
 
 
+def normalized_languages(languages: str) -> List[str]:
+    return list(dict.fromkeys(
+        token
+        for token in (
+            re.sub(r"[^a-zA-Z0-9._-]+", "_", language.strip()).strip("._-").lower()
+            for language in languages.split(",")
+        )
+        if token
+    )) or ["english"]
+
+
+def generated_output_path(
+    output_dir: Path,
+    source_stem: str,
+    standard: str,
+    languages: str,
+) -> Path:
+    """Build the extraction output path for the requested standard and language set."""
+    name_parts = [source_stem]
+    standard_token = re.sub(r"[^a-zA-Z0-9._-]+", "_", standard).strip("._-").lower()
+    if standard_token and standard_token != "general":
+        name_parts.append(standard_token)
+    name_parts.extend(normalized_languages(languages))
+    generated_prefix = "_".join(name_parts)
+
+    return output_dir / f"{generated_prefix}.xml"
+
+
 def find_existing_output(
     output_dir: Path,
     source_stem: str,
@@ -93,26 +121,9 @@ def find_existing_output(
     languages: str,
 ) -> Path | None:
     """Find an extraction output for the requested standard and language set."""
-    name_parts = [source_stem]
+    candidates = [generated_output_path(output_dir, source_stem, standard, languages)]
     standard_token = re.sub(r"[^a-zA-Z0-9._-]+", "_", standard).strip("._-").lower()
-    if standard_token and standard_token != "general":
-        name_parts.append(standard_token)
-    language_tokens = list(
-        dict.fromkeys(
-            token
-            for token in (
-                re.sub(r"[^a-zA-Z0-9._-]+", "_", language.strip()).strip("._-").lower()
-                for language in languages.split(",")
-            )
-            if token
-        )
-    )
-    if not language_tokens:
-        language_tokens = ["english"]
-    name_parts.extend(language_tokens)
-    generated_prefix = "_".join(name_parts)
-
-    candidates = [output_dir / f"{generated_prefix}.xml"]
+    language_tokens = normalized_languages(languages)
     if standard_token in {"", "general"} and language_tokens == ["english"]:
         candidates.append(output_dir / f"{source_stem}.xml")
     return next(
@@ -206,6 +217,69 @@ def execute_pdf_command(cmd: List[str], pdf_path: Path) -> int:
     return 0
 
 
+def repair_outputs(
+    source_root: Path,
+    output_root: Path,
+    backup_root: Path,
+    languages: str,
+    dry_run: bool,
+) -> int:
+    from rebuild_ncert_exemplar_xml import repair_manifest
+    import xml.etree.ElementTree as ET
+
+    candidates = []
+    errors = []
+    skipped = 0
+    for pdf_path in iter_pdfs(source_root):
+        if not any(part.casefold() == "ncert_exemplar" for part in pdf_path.parts):
+            errors.append(f"{pdf_path}: repair is supported only for NCERT Exemplar PDFs.")
+            continue
+        output_dir = build_output_dir(source_root, pdf_path, output_root)
+        standard, _ = infer_metadata_from_path(pdf_path, source_root)
+        xml_path = generated_output_path(output_dir, pdf_path.stem, standard, languages)
+        manifest_path = xml_path.with_suffix(".extract.json")
+        if not manifest_path.is_file() and not xml_path.exists():
+            skipped += 1
+            print(f"Skipped {pdf_path}: no output or checkpoint for {languages}.")
+            continue
+        try:
+            count = repair_manifest(
+                manifest_path, pdf_path, xml_path, output_root, backup_root, dry_run=True
+            )
+            candidates.append((pdf_path, manifest_path, xml_path, count))
+        except (OSError, UnicodeError, ET.ParseError, ValueError, TypeError) as exc:
+            errors.append(f"{pdf_path}: {exc}")
+
+    if not candidates and not errors:
+        errors.append("No matching completed extraction checkpoints were found.")
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        print("Repair preflight failed; no files were changed.", file=sys.stderr)
+        return 1
+    print(f"Preflight passed for {len(candidates)} chapter(s); {skipped} without output skipped.")
+    print(f"Backups: {backup_root}")
+    if dry_run:
+        for _, _, xml_path, count in candidates:
+            print(f"Would repair {xml_path} ({count} questions).")
+        return 0
+
+    backup_root.mkdir(parents=True, exist_ok=False)
+    repaired = 0
+    for pdf_path, manifest_path, xml_path, _ in candidates:
+        try:
+            count = repair_manifest(manifest_path, pdf_path, xml_path, output_root, backup_root)
+        except (OSError, UnicodeError, ET.ParseError, ValueError, TypeError, RuntimeError) as exc:
+            print(f"ERROR: {pdf_path}: {exc}", file=sys.stderr)
+            print(f"Stopped after repairing {repaired} chapter(s). Backups: {backup_root}", file=sys.stderr)
+            return 1
+        repaired += 1
+        print(f"Repaired {xml_path} ({count} questions).")
+    print(f"Repaired {repaired} chapter(s). Backups: {backup_root}")
+    print("Review recovered questions against the source before use.")
+    return 0
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mirror a PDF vault and infer metadata from source paths.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root directory containing PDFs.")
@@ -226,6 +300,8 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Only print the commands without executing them.")
     parser.add_argument("--force", action="store_true", help="Re-run extraction even when the target XML already exists.")
     parser.add_argument("--resume", action="store_true", help="Resume extraction from per-PDF batch checkpoints.")
+    parser.add_argument("--repair", action="store_true", help="Rebuild existing XML and batch checkpoints offline from saved responses.")
+    parser.add_argument("--repair-backup-root", type=Path, default=None, help="New, separate directory for pre-repair backups; required with --repair.")
     parser.add_argument(
         "--replace-pages",
         type=int,
@@ -236,6 +312,14 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the extraction run.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
     args = parser.parse_args(argv)
+    if args.repair and (args.force or args.resume or args.replace_pages):
+        parser.error("--repair cannot be combined with --force, --resume or --replace-pages.")
+    if args.repair and args.repair_backup_root is None:
+        parser.error("--repair requires --repair-backup-root.")
+    if args.repair_backup_root is not None and not args.repair:
+        parser.error("--repair-backup-root requires --repair.")
+    if args.repair and args.parallel_workers not in (None, 1):
+        parser.error("--repair requires --parallel-workers 1.")
     if args.force and (args.resume or args.replace_pages):
         parser.error(
             "--force cannot be combined with --resume or a replacement option."
@@ -254,6 +338,17 @@ def main(argv: List[str] | None = None) -> int:
     output_root = args.output_root.resolve()
     if not source_root.exists():
         raise FileNotFoundError(f"Source root does not exist: {source_root}")
+
+    if args.repair:
+        backup_root = args.repair_backup_root.resolve()
+        for root in (source_root, output_root):
+            if backup_root.is_relative_to(root) or root.is_relative_to(backup_root):
+                parser.error("--repair-backup-root must be separate from source and output roots.")
+        if backup_root.exists():
+            parser.error("--repair-backup-root must be a new directory.")
+        if not source_root.is_dir() or not output_root.is_dir():
+            parser.error("--repair requires existing source and output directories.")
+        return repair_outputs(source_root, output_root, backup_root, args.languages, args.dry_run)
 
     output_root.mkdir(parents=True, exist_ok=True)
 

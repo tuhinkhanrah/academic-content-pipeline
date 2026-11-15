@@ -938,6 +938,125 @@ def is_valid_empty_question_response(response: str) -> bool:
     )
 
 
+def is_ncert_exemplar_source(pdf_path: Path) -> bool:
+    return any(part.casefold() == "ncert_exemplar" for part in Path(pdf_path).parts)
+
+
+def ncert_exemplar_section_context(pages: List[Any]) -> Dict[int, Optional[str]]:
+    contexts: Dict[int, Optional[str]] = {}
+    section = None
+    in_answers = False
+    for page in pages:
+        contexts[page.page_num] = section
+        for line in page.markdown.splitlines():
+            heading = re.sub(r"^\s*#+\s*", "", line).strip().strip("* ")
+            if re.fullmatch(r"answers(?:\s+and\s+explanations)?", heading, re.IGNORECASE):
+                section = "Answers"
+                in_answers = True
+            elif not in_answers and (
+                re.fullmatch(r"(?:MCQ|MC9|MCG)\s*(?:I{1,3}|[1-3])?", heading, re.IGNORECASE)
+                or re.fullmatch(r"(?:VSA|SA|LA)", heading, re.IGNORECASE)
+                or re.fullmatch(
+                    r"(?:[IVX]+\.\s*)?(?:multiple[- ]choice questions?|"
+                    r"(?:very\s+)?short answer(?: type)?(?: questions?)?|"
+                    r"long answer(?: type)?(?: questions?)?|matching type|"
+                    r"assertion and reason type)(?:\s*\(type[- ](?:I{1,3}|[1-3])\))?",
+                    heading,
+                    re.IGNORECASE,
+                )
+                or (
+                    "comprehension given below" in heading.casefold()
+                    and "multiple choice questions" in heading.casefold()
+                )
+            ):
+                section = heading
+    return contexts
+
+
+def validate_ncert_exemplar_questions(nodes: List[str]) -> None:
+    for node in nodes:
+        question = ET.fromstring(node)
+        if question.tag != "question" or question.get("type") not in {"multichoice", "matching"}:
+            raise ValueError(
+                "NCERT Exemplar output must contain only multichoice or matching questions; "
+                f"found tag={question.tag!r}, type={question.get('type')!r}."
+            )
+        name = (question.findtext("name/text") or "").strip()
+        label = f"{name!r}" if name else "(unnamed)"
+        for field in ("name/text", "questiontext/text", "generalfeedback/text"):
+            if not (question.findtext(field) or "").strip():
+                raise ValueError(f"NCERT Exemplar question {label} is missing {field}.")
+        if question.get("type") == "matching":
+            subquestions = question.findall("subquestion")
+            if len(subquestions) < 3 or sum(
+                bool((subquestion.findtext("text") or "").strip())
+                for subquestion in subquestions
+            ) < 2:
+                raise ValueError(
+                    f"NCERT Exemplar matching question {label} must have at least "
+                    "two items and three choices."
+                )
+            for subquestion in subquestions:
+                if subquestion.find("text") is None or not (
+                    subquestion.findtext("answer/text") or ""
+                ).strip():
+                    raise ValueError(
+                        f"NCERT Exemplar matching question {label} has an invalid item or answer."
+                    )
+            continue
+        single = (question.findtext("single") or "").strip().lower()
+        if single not in {"true", "false"}:
+            raise ValueError(f"NCERT Exemplar question {label} must specify single=true or false.")
+        answers = question.findall("answer")
+        if len(answers) < 2:
+            raise ValueError(f"NCERT Exemplar question {label} must have at least two answers.")
+        fractions = []
+        for answer in answers:
+            if not (answer.findtext("text") or "").strip():
+                raise ValueError(f"NCERT Exemplar question {label} has an empty answer.")
+            try:
+                fraction = float(answer.attrib["fraction"])
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"Invalid answer fraction in NCERT Exemplar question {label}.") from exc
+            if not math.isfinite(fraction) or not -100 <= fraction <= 100:
+                raise ValueError(f"Invalid answer fraction in NCERT Exemplar question {label}.")
+            fractions.append(fraction)
+        positive = [fraction for fraction in fractions if fraction > 0]
+        if (
+            not positive
+            or abs(sum(positive) - 100) > 0.02
+            or (single == "true" and len(positive) != 1)
+        ):
+            raise ValueError(f"Invalid correct-answer grading in NCERT Exemplar question {label}.")
+
+
+def validate_ncert_exemplar_files(quiz: ET.Element) -> None:
+    for question in quiz.findall("question"):
+        name = (question.findtext("name/text") or "").strip()
+        label = f"{name!r}" if name else "(unnamed)"
+        fields = (
+            question.findall("questiontext")
+            + question.findall("generalfeedback")
+            + question.findall("answer")
+            + question.findall("subquestion")
+            + question.findall("subquestion/answer")
+        )
+        for field in fields:
+            references = set(
+                re.findall(r"""@@PLUGINFILE@@/([^"'\s<>?#]+)""", field.findtext("text") or "")
+            )
+            embedded = {
+                file.get("name")
+                for file in field.findall("file")
+                if (file.text or "").strip()
+            }
+            missing = sorted(references - embedded)
+            if missing:
+                raise ValueError(
+                    f"NCERT Exemplar question {label} has missing embedded files: {missing}."
+                )
+
+
 # =======================================================================
 # 1. Question Paper Extractor Class
 # =======================================================================
@@ -1029,6 +1148,7 @@ class QuestionPaperExtractor:
         page_data: Any,
         markdown_dir: Path,
         pdf_path: Path,
+        output_stem: str,
     ) -> Optional[str]:
         if page_data is None:
             return None
@@ -1052,7 +1172,7 @@ class QuestionPaperExtractor:
             page_range=(page_data.page_num, page_data.page_num),
         )
 
-        snapshot_path = markdown_dir / f"{pdf_path.stem}_instruction_page_check_prompt.md"
+        snapshot_path = markdown_dir / f"{output_stem}_instruction_page_check_prompt.md"
         raw_response = self.page_check_communicator.generate(
             system_instruction=(
                 "You are a strict exam-paper classifier. Determine whether the supplied page is an instruction page. "
@@ -1060,7 +1180,7 @@ class QuestionPaperExtractor:
                 "When the page is not an instruction page, set is_instruction_page to false and summary to an empty string."
             ),
             contents=multimodal_batch,
-            output_filename=f"{pdf_path.stem}_instruction_page_check.json",
+            output_filename=f"{output_stem}_instruction_page_check.json",
             prompt_snapshot_path=snapshot_path,
             purpose=f"classify instruction page {page_data.page_num} of {pdf_path.name}",
         )
@@ -1133,6 +1253,7 @@ class QuestionPaperExtractor:
             "bucket_name",
             "ocr_model",
             "verify_online",
+            "ncert_exemplar_prompt_sha256",
         }
         return {
             key: value
@@ -1160,6 +1281,11 @@ class QuestionPaperExtractor:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
+        ncert_prompt = None
+        if is_ncert_exemplar_source(pdf_path):
+            ncert_prompt = (PROMPTS_DIR / "extractor" / "ncert_exemplar.md").read_text(
+                encoding="utf-8"
+            )
 
         paper_dir, markdown_dir, img_output_dir, temp_dir, prompt_dir = resolve_output_layout(
             input_root=input_root,
@@ -1324,7 +1450,9 @@ class QuestionPaperExtractor:
                 (page for page in ocr_result.pages if getattr(page, "page_num", None) == target_page_num),
                 ocr_result.pages[0],
             )
-            instruction_page_summary = self._detect_instruction_page_summary(instruction_page, markdown_dir, pdf_path)
+            instruction_page_summary = self._detect_instruction_page_summary(
+                instruction_page, markdown_dir, pdf_path, output_stem
+            )
 
         # 2. Assemble system prompt rules
         system_instruction = assemble_prompt_files(
@@ -1349,8 +1477,18 @@ class QuestionPaperExtractor:
                 standards=self.standards,
                 global_tags="\n".join(f"  <tag><text>{tag}</text></tag>" for tag in all_tags),
             )
+        if ncert_prompt is not None:
+            system_instruction += (
+                f"\n\n## NCERT Exemplar source-specific rules\n"
+                f"{ncert_prompt}"
+            )
 
         pages_to_process = ocr_result.pages if hasattr(ocr_result, "pages") and ocr_result.pages else []
+        section_context = (
+            ncert_exemplar_section_context(pages_to_process)
+            if ncert_prompt is not None
+            else {}
+        )
 
         if self.output_format == "xml":
             page_batches = []
@@ -1476,7 +1614,7 @@ class QuestionPaperExtractor:
             all_questions_xml: List[str] = []
             output_filepath = paper_dir / f"{output_stem}.xml"
 
-            def write_current_output() -> None:
+            def write_current_output(current_record: Optional[Dict[str, Any]] = None) -> None:
                 combined_xml = (
                     '<?xml version="1.0" encoding="UTF-8"?>\n'
                     "<quiz>\n"
@@ -1488,11 +1626,20 @@ class QuestionPaperExtractor:
                     ocr_result.all_images,
                 )
                 try:
-                    ET.fromstring(current_xml)
+                    quiz = ET.fromstring(current_xml)
                 except ET.ParseError as exc:
                     raise ValueError(
                         "Final extracted Moodle XML is not well-formed."
                     ) from exc
+                if ncert_prompt is not None:
+                    try:
+                        validate_ncert_exemplar_files(quiz)
+                    except ValueError as exc:
+                        if current_record is not None:
+                            current_record["status"] = "failed"
+                            current_record["error"] = str(exc)
+                            write_json_atomically(manifest_path, manifest)
+                        raise
                 write_text_atomically(output_filepath, current_xml)
 
             for batch_index, (batch_id, filtered_batch) in enumerate(
@@ -1511,6 +1658,14 @@ class QuestionPaperExtractor:
                     else None
                 )
                 if valid_nodes is not None and len(valid_nodes) == record.get("question_count"):
+                    if ncert_prompt is not None:
+                        try:
+                            validate_ncert_exemplar_questions(all_questions_xml + valid_nodes)
+                        except ValueError as exc:
+                            record["status"] = "failed"
+                            record["error"] = str(exc)
+                            write_json_atomically(manifest_path, manifest)
+                            raise
                     logger.info(
                         "⏭️ Reusing completed extraction for pages %s-%s (%s question(s)).",
                         batch_start,
@@ -1519,7 +1674,7 @@ class QuestionPaperExtractor:
                     )
                     all_questions_xml.extend(valid_nodes)
                     if not self.replace_pages:
-                        write_current_output()
+                        write_current_output(record)
                     continue
 
                 if (
@@ -1542,6 +1697,14 @@ class QuestionPaperExtractor:
                             image_ids=str(list(page_data.images.keys())),
                             ocr_markdown=page_data.markdown,
                         )
+                        if ncert_prompt is not None:
+                            previous_section = section_context.get(page_data.page_num)
+                            page_prompt = (
+                                f"NCERT Exemplar preceding section: "
+                                f"{previous_section or 'unknown'}\n"
+                                f"(A heading on this page overrides the preceding section.)\n\n"
+                                + page_prompt
+                            )
                         batch_prompt_parts.append(page_prompt)
                         for img_name, filepath in unique_image_items(page_data.images):
                             batch_images.append(
@@ -1553,7 +1716,7 @@ class QuestionPaperExtractor:
                         images=batch_images,
                         page_range=(batch_start, batch_end),
                     )
-                    snapshot_name = f"{pdf_path.stem}_pages_{batch_start}_{batch_end}_prompt.md"
+                    snapshot_name = f"{output_stem}_pages_{batch_start}_{batch_end}_prompt.md"
                     snapshot_path = prompt_dir / snapshot_name
                     write_prompt_snapshot(snapshot_path, system_instruction, multimodal_batch)
                     record["status"] = "in_progress"
@@ -1565,7 +1728,7 @@ class QuestionPaperExtractor:
                         raw_batch_output = self.communicator.generate(
                             system_instruction=system_instruction,
                             contents=multimodal_batch,
-                            output_filename=f"{batch_id}.xml",
+                            output_filename=f"{output_stem}_{batch_id}.xml",
                             prompt_snapshot_path=snapshot_path,
                             purpose=f"extract questions from {pdf_path.name}, pages {batch_start}-{batch_end}",
                         )
@@ -1600,6 +1763,14 @@ class QuestionPaperExtractor:
                         f"Invalid extraction response for pages {batch_start}-{batch_end}: "
                         f"{error_message}"
                     )
+                if ncert_prompt is not None:
+                    try:
+                        validate_ncert_exemplar_questions(all_questions_xml + valid_nodes)
+                    except ValueError as exc:
+                        record["status"] = "failed"
+                        record["error"] = str(exc)
+                        write_json_atomically(manifest_path, manifest)
+                        raise
                 if (
                     self.replace_pages
                     and batch_id in replacement_batch_ids
@@ -1636,7 +1807,7 @@ class QuestionPaperExtractor:
                 write_json_atomically(manifest_path, manifest)
                 all_questions_xml.extend(valid_nodes)
                 if not self.replace_pages:
-                    write_current_output()
+                    write_current_output(record)
                 if valid_nodes:
                     logger.info(
                         "  ✓ Pages %s-%s: Extracted %s question(s).",
@@ -3094,7 +3265,12 @@ class PaperGenerator:
         output_artifact_name = f"{generation_stem}.{intermediate_ext if self.output_format == 'pdf' else 'xml'}"
 
         # 4. Dispatch to communicator
-        snapshot_path = prompt_dir / f"{generation_stem}_prompt.md"
+        snapshot_stem = (
+            build_generated_output_stem(generation_stem, self.languages)
+            if output_stem is not None
+            else generation_stem
+        )
+        snapshot_path = prompt_dir / f"{snapshot_stem}_prompt.md"
         write_prompt_snapshot(
             snapshot_path,
             system_instruction,

@@ -252,6 +252,36 @@ class ReferencePaperTests(unittest.TestCase):
                 generator.process_spec(spec, root / "out")
             self.assertIn("Paper-specific style", communicator.calls[0]["contents"].text)
 
+    def test_paper_prompt_snapshots_include_language_with_custom_output_stem(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "syllabus.md").write_text("# Motion", encoding="utf-8")
+            spec = root / "spec.yaml"
+            spec.write_text(
+                "exam_name: Test\nsubjects:\n"
+                "  - name: Physics\n    total_questions: 1\n    syllabus_file: syllabus.md\n",
+                encoding="utf-8",
+            )
+            for languages, suffix in (
+                (["english"], "english"),
+                (["english", "bengali"], "english_bengali"),
+                (["english", "hindi"], "english_hindi"),
+            ):
+                communicator = ReferenceCommunicator()
+                communicator.generate = lambda **kwargs: communicator.calls.append(kwargs) or "<quiz />"
+                generator = PaperGenerator(
+                    communicator=communicator, ocr_engine=object(), languages=languages
+                )
+                generator.renderer = SimpleNamespace(
+                    render=lambda output, directory, stem: directory / f"{stem}.xml"
+                )
+                result = generator.process_spec(spec, root / "out", output_stem="custom")
+                snapshot = communicator.calls[0]["prompt_snapshot_path"]
+                self.assertEqual(snapshot.name, f"custom_{suffix}_prompt.md")
+                self.assertTrue(snapshot.is_file())
+                self.assertEqual(result.name, "custom.xml")
+            self.assertEqual(len(list((root / "out" / ".tmp" / "prompts").glob("custom_*_prompt.md"))), 3)
+
     def test_markdown_analysis_is_cached_and_tracks_images(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

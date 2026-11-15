@@ -294,6 +294,11 @@ python scripts/run_path_mirrored_paper_generation.py `
   --resume
 ```
 
+Prompt snapshot filenames include the requested language set, including when a
+paper uses a custom output stem. This naming does not isolate other files:
+use separate output roots for concurrent language runs that may share OCR,
+reference, cache or output files.
+
 The script defaults to one concurrent spec run. Use `--parallel-workers` to
 raise concurrency, `--dry-run` to preview commands, and `--resume` to reuse
 checkpoints; when no checkpoint exists, the runner starts a fresh generation.

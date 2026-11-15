@@ -804,6 +804,27 @@ def fix_and_inject_moodle_xml(raw_xml: str, image_map: Dict[str, str]) -> str:
     pattern = r"<(questiontext|answer|generalfeedback)[^>]*>.*?</\1>"
     processed_xml = re.sub(pattern, inject_file_tag, xml_fixed, flags=re.DOTALL)
 
+    def inject_subquestion_files(match):
+        prefix, existing = match.group(1), match.group(2)
+        found_imgs = re.findall(r"@@PLUGINFILE@@/([a-zA-Z0-9_\-\.]+)", prefix)
+        for img_name in set(found_imgs):
+            clean_id = img_name.replace(".jpeg", "").replace(".jpg", "")
+            target_key = next((k for k in b64_map.keys() if clean_id in k), None)
+            if target_key and f'<file name="{img_name}"' not in existing:
+                existing += (
+                    f'\n      <file name="{img_name}" encoding="base64">'
+                    f'{b64_map[target_key]}</file>'
+                )
+        return prefix + existing
+
+    processed_xml = re.sub(
+        r"(<subquestion\b[^>]*>\s*<text>.*?</text>)"
+        r"(\s*(?:<file\b[^>]*>.*?</file>\s*)*)(?=<answer\b)",
+        inject_subquestion_files,
+        processed_xml,
+        flags=re.DOTALL,
+    )
+
     processed_xml = re.sub(
         r"<name>\s*<!\[CDATA\[(.*?)\]\]>\s*</name>",
         r"<name>\n        <text>\1</text>\n    </name>",
