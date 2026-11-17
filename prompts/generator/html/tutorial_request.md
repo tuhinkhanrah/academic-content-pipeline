@@ -11,19 +11,27 @@ Create a complete tutorial from the supplied chapter or syllabus content. Explai
 - Use `\( ... \)` for inline math and `\[ ... \]` for display math. Never use `$` or `$$` delimiters.
 - Do not reference, embed, or depend on external or local image files. Do not emit `<img>` elements, image URLs, file paths, CSS background images, or other image references.
 - When a visual is useful, draw it directly in the HTML as inline `<svg>` markup. The SVG must be self-contained and must not use external resources, `<image>` elements, or linked assets.
-- Use only the supplied source content for factual teaching points. Do not invent facts, data, source attributions, or past-paper claims.
+- Use the supplied source content for factual teaching points. Do not invent source-specific facts, data, source attributions, or past-paper claims; clearly label hypothetical values used in original examples.
+
+# Originality and Source Use
+- Treat the source Markdown and any reference images as a guide to topic scope and scientific accuracy, not as text or artwork to reproduce. Write explanations independently from the underlying concepts; never copy distinctive phrasing or paraphrase the source line by line.
+- Create an independent heading hierarchy, topic sequence, and table layouts. Develop core intuition, principles and mechanisms, exceptions and misconceptions, and original worked examples as relevant to each topic.
+- Invent fresh scenarios and numerical values for worked examples and practice questions instead of reusing source examples. Preserve established constants, equations, and scientific facts accurately, and label hypothetical values as assumptions.
+- Use reference images only to identify scientifically necessary components and labels. Draw original diagrams from scratch without tracing or imitating their layout, viewpoint, proportions, shading, or artistic style. Preserve necessary scientific geometry and relationships; omit a diagram if it cannot be drawn accurately without copying.
+- Use a consistent minimalist 2D flat-vector style with sans-serif labels, crisp geometric shapes, straight leader lines, and print-legible colors such as #1E293B, #2563EB, #0D9488, and #F8FAFC.
 
 # Standalone Content — Strict No-Reference Rule
 - The tutorial must make complete sense without access to the source chapter, textbook, OCR Markdown, or any other document.
 - NEVER refer students to source numbering or source locations. Do not write phrases such as "see Exercise 4.2", "refer to Table 3", "as shown in Figure 5", "see Diagram 2", "Example 6.1", "on the previous page", or "in the chapter above".
 - Do not reproduce source exercise, question, example, table, figure, diagram, section, page, or equation numbers as references. Do not preserve textbook numbering that implies an external item.
-- If source content points to an exercise, table, diagram, or example, restate all information needed directly in the tutorial and give it new local numbering only if useful (for example, "Practice Question 1" or "Tutorial Diagram 1").
-- Recreate relevant tables directly as HTML tables and relevant diagrams directly as self-contained inline SVG. Never tell the student to look them up elsewhere.
-- Replace every source-dependent cross-reference with the actual definition, data, explanation, table, question, or diagram needed to understand the point. Omit it if it cannot be made self-contained from the supplied material.
+- If source content points to an exercise, table, diagram, or example, independently explain the necessary concepts and use new examples or questions rather than reproducing source items. Give tutorial items local numbering only if useful (for example, "Practice Question 1" or "Tutorial Diagram 1").
+- Present relevant information in independently organized HTML tables and original self-contained inline SVG diagrams. Never tell the student to look them up elsewhere.
+- Replace every source-dependent cross-reference with an independent explanation, table, example, or diagram containing the information needed to understand the point. Omit it if it cannot be made self-contained from the supplied material.
 
 # Tutorial Content and Exam Alignment
 - Include concise teaching explanations, key concepts, definitions, equations, procedures, worked examples, and revision takeaways as appropriate to the source.
 - Include a section of original practice questions with correct answers and clear worked solutions. Questions must be solvable using the supplied content and standard prerequisite knowledge; do not leave answers implicit.
+- Never generate questions that are word-for-word reproductions of questions in the supplied source.
 - Align question style, depth, and difficulty with the selected standard: JEE Advanced, JEE Main, NEET UG, or WBJEE. Follow only the selected standard; do not mix examination formats.
 - If the selected standard is general, use a balanced school-level competitive-exam style.
 - Do not claim that generated questions appeared in an actual examination. Label them as practice questions.
@@ -43,7 +51,7 @@ Create a complete tutorial from the supplied chapter or syllabus content. Explai
 - Put equations in MathJax delimiters. Inside equations, use standard MathJax-compatible LaTeX for mathematical operators and variables; for units, use `\mathrm{}` with HTML/Unicode-safe characters, for example `\(500\,\mathrm{Å}\)` or `\(20\,\mathrm{µm}\)`.
 - Distinguish symbols by meaning and context: use `\mu` for the Greek variable mu, but use the Unicode micro sign `µ` when it is a unit prefix; use `\times` as a MathJax multiplication operator, but `×` in ordinary text.
 - Prefer literal Unicode for scientific constants, Greek letters, arrows, comparison signs, superscripts, and subscripts in prose or SVG labels when it is clear and typographically correct. Use MathJax for mathematical expressions that need structured notation.
-- Preserve the scientific meaning, case, sign, subscript, superscript, and unit of every source quantity. Do not replace a symbol with a visually similar but scientifically different character.
+- Preserve the scientific meaning, case, sign, subscript, superscript, and unit of any source quantity included. Do not replace a symbol with a visually similar but scientifically different character.
 - Before finalizing, check the entire HTML source and ensure no LaTeX-only symbol command remains outside a MathJax expression; in particular, never emit `\AA` for an ångström symbol.
 
 # Readability, Layout, and Print Safety

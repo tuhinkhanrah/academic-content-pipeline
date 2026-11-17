@@ -47,7 +47,11 @@ def check_outputs(root: Path) -> list[str]:
                 quiz = ET.parse(path).getroot()
                 if quiz.tag != "quiz":
                     raise ValueError("Root element must be quiz.")
-                nodes = [ET.tostring(question, encoding="unicode") for question in quiz]
+                nodes = [
+                    ET.tostring(question, encoding="unicode")
+                    for question in quiz
+                    if question.get("type") != "category"
+                ]
                 validate_ncert_exemplar_questions(nodes)
                 validate_ncert_exemplar_files(quiz)
                 counts[language] = len(nodes)

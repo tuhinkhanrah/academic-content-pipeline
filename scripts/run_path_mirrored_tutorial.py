@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate PDF tutorials for source PDFs/Markdown while mirroring their directory tree.
+"""Generate tutorials in per-source folders while mirroring the source directory tree.
 
 Example:
     python scripts/run_path_mirrored_tutorial.py \
         --source-root /data/chapters \
         --output-root /workspace/summaries \
         --languages english
+
+Add --generate-pdf to also render each generated HTML tutorial as PDF.
 
 Re-render PDFs from existing HTML files, saving each PDF beside its HTML:
     python scripts/run_path_mirrored_tutorial.py \
@@ -112,9 +114,13 @@ def output_prefix(input_path: Path, standard: str, languages: str) -> str:
     return "_".join(parts)
 
 
-def find_existing_tutorial(output_dir: Path, prefix: str) -> Path | None:
-    """Find a non-empty stable tutorial PDF."""
-    stable_output = output_dir / f"{prefix}.pdf"
+def find_existing_tutorial(
+    output_dir: Path,
+    prefix: str,
+    extension: str = "pdf",
+) -> Path | None:
+    """Find a non-empty generated tutorial artifact."""
+    stable_output = output_dir / f"{prefix}.{extension.lstrip('.')}"
     return (
         stable_output
         if stable_output.is_file() and stable_output.stat().st_size > 0
@@ -139,6 +145,7 @@ def command_for_input(
     bucket_name: str | None = None,
     disable_ocr_cache: bool = False,
     render_pdf: bool = False,
+    generate_pdf: bool = False,
 ) -> List[str]:
     if render_pdf:
         command = [
@@ -193,6 +200,8 @@ def command_for_input(
         command.extend(["--header-text", header_text])
     if footer_text:
         command.extend(["--footer-text", footer_text])
+    if generate_pdf:
+        command.append("--generate-pdf")
     if disable_ocr_cache and input_path.suffix.lower() == ".pdf":
         command.append("--disable-ocr-cache")
     if mode == "remote":
@@ -219,9 +228,9 @@ def execute_command(command: List[str], input_path: Path) -> int:
 
 
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate or re-render mirrored PDF tutorials.")
+    parser = argparse.ArgumentParser(description="Generate or re-render mirrored tutorials.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root containing PDF/Markdown sources, or HTML files with --render-pdf.")
-    parser.add_argument("--output-root", type=Path, default=None, help="Root for mirrored tutorial PDFs.")
+    parser.add_argument("--output-root", type=Path, default=None, help="Root for mirrored tutorials, stored in per-source folders.")
     parser.add_argument(
         "--mode",
         choices=["context", "agent", "remote", "batch", "sequential"],
@@ -239,11 +248,16 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Optional 1-based PDF page range.")
     parser.add_argument("--parallel-workers", type=int, default=1, help="Maximum concurrent source files; use 1 to limit OCR load.")
     parser.add_argument("--bucket-name", default=None, help="GCS bucket for remote mode.")
-    parser.add_argument("--watermark-text", default="", help="Optional watermark on generated PDFs.")
+    parser.add_argument("--watermark-text", default="", help="Optional watermark for generated tutorials.")
     parser.add_argument("--header-text", default="", help="Optional repeating header on HTML-rendered PDFs.")
     parser.add_argument("--footer-text", default="", help="Optional repeating footer on HTML-rendered PDFs.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
-    parser.add_argument("--force", action="store_true", help="Regenerate even if a matching tutorial PDF exists.")
+    parser.add_argument("--force", action="store_true", help="Regenerate even if a matching tutorial already exists.")
+    parser.add_argument(
+        "--generate-pdf",
+        action="store_true",
+        help="Render the generated tutorial to PDF; without this option, HTML is generated (HTML engine only).",
+    )
     parser.add_argument(
         "--render-pdf",
         action="store_true",
@@ -257,6 +271,10 @@ def main(argv: List[str] | None = None) -> int:
         parser.error("--output-root is required unless --render-pdf is used.")
     if args.render_pdf and args.pdf_engine != "html":
         parser.error("--render-pdf requires --pdf-engine html.")
+    if args.render_pdf and args.generate_pdf:
+        parser.error("--generate-pdf cannot be combined with --render-pdf.")
+    if args.pdf_engine == "tex" and not args.generate_pdf:
+        parser.error("--pdf-engine tex requires --generate-pdf; HTML-only generation uses --pdf-engine html.")
 
     if args.mode == "sequential":
         args.mode = "context"
@@ -280,7 +298,11 @@ def main(argv: List[str] | None = None) -> int:
             print(f"{input_path.relative_to(source_root)} -> standard={standard}, tags={tags}")
         prefix = output_prefix(input_path, standard, args.languages)
         existing_tutorial = (
-            find_existing_tutorial(output_dir, prefix)
+            find_existing_tutorial(
+                output_dir / input_path.stem,
+                prefix,
+                extension="pdf" if args.generate_pdf else "html",
+            )
             if not args.render_pdf and output_dir.exists()
             else None
         )
@@ -306,6 +328,7 @@ def main(argv: List[str] | None = None) -> int:
             bucket_name=args.bucket_name,
             disable_ocr_cache=args.disable_ocr_cache,
             render_pdf=args.render_pdf,
+            generate_pdf=args.generate_pdf,
         )
         if args.dry_run:
             print(subprocess.list2cmdline(command))
@@ -313,7 +336,15 @@ def main(argv: List[str] | None = None) -> int:
             jobs.append((input_path, command))
 
     if args.dry_run:
-        print(f"Prepared {len(source_files)} HTML file(s) for PDF rendering.")
+        if args.render_pdf:
+            print(f"Prepared {len(source_files)} HTML file(s) for PDF rendering.")
+        else:
+            output_type = (
+                "PDF" if args.pdf_engine == "tex"
+                else "HTML/PDF" if args.generate_pdf
+                else "HTML"
+            )
+            print(f"Prepared {len(source_files)} tutorial(s) for {output_type} generation.")
         return 0
     if not jobs:
         print(f"No tutorials to generate. Skipped {len(skipped_files)} existing tutorial file(s).")

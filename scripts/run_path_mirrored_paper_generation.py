@@ -4,12 +4,14 @@
 Examples:
     python scripts/run_path_mirrored_paper_generation.py \
         --spec-root src/academic_content_pipeline/resources/spec_templates \
+        --top-category "Practice Papers" \
         --output-root output/papers \
         --mode agent \
         --num-tests 1
 
     python scripts/run_path_mirrored_paper_generation.py \
         --spec-root src/academic_content_pipeline/resources/spec_templates \
+        --top-category "Practice Papers" \
         --spec wbjee/mathematics.template.yaml \
         --output-root output/papers/wbjee-mathematics \
         --mode agent \
@@ -31,6 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
+
+from mirrored_path_utils import rebuild_mirrored_combined_xml, resolve_subtree
 
 
 SPEC_SUFFIXES = {".yaml", ".yml", ".json"}
@@ -156,6 +160,8 @@ def command_for_spec(
     reference_papers: List[str] | None = None,
     no_reference_papers: bool = False,
     reference_analysis_model_name: str | None = None,
+    top_category: str | None = None,
+    source_root: Path | None = None,
 ) -> List[str]:
     """Build the CLI command for one paper spec."""
     command = [
@@ -181,6 +187,8 @@ def command_for_spec(
         "--max-paper-attempts",
         str(max_paper_attempts),
     ]
+    if top_category is not None and source_root is not None:
+        command.extend(["--top-category", top_category, "--source-root", str(source_root)])
     if model_name:
         command.extend(["--model-name", model_name])
     if reference_analysis_model_name:
@@ -227,14 +235,20 @@ def main(argv: List[str] | None = None) -> int:
         description="Generate exam papers from specs while mirroring spec folders."
     )
     parser.add_argument(
-        "--spec-root",
+        "--spec-root", "--source-root",
         type=Path,
         help="Root containing paper/batch specs; required for discovery.",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--spec",
         type=Path,
         help="Generate one YAML/JSON batch or paper spec instead of discovering batch specs.",
+    )
+    selection.add_argument(
+        "--subtree",
+        type=Path,
+        help="Discover batch specs only in this directory relative to --spec-root.",
     )
     parser.add_argument(
         "--output-root",
@@ -250,6 +264,7 @@ def main(argv: List[str] | None = None) -> int:
     )
     parser.add_argument("--model-name", default=None, help="Optional Gemini model override.")
     parser.add_argument("--languages", default="english", help="Comma-separated target languages.")
+    parser.add_argument("--top-category", required=True, help="Top-level Moodle question bank category.")
     parser.add_argument("--standards", default=None, help="Optional exam-standard override.")
     parser.add_argument("--tags", default="", help="Comma-separated global tags.")
     parser.add_argument(
@@ -319,6 +334,10 @@ def main(argv: List[str] | None = None) -> int:
         spec_root = args.spec.expanduser().resolve().parent
     else:
         parser.error("Provide --spec-root for discovery or --spec for one paper.")
+    try:
+        scan_root = resolve_subtree(spec_root, args.subtree)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.spec is not None:
         spec_path = args.spec.expanduser()
@@ -331,9 +350,9 @@ def main(argv: List[str] | None = None) -> int:
             raise FileNotFoundError(f"Paper spec does not exist: {spec_paths[0]}")
         read_spec(spec_paths[0])
     else:
-        spec_paths = discover_batch_specs(spec_root)
+        spec_paths = discover_batch_specs(scan_root)
         if not spec_paths:
-            parser.error(f"No batch specs found under: {spec_root}")
+            parser.error(f"No batch specs found under: {scan_root}")
 
     if not args.dry_run:
         output_root.mkdir(parents=True, exist_ok=True)
@@ -365,10 +384,14 @@ def main(argv: List[str] | None = None) -> int:
             reference_analysis_model_name=args.reference_analysis_model_name,
             reference_papers=args.reference_paper,
             no_reference_papers=args.no_reference_paper,
+            top_category=args.top_category,
+            source_root=spec_root,
         )
-        jobs.append((spec_path, command))
         if args.dry_run:
             print(subprocess.list2cmdline(command))
+        else:
+            command.append("--defer-combined-xml")
+        jobs.append((spec_path, command))
 
     if args.dry_run:
         print(f"Prepared {len(jobs)} spec(s); outputs under {output_root}.")
@@ -389,6 +412,8 @@ def main(argv: List[str] | None = None) -> int:
                 failures += 1
 
     print(f"Processed {len(jobs) - failures} spec(s); failed {failures} spec(s).")
+    if not failures:
+        rebuild_mirrored_combined_xml(output_root)
     return 1 if failures else 0
 
 

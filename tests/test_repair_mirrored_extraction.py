@@ -108,6 +108,17 @@ class RepairMirroredExtractionTests(unittest.TestCase):
         self.assertEqual(communicator.calls, [])
         self.assertEqual(len(ET.parse(self.xml).getroot().findall("question")), 3)
 
+    def test_repair_keeps_checkpoint_category(self):
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        category = "$module$/top/Bank/biology/keep401/english"
+        manifest["configuration"]["category_path"] = category
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        result, _, errors = self.run_repair()
+        self.assertEqual(result, 0, errors)
+        quiz = ET.parse(self.xml).getroot()
+        self.assertEqual(quiz[0].findtext("category/text"), category)
+        self.assertEqual(len(quiz.findall("question")), 4)
+
     def test_dry_run_does_not_change_files_or_create_backup(self):
         self.pdf.with_name("keep402.pdf").write_bytes(b"unextracted PDF")
         before = self.manifest_path.read_bytes(), self.xml.read_bytes(), self.batch_path.read_bytes()
@@ -118,6 +129,27 @@ class RepairMirroredExtractionTests(unittest.TestCase):
         self.assertIn("without output skipped", output)
         self.assertEqual(before, (self.manifest_path.read_bytes(), self.xml.read_bytes(), self.batch_path.read_bytes()))
         self.assertFalse(self.backup.exists())
+
+    def test_subtree_repair_keeps_original_mirrored_root(self):
+        other = self.source / "physics" / "other.pdf"
+        other.parent.mkdir()
+        other.write_bytes(b"other PDF")
+        args = [
+            "--source-root", str(self.source.parent),
+            "--output-root", str(self.output.parent),
+            "--subtree", str(Path("class11") / "biology"),
+            "--repair", "--repair-backup-root", str(self.backup),
+        ]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = mirrored.main(args)
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertNotIn("other.pdf", stdout.getvalue())
+        self.assertEqual(
+            (self.backup / "class11" / "biology" / self.xml.name).read_text(),
+            "<quiz>changed</quiz>",
+        )
+        self.assertEqual(len(ET.parse(self.xml).getroot().findall("question")), 3)
 
     def test_repair_recreates_missing_output_and_records_original_absence(self):
         self.xml.unlink()

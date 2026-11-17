@@ -67,9 +67,25 @@ source file or directory. For example:
 ```powershell
 python -m academic_content_pipeline.unified_pipeline agent generate-questions `
   --input-dir path/to/jee_main/mathematics/chapters `
+  --source-root path/to/jee_main `
+  --top-category "Chapterwise Question Bank" `
   --spec src/academic_content_pipeline/resources/spec_templates/jee_main/mathematics_chapter_bank.template.yaml `
   --output-dir output/jee_main/mathematics
 ```
+
+Each XML category contains the source path relative to `--source-root`, without
+the extension, followed by the lowercase language combination (for example
+`english_bengali`). Translated outputs use `english` and their target language.
+Enable **Get category from file** in Moodle. Existing outputs are not changed
+unless regenerated.
+For existing XML, see [the offline backfill instructions](./ncert-exemplar-extraction.md#add-categories-to-existing-xml).
+
+The mirrored question-generation runner accepts `--subtree` to process only
+an existing directory relative to `--source-root`, without changing the root
+used for Moodle categories or mirrored output paths. Omit it to scan the
+entire source root.
+Successful Moodle XML question generation also rebuilds hierarchical combined
+imports; see [combined XML behavior and safety](./ncert-exemplar-extraction.md).
 
 `total_questions: 120` is the target per input chapter. Change it in the spec
 when a different target is desired. The adaptive type weights are preferences;

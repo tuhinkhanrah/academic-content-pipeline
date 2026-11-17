@@ -57,6 +57,8 @@ from academic_content_pipeline.artifact_translator import (
     translate_assessment_artifact,
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
+from academic_content_pipeline.moodle_categories import build_category_path
+from academic_content_pipeline.moodle_combiner import rebuild_combined_xml
 from academic_content_pipeline.pipeline_utils import compile_html_to_pdf, setup_logger
 from academic_content_pipeline.resource_paths import resource_path
 from academic_content_pipeline.template_tools import (
@@ -212,12 +214,19 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--footer-text", default="", help="Optional repeating footer text for HTML-rendered PDFs.")
 
 
+def add_category_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--top-category", help="Top-level Moodle question bank category.")
+    parser.add_argument("--source-root", type=Path, help="Root for source-relative Moodle category paths.")
+    parser.add_argument("--defer-combined-xml", action="store_true", help=argparse.SUPPRESS)
+
+
 def add_task_subparsers(subparser_dest: Any) -> None:
     """Attach extraction, generation, translation, and tutorial task subparsers."""
 
     # 1. extract
     p_ext = subparser_dest.add_parser("extract", help="Extract questions from exam paper PDFs via Mistral OCR.")
     add_common_options(p_ext)
+    add_category_options(p_ext)
     p_ext.add_argument("--input-dir", type=Path, default=None, help="Directory containing input PDFs.")
     p_ext.add_argument("--input-file", type=Path, default=None, help="Single input PDF file.")
     p_ext.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range to extract (1-based).")
@@ -245,6 +254,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     # 2. generate-questions
     p_chap = subparser_dest.add_parser("generate-questions", help="Synthesize practice questions from chapter PDFs/MDs.")
     add_common_options(p_chap)
+    add_category_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
     p_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
@@ -295,14 +305,20 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     p_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"), help="Page range for chapter PDF.")
     p_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
     p_tutorial.add_argument(
+        "--generate-pdf",
+        action="store_true",
+        help="Render the generated tutorial to PDF; without this option, HTML is generated (HTML engine only).",
+    )
+    p_tutorial.add_argument(
         "--render-pdf",
         action="store_true",
         help="Render existing HTML input to PDF without running AI generation; save the PDF beside the HTML.",
     )
 
     # 5. generate-paper
-    p_syl = subparser_dest.add_parser("generate-paper", help="Synthesize mock exams from specs / syllabi.")
+    p_syl = subparser_dest.add_parser("generate-paper", aliases=["generate-papers"], help="Synthesize mock exams from specs / syllabi.")
     add_common_options(p_syl)
+    add_category_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
     reference_options = p_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
@@ -443,6 +459,7 @@ def main():
     p_direct_ext = top_subparsers.add_parser("extract", help="Extract questions from PDF question papers.")
     p_direct_ext.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_ext)
+    add_category_options(p_direct_ext)
     p_direct_ext.add_argument("--input-dir", type=Path, default=None)
     p_direct_ext.add_argument("--input-file", type=Path, default=None)
     p_direct_ext.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
@@ -470,6 +487,7 @@ def main():
     p_direct_chap = top_subparsers.add_parser("generate-questions", help="Synthesize questions from chapter documents.")
     p_direct_chap.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_chap)
+    add_category_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
     p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
@@ -522,14 +540,20 @@ def main():
     p_direct_tutorial.add_argument("--page-range", type=int, nargs=2, metavar=("START", "END"))
     p_direct_tutorial.add_argument("--title", default=None, help="Optional title for the generated tutorial document.")
     p_direct_tutorial.add_argument(
+        "--generate-pdf",
+        action="store_true",
+        help="Render the generated tutorial to PDF; without this option, HTML is generated (HTML engine only).",
+    )
+    p_direct_tutorial.add_argument(
         "--render-pdf",
         action="store_true",
         help="Render existing HTML input to PDF without running AI generation; save the PDF beside the HTML.",
     )
 
-    p_direct_syl = top_subparsers.add_parser("generate-paper", help="Synthesize mock exams.")
+    p_direct_syl = top_subparsers.add_parser("generate-paper", aliases=["generate-papers"], help="Synthesize mock exams.")
     p_direct_syl.add_argument("--mode", choices=["context", "agent", "remote", "batch"], default="context")
     add_common_options(p_direct_syl)
+    add_category_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
     reference_options = p_direct_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
@@ -583,6 +607,18 @@ def main():
     else:
         mode = getattr(args, "mode", "context")
         task = args.top_command
+
+    if task == "generate-papers":
+        task = "generate-paper"
+    if task in {"extract", "generate-questions", "generate-paper"} and args.output_format == "xml":
+        if not args.top_category or args.source_root is None:
+            parser.error("Moodle XML output requires --top-category and --source-root.")
+        source = args.spec if task == "generate-paper" else args.input_file or args.input_dir
+        if source is not None:
+            try:
+                build_category_path(args.top_category, args.source_root, source, args.languages.split(","))
+            except ValueError as exc:
+                parser.error(str(exc))
 
     translate_to = [
         language.strip()
@@ -663,6 +699,8 @@ def main():
     if getattr(args, "render_pdf", False):
         if task != "generate-tutorial":
             parser.error("--render-pdf is only supported with generate-tutorial.")
+        if args.generate_pdf:
+            parser.error("--generate-pdf cannot be combined with --render-pdf.")
         if args.pdf_engine != "html":
             parser.error("--render-pdf requires --pdf-engine html.")
         if bool(args.input_file) == bool(args.input_dir):
@@ -724,6 +762,9 @@ def main():
         if failures:
             sys.exit(1)
         return
+
+    if task == "generate-tutorial" and args.pdf_engine == "tex" and not args.generate_pdf:
+        parser.error("--pdf-engine tex requires --generate-pdf; HTML-only generation uses --pdf-engine html.")
 
     # Verify environment keys
     if not os.environ.get("GEMINI_API_KEY"):
@@ -905,6 +946,8 @@ def main():
                 footer_text=getattr(args, "footer_text", ""),
                 resume=getattr(args, "resume", False),
                 replace_pages=getattr(args, "replace_pages", None),
+                top_category=args.top_category if args.output_format == "xml" else None,
+                source_root=args.source_root,
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)
@@ -941,6 +984,8 @@ def main():
                     "separate_by_question_type",
                     False,
                 ),
+                top_category=args.top_category if args.output_format == "xml" else None,
+                source_root=args.source_root,
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -961,6 +1006,7 @@ def main():
                 tags=args.tags,
                 output_format="pdf",
                 pdf_engine=args.pdf_engine,
+                generate_pdf=args.generate_pdf,
                 page_range=args.page_range,
                 tutorial_title=getattr(args, "title", None),
                 watermark_text=getattr(args, "watermark_text", ""),
@@ -1012,6 +1058,10 @@ def main():
                 header_text=getattr(args, "header_text", ""),
                 footer_text=getattr(args, "footer_text", ""),
             )
+            if args.output_format == "xml":
+                mock_generator.renderer.category_path = build_category_path(
+                    args.top_category, args.source_root, args.spec, languages_list
+                )
             if is_batch:
                 PaperBatchRunner(mock_generator).run(
                     args.spec,
@@ -1021,10 +1071,23 @@ def main():
                     force=args.force,
                     max_attempts=args.max_paper_attempts,
                     no_reference_papers=args.no_reference_paper,
+                    separate_language_dir=True,
                 )
             else:
                 mock_generator.process_spec(args.spec, args.output_dir)
 
+        if (
+            task in {"extract", "generate-questions", "generate-paper"}
+            and args.output_format == "xml"
+            and not args.defer_combined_xml
+        ):
+            try:
+                combined = rebuild_combined_xml(args.output_dir)
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise ValueError(
+                    f"Generation finished, but combined Moodle XML could not be rebuilt: {exc}"
+                ) from exc
+            logger.info("Rebuilt %d combined Moodle XML file(s).", len(combined))
         elapsed = time.perf_counter() - start_time
         logger.info("⏱️ Total operation time: %.2f seconds (%.2f minutes)", elapsed, elapsed / 60.0)
         if ocr_engine is not None:

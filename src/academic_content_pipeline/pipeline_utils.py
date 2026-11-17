@@ -30,6 +30,60 @@ LANGUAGE_CATALOG_PATH = resource_path("catalogs/languages.yaml")
 LANGUAGE_RULES_PATH = PROMPT_ROOT / "core" / "language_rules.md"
 
 
+def configuration_differences(
+    saved: Any,
+    current: Any,
+    path: str = "configuration",
+    max_length: Optional[int] = 180,
+) -> List[str]:
+    """Describe leaf-level differences between saved and requested settings."""
+    missing = object()
+
+    def format_value(value: Any) -> str:
+        if value is missing:
+            return "<missing>"
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        if max_length is not None and len(rendered) > max_length:
+            rendered = rendered[:max_length - 3] + "..."
+        return rendered
+
+    if isinstance(saved, dict) and isinstance(current, dict):
+        differences = []
+        for key in sorted(set(saved) | set(current), key=str):
+            child_path = f"{path}.{key}"
+            if key not in saved or key not in current:
+                differences.append(
+                    f"{child_path}: saved={format_value(saved.get(key, missing))}, "
+                    f"requested={format_value(current.get(key, missing))}"
+                )
+            else:
+                differences.extend(
+                    configuration_differences(saved[key], current[key], child_path, max_length)
+                )
+        return differences
+
+    if isinstance(saved, list) and isinstance(current, list):
+        differences = []
+        for index in range(max(len(saved), len(current))):
+            child_path = f"{path}[{index}]"
+            if index >= len(saved) or index >= len(current):
+                differences.append(
+                    f"{child_path}: saved="
+                    f"{format_value(saved[index] if index < len(saved) else missing)}, "
+                    f"requested="
+                    f"{format_value(current[index] if index < len(current) else missing)}"
+                )
+            else:
+                differences.extend(
+                    configuration_differences(saved[index], current[index], child_path, max_length)
+                )
+        return differences
+
+    if saved != current:
+        return [f"{path}: saved={format_value(saved)}, requested={format_value(current)}"]
+    return []
+
+
 def load_prompt_template(template_path: Union[Path, str], **values: str) -> str:
     """Load a UTF-8 prompt template and replace its named placeholders."""
     template = Path(template_path).read_text(encoding="utf-8")
@@ -860,34 +914,17 @@ def compile_html_to_pdf(
     footer_text: Optional[str] = None,
     html_output_path: Optional[Path] = None,
 ) -> Path:
-    """Compiles HTML string to PDF locally via Headless Chrome."""
-    html_content = normalize_html_math_source(html_content)
-    html_content = ensure_html_print_safe_styles(html_content)
-    html_content = inject_html_watermark(html_content, watermark_text)
-    html_content = inject_html_page_text(html_content, header_text, footer_text)
+    """Compile HTML to PDF locally via Headless Chrome, saving its HTML source."""
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
     html_file = Path(html_output_path) if html_output_path else output_pdf_path.with_suffix(".html")
-    html_file.parent.mkdir(parents=True, exist_ok=True)
-    html_file.write_text(html_content, encoding="utf-8")
-
-    # Copy only OCR images referenced by the HTML; SVG-only documents need no image files.
-    if image_map:
-        references = re.findall(
-            r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']",
-            html_content,
-            re.IGNORECASE,
-        )
-        image_paths = {
-            Path(img_name).name: Path(img_path)
-            for img_name, img_path in image_map.items()
-        }
-        for reference in references:
-            reference_name = Path(reference).name
-            img_path = image_paths.get(reference_name)
-            if img_path is not None and img_path.is_file():
-                shutil.copy2(img_path, output_pdf_path.parent / reference_name)
-
-    validate_local_image_references(html_content, output_pdf_path.parent, image_map, "html")
+    write_html_document(
+        html_content,
+        html_file,
+        image_map=image_map,
+        watermark_text=watermark_text,
+        header_text=header_text,
+        footer_text=footer_text,
+    )
 
     logger.info(f"Compiling HTML to PDF via Headless Chrome -> {output_pdf_path}...")
     cmd = [
@@ -913,6 +950,44 @@ def compile_html_to_pdf(
         subprocess.run(cmd, check=True, cwd=str(output_pdf_path.parent))
 
     return output_pdf_path
+
+
+def write_html_document(
+    html_content: str,
+    html_output_path: Path,
+    image_map: Optional[Dict[str, str]] = None,
+    watermark_text: Optional[str] = None,
+    header_text: Optional[str] = None,
+    footer_text: Optional[str] = None,
+) -> Path:
+    """Prepare and write an HTML artifact and its referenced local images."""
+    html_content = normalize_html_math_source(html_content)
+    html_content = ensure_html_print_safe_styles(html_content)
+    html_content = inject_html_watermark(html_content, watermark_text)
+    html_content = inject_html_page_text(html_content, header_text, footer_text)
+    html_file = Path(html_output_path)
+    html_file.parent.mkdir(parents=True, exist_ok=True)
+    html_file.write_text(html_content, encoding="utf-8")
+
+    # Copy only OCR images referenced by the HTML; SVG-only documents need no image files.
+    if image_map:
+        references = re.findall(
+            r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']",
+            html_content,
+            re.IGNORECASE,
+        )
+        image_paths = {
+            Path(img_name).name: Path(img_path)
+            for img_name, img_path in image_map.items()
+        }
+        for reference in references:
+            reference_name = Path(reference).name
+            img_path = image_paths.get(reference_name)
+            if img_path is not None and img_path.is_file():
+                shutil.copy2(img_path, html_file.parent / reference_name)
+
+    validate_local_image_references(html_content, html_file.parent, image_map, "html")
+    return html_file
 
 
 def compile_tex_to_pdf(

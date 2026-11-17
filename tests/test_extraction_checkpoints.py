@@ -103,6 +103,85 @@ class ExtractionCheckpointTests(unittest.TestCase):
         ):
             return extractor.process_file(pdf_path, output_dir)
 
+    def test_category_is_in_partial_and_resumed_xml(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "neet_ug" / "chapter.pdf"
+            source.parent.mkdir()
+            source.write_bytes(b"test pdf")
+            output = root / "output"
+            extractor = self.make_extractor(FakeCommunicator(fail_on_call=2))
+            extractor.top_category = "Chapterwise Question Bank"
+            extractor.source_root = root
+            extractor.languages = ["English", "Bengali"]
+            with self.assertRaisesRegex(RuntimeError, "simulated network failure"):
+                self.run_file(extractor, source, output)
+
+            path = output / "chapter_english_bengali.xml"
+            expected = "$module$/top/Chapterwise Question Bank/neet_ug/chapter/english_bengali"
+            self.assertEqual(ET.parse(path).getroot()[0].findtext("category/text"), expected)
+
+            resumed = self.make_extractor(FakeCommunicator(), resume=True)
+            resumed.top_category = extractor.top_category
+            resumed.source_root = root
+            resumed.languages = extractor.languages
+            self.run_file(resumed, source, output)
+            quiz = ET.parse(path).getroot()
+            self.assertEqual(quiz[0].findtext("category/text"), expected)
+            self.assertEqual(len(load_question_checkpoint(path)), 3)
+            resumed.top_category = "Other"
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                self.run_file(resumed, source, output)
+
+    def test_checkpoint_mismatch_logs_compared_fields_for_resume_and_replace(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "chapter.pdf"
+            source.write_bytes(b"test pdf")
+            output = root / "output"
+            self.run_file(self.make_extractor(FakeCommunicator()), source, output)
+            checkpoint = output / "chapter_english.extract.json"
+            manifest = json.loads(checkpoint.read_text(encoding="utf-8"))
+            configuration = manifest["configuration"]
+            configuration["batch_size"] = 42
+            configuration["category_path"] = "$module$/top/" + "long-category-" * 20
+            configuration.pop("tags")
+            configuration["model_name"] = "ignored-model"
+            checkpoint.write_text(json.dumps(manifest), encoding="utf-8")
+
+            for operation in ("resume", "replace"):
+                with self.subTest(operation=operation):
+                    extractor = self.make_extractor(
+                        FakeCommunicator(),
+                        resume=operation == "resume",
+                        replace_pages=[1, 1] if operation == "replace" else None,
+                    )
+                    with self.assertLogs("academic_content_pipeline", level="ERROR") as logs:
+                        with self.assertRaisesRegex(ValueError, "settings differ"):
+                            self.run_file(extractor, source, output)
+                    message = "\n".join(logs.output)
+                    self.assertIn('configuration.batch_size: saved=42, requested=1', message)
+                    self.assertIn(f'configuration.category_path: saved="{configuration["category_path"]}", requested=<missing>', message)
+                    self.assertIn('configuration.tags: saved=<missing>, requested=""', message)
+                    self.assertNotIn("model_name", message)
+                    self.assertFalse(extractor.communicator.calls)
+
+    def test_invalid_checkpoint_configuration_is_logged(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "chapter.pdf"
+            source.write_bytes(b"test pdf")
+            output = root / "output"
+            self.run_file(self.make_extractor(FakeCommunicator()), source, output)
+            checkpoint = output / "chapter_english.extract.json"
+            manifest = json.loads(checkpoint.read_text(encoding="utf-8"))
+            manifest["configuration"] = None
+            checkpoint.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertLogs("academic_content_pipeline", level="ERROR") as logs:
+                with self.assertRaisesRegex(ValueError, "settings differ"):
+                    self.run_file(self.make_extractor(FakeCommunicator(), resume=True), source, output)
+            self.assertIn("saved checkpoint has no valid configuration mapping", "\n".join(logs.output))
+
     def test_extraction_prompt_snapshots_include_language_and_standard(self):
         class RecordingCommunicator(FakeCommunicator):
             def __init__(self):
@@ -608,6 +687,11 @@ class ExemplarValidationTests(unittest.TestCase):
                 path.write_text(f"<quiz>{matching}</quiz>", encoding="utf-8")
             matching_result = subprocess.run(command, capture_output=True, text=True, check=False)
             self.assertEqual(matching_result.returncode, 0, matching_result.stderr)
+            category = '<question type="category"><category><text>$module$/top/Bank/english</text></category></question>'
+            for path in (english, bengali, hindi):
+                path.write_text(f"<quiz>{category}{matching}</quiz>", encoding="utf-8")
+            categorized = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertEqual(categorized.returncode, 0, categorized.stderr)
 
 
 if __name__ == "__main__":

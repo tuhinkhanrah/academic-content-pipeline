@@ -25,6 +25,7 @@ from academic_content_pipeline.pipeline_utils import (
     extract_clean_question_nodes_with_status,
     fix_and_inject_moodle_xml,
 )
+from academic_content_pipeline.moodle_categories import set_moodle_category
 
 
 def local_name(value, label):
@@ -179,6 +180,11 @@ def prepare_rebuild(path):
     xml = fix_and_inject_moodle_xml("<quiz>\n" + "\n".join(nodes) + "\n</quiz>", image_map)
     quiz = ET.fromstring(xml)
     validate_ncert_exemplar_files(quiz)
+    category_path = manifest.get("configuration", {}).get("category_path")
+    if category_path is not None:
+        if not isinstance(category_path, str) or not category_path:
+            raise ValueError("Invalid category path in extraction checkpoint.")
+        xml = set_moodle_category(xml, category_path)
     return manifest, xml, batches_nodes
 
 
@@ -270,7 +276,7 @@ def repair_manifest(path, pdf_path, expected_output, output_root, backup_root, *
         quiz = ET.parse(expected_output).getroot()
         if quiz.tag != "quiz":
             raise ValueError(f"Repaired XML root is not quiz: {expected_output}.")
-        questions = quiz.findall("question")
+        questions = [question for question in quiz.findall("question") if question.get("type") != "category"]
         if len(questions) != sum(len(nodes) for nodes in batches_nodes):
             raise ValueError(f"Repaired XML has an unexpected question count: {expected_output}.")
         validate_ncert_exemplar_questions(

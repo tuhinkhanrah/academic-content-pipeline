@@ -4,6 +4,7 @@
 Example:
     python scripts/run_path_mirrored_question_generation.py \
         --source-root /data/chapters \
+        --top-category "Chapterwise Question Bank" \
         --output-root /workspace/question-output \
         --mode batch \
         --standards neet_ug
@@ -29,6 +30,8 @@ from pathlib import Path
 from typing import Iterable, List
 
 import yaml
+
+from mirrored_path_utils import rebuild_mirrored_combined_xml, resolve_subtree
 
 
 def normalize_standard(value: str) -> str:
@@ -451,6 +454,8 @@ def command_for_input(
     footer_text: str,
     disable_ocr_cache: bool,
     bucket_name: str | None,
+    top_category: str | None = None,
+    source_root: Path | None = None,
 ) -> List[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     command = [
@@ -480,6 +485,8 @@ def command_for_input(
         "--difficulty-mix",
         difficulty_mix,
     ]
+    if top_category is not None and source_root is not None:
+        command.extend(["--top-category", top_category, "--source-root", str(source_root)])
     if model_name:
         command.extend(["--model-name", model_name])
     if ocr_model and input_path.suffix.lower() == ".pdf":
@@ -534,6 +541,8 @@ def main(argv: List[str] | None = None) -> int:
         description="Generate chapter questions while mirroring source folders."
     )
     parser.add_argument("--source-root", type=Path, required=True, help="Root containing PDF/Markdown sources.")
+    parser.add_argument("--subtree", type=Path, help="Only process this directory relative to --source-root.")
+    parser.add_argument("--top-category", help="Top-level Moodle question bank category.")
     parser.add_argument("--output-root", type=Path, required=True, help="Root for mirrored question outputs.")
     parser.add_argument(
         "--mode",
@@ -584,6 +593,8 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Force fresh Mistral OCR for PDF inputs.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file inferred metadata.")
     args = parser.parse_args(argv)
+    if args.output_format == "xml" and not args.top_category:
+        parser.error("--top-category is required for Moodle XML generation.")
 
     if args.mode == "sequential":
         args.mode = "context"
@@ -628,12 +639,16 @@ def main(argv: List[str] | None = None) -> int:
     output_root = args.output_root.expanduser().resolve()
     if not source_root.is_dir():
         raise NotADirectoryError(f"Source root does not exist or is not a directory: {source_root}")
+    try:
+        scan_root = resolve_subtree(source_root, args.subtree)
+    except ValueError as exc:
+        parser.error(str(exc))
     explicit_spec_path = args.spec.expanduser().resolve() if args.spec else None
 
-    source_files = list(iter_source_files(source_root))
+    source_files = list(iter_source_files(scan_root))
     if not source_files:
         parser.error(
-            f"No PDF or Markdown source files found under: {source_root}"
+            f"No PDF or Markdown source files found under: {scan_root}"
         )
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -788,10 +803,13 @@ def main(argv: List[str] | None = None) -> int:
             footer_text=args.footer_text,
             disable_ocr_cache=args.disable_ocr_cache,
             bucket_name=args.bucket_name,
+            top_category=args.top_category if args.output_format == "xml" else None,
+            source_root=source_root,
         )
         if args.dry_run:
             print(subprocess.list2cmdline(command))
         else:
+            command.append("--defer-combined-xml")
             jobs.append((input_path, command))
 
     if args.dry_run:
@@ -799,6 +817,8 @@ def main(argv: List[str] | None = None) -> int:
         return 0
     if not jobs:
         print(f"No questions to generate. Skipped {len(skipped_files)} existing output(s).")
+        if args.output_format == "xml":
+            rebuild_mirrored_combined_xml(output_root)
         return 0
 
     failures = 0
@@ -823,6 +843,8 @@ def main(argv: List[str] | None = None) -> int:
         f"skipped {len(skipped_files)} existing output(s); "
         f"failed {failures} file(s)."
     )
+    if not failures and args.output_format == "xml":
+        rebuild_mirrored_combined_xml(output_root)
     return 1 if failures else 0
 
 

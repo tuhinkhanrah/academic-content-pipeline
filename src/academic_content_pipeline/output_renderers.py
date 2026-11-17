@@ -3,10 +3,12 @@
 from pathlib import Path
 from typing import Dict, Optional
 
+from .moodle_categories import set_moodle_category
 from .pipeline_utils import (
     compile_html_to_pdf,
     compile_tex_to_pdf,
     fix_and_inject_moodle_xml,
+    write_html_document,
 )
 
 
@@ -26,6 +28,7 @@ class OutputRenderer:
         self.watermark_text = watermark_text or ""
         self.header_text = header_text or ""
         self.footer_text = footer_text or ""
+        self.category_path: Optional[str] = None
         self._validate_configuration()
 
     def _validate_configuration(self) -> None:
@@ -40,6 +43,8 @@ class OutputRenderer:
         output_dir: Path,
         output_stem: str,
         image_map: Optional[Dict[str, str]] = None,
+        *,
+        category_path: Optional[str] = None,
     ) -> Path:
         """Render raw AI output and return the final artifact path."""
         output_dir = Path(output_dir)
@@ -49,6 +54,9 @@ class OutputRenderer:
         if self.output_format == "xml":
             final_path = output_dir / f"{output_stem}.xml"
             final_xml = fix_and_inject_moodle_xml(raw_output, image_map)
+            resolved_category = category_path or self.category_path
+            if resolved_category:
+                final_xml = set_moodle_category(final_xml, resolved_category)
             final_path.write_text(final_xml, encoding="utf-8")
             return final_path
 
@@ -65,3 +73,24 @@ class OutputRenderer:
                 footer_text=self.footer_text,
             )
         return final_path
+
+    def render_html(
+        self,
+        raw_output: str,
+        output_dir: Path,
+        output_stem: str,
+        image_map: Optional[Dict[str, str]] = None,
+    ) -> Path:
+        """Write prepared HTML without invoking a PDF renderer."""
+        if self.output_format != "pdf":
+            raise ValueError("HTML artifact rendering requires PDF output configuration.")
+        if self.pdf_engine != "html":
+            raise ValueError("HTML-only rendering requires the HTML PDF engine.")
+        return write_html_document(
+            raw_output,
+            Path(output_dir) / f"{output_stem}.html",
+            image_map=image_map,
+            watermark_text=self.watermark_text,
+            header_text=self.header_text,
+            footer_text=self.footer_text,
+        )

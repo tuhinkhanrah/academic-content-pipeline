@@ -8,6 +8,7 @@ preserving the same folder structure under the output root.
 Example:
     python scripts/run_path_mirrored_extraction.py \
         --source-root /data/pdfs \
+        --top-category "Previous Year Question Papers" \
         --output-root /workspace/output \
         --mode batch
 
@@ -26,6 +27,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, List
+
+from mirrored_path_utils import rebuild_mirrored_combined_xml, resolve_subtree
 
 
 def normalize_standard(value: str) -> str:
@@ -160,6 +163,7 @@ def command_for_pdf(
     disable_ocr_cache: bool = False,
     bucket_name: str | None = None,
     instruction_file: Path | None = None,
+    top_category: str | None = None,
 ) -> List[str]:
     output_dir = build_output_dir(source_root, pdf_path, output_root)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -182,6 +186,8 @@ def command_for_pdf(
         "--languages",
         languages,
     ]
+    if top_category is not None:
+        cmd.extend(["--top-category", top_category, "--source-root", str(source_root)])
     if model_name:
         cmd.extend(["--model-name", model_name])
     if instruction_page_model_name:
@@ -223,6 +229,7 @@ def repair_outputs(
     backup_root: Path,
     languages: str,
     dry_run: bool,
+    scan_root: Path,
 ) -> int:
     from rebuild_ncert_exemplar_xml import repair_manifest
     import xml.etree.ElementTree as ET
@@ -230,7 +237,7 @@ def repair_outputs(
     candidates = []
     errors = []
     skipped = 0
-    for pdf_path in iter_pdfs(source_root):
+    for pdf_path in iter_pdfs(scan_root):
         if not any(part.casefold() == "ncert_exemplar" for part in pdf_path.parts):
             errors.append(f"{pdf_path}: repair is supported only for NCERT Exemplar PDFs.")
             continue
@@ -283,6 +290,8 @@ def repair_outputs(
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mirror a PDF vault and infer metadata from source paths.")
     parser.add_argument("--source-root", type=Path, required=True, help="Root directory containing PDFs.")
+    parser.add_argument("--subtree", type=Path, help="Only process this directory relative to --source-root.")
+    parser.add_argument("--top-category", help="Top-level Moodle question bank category.")
     parser.add_argument("--output-root", type=Path, required=True, help="Root directory where mirrored XML outputs are written.")
     parser.add_argument("--mode", choices=["context", "agent", "remote", "batch", "sequential"], default="context", help="Pipeline communication mode.")
     parser.add_argument("--languages", default="english", help="Target languages for extraction (comma-separated, e.g. english,hindi).")
@@ -312,6 +321,8 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the extraction run.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
     args = parser.parse_args(argv)
+    if not args.repair and not args.top_category:
+        parser.error("--top-category is required for Moodle XML extraction.")
     if args.repair and (args.force or args.resume or args.replace_pages):
         parser.error("--repair cannot be combined with --force, --resume or --replace-pages.")
     if args.repair and args.repair_backup_root is None:
@@ -334,10 +345,14 @@ def main(argv: List[str] | None = None) -> int:
     max_workers = max(1, int(args.parallel_workers)) if args.parallel_workers is not None else 1
     args.parallel_workers = max_workers
 
-    source_root = args.source_root.resolve()
-    output_root = args.output_root.resolve()
-    if not source_root.exists():
-        raise FileNotFoundError(f"Source root does not exist: {source_root}")
+    source_root = args.source_root.expanduser().resolve()
+    output_root = args.output_root.expanduser().resolve()
+    if not source_root.is_dir():
+        raise NotADirectoryError(f"Source root does not exist or is not a directory: {source_root}")
+    try:
+        scan_root = resolve_subtree(source_root, args.subtree)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.repair:
         backup_root = args.repair_backup_root.resolve()
@@ -348,7 +363,7 @@ def main(argv: List[str] | None = None) -> int:
             parser.error("--repair-backup-root must be a new directory.")
         if not source_root.is_dir() or not output_root.is_dir():
             parser.error("--repair requires existing source and output directories.")
-        return repair_outputs(source_root, output_root, backup_root, args.languages, args.dry_run)
+        return repair_outputs(source_root, output_root, backup_root, args.languages, args.dry_run, scan_root)
 
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -357,7 +372,7 @@ def main(argv: List[str] | None = None) -> int:
     skipped_files = []
     pending_jobs = []
 
-    for pdf_path in iter_pdfs(source_root):
+    for pdf_path in iter_pdfs(scan_root):
         rel = pdf_path.relative_to(source_root)
         output_dir = build_output_dir(source_root, pdf_path, output_root)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -399,12 +414,14 @@ def main(argv: List[str] | None = None) -> int:
             disable_ocr_cache=args.disable_ocr_cache,
             bucket_name=args.bucket_name,
             instruction_file=args.instruction_file,
+            top_category=args.top_category,
         )
         if args.dry_run:
             print(" ".join(cmd))
             processed += 1
             continue
 
+        cmd.append("--defer-combined-xml")
         pending_jobs.append((pdf_path, cmd))
 
     if args.dry_run:
@@ -435,6 +452,7 @@ def main(argv: List[str] | None = None) -> int:
                 for input_pdf, output_xml in skipped_files:
                     print(f"  - Input: {input_pdf}")
                     print(f"    Output: {output_xml}")
+        rebuild_mirrored_combined_xml(output_root)
         return 0
 
     with ThreadPoolExecutor(max_workers=args.parallel_workers) as executor:
@@ -465,6 +483,7 @@ def main(argv: List[str] | None = None) -> int:
             for input_pdf, output_xml in skipped_files:
                 print(f"  - Input: {input_pdf}")
                 print(f"    Output: {output_xml}")
+    rebuild_mirrored_combined_xml(output_root)
     return 0
 
 

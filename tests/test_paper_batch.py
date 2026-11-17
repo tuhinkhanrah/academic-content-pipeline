@@ -103,6 +103,45 @@ class FakePaperGenerator:
 
 
 class PaperBatchTests(unittest.TestCase):
+    def test_single_paper_renderer_writes_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_inputs(root)
+            generator = PaperGenerator(
+                communicator=SimpleNamespace(),
+                ocr_engine=object(),
+                languages=["english", "bengali"],
+            )
+            generator.renderer.category_path = "$module$/top/Papers/paper/english_bengali"
+            xml = '<quiz><question type="multichoice"><name><text>Q</text></name></question></quiz>'
+            output = generator.process_spec(root / "paper.yaml", root / "out", raw_response_override=xml)
+            quiz = ET.parse(output).getroot()
+            self.assertEqual(
+                quiz[0].findtext("category/text"),
+                "$module$/top/Papers/paper/english_bengali",
+            )
+            self.assertEqual(quiz[1].get("type"), "multichoice")
+
+    def test_batch_final_xml_has_one_source_category_and_resume_checks_it(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            generator = FakePaperGenerator(["first"])
+            generator.renderer = SimpleNamespace(
+                category_path="$module$/top/Papers/batch/english_bengali"
+            )
+            output = PaperBatchRunner(generator).run(spec, root / "out")[0]
+            quiz = ET.parse(output).getroot()
+            self.assertEqual(
+                quiz[0].findtext("category/text"),
+                "$module$/top/Papers/batch/english_bengali",
+            )
+            self.assertEqual(sum(q.get("type") == "category" for q in quiz), 1)
+            self.assertEqual(PaperBatchRunner(generator).run(spec, root / "out", resume=True), [output])
+            generator.renderer.category_path = "$module$/top/Other/batch/english_bengali"
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(generator).run(spec, root / "out", resume=True)
+
     def make_inputs(self, root, *, test_count=1, papers=None):
         spec_path = root / "batch.yaml"
         paper_paths = papers or [("paper", "paper.yaml")]
@@ -123,6 +162,96 @@ class PaperBatchTests(unittest.TestCase):
         )
         (root / "syllabus.md").write_text("Test syllabus", encoding="utf-8")
         return spec_path
+
+    def test_language_directories_migrate_and_resume_flat_batches_with_shared_reference(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            reference = root / "reference.md"
+            reference.write_text("1. Reference", encoding="utf-8")
+            analyses = []
+
+            def generator(languages, responses, interrupted=False):
+                result = FakePaperGenerator(responses, fail_after_saving_response=interrupted)
+                result.languages = languages
+                result.reference_papers = {"paper": reference}
+                result.ocr_engine = object()
+                result.communicator.generate = lambda **kwargs: analyses.append(1) or json.dumps({
+                    "subjects": {"Biology": {"style": "Style", "chapters": {}, "examples": []}}
+                })
+                return result
+
+            out = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(generator(["english"], ["saved"], True)).run(spec, out)
+            shared_reference = out / "reference"
+            self.assertTrue((shared_reference / ".exam_owner").is_file())
+            resumed = generator(["english"], [])
+            result = PaperBatchRunner(resumed).run(
+                spec, out, resume=True, separate_language_dir=True
+            )
+            self.assertEqual(result[0].parent, out / "english")
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
+            self.assertEqual(len(analyses), 1)
+            self.assertTrue((out / "english" / "sample_exam_english_batch_generation.json").is_file())
+            self.assertTrue((out / "english" / ".sample_exam_english_batch_generation").is_dir())
+            self.assertFalse((out / "sample_exam_english_batch_generation.json").exists())
+
+            bilingual = generator(["english", "bengali"], ["second"])
+            bilingual_result = PaperBatchRunner(bilingual).run(
+                spec, out, separate_language_dir=True
+            )
+            self.assertEqual(bilingual_result[0].parent, out / "english_bengali")
+            self.assertTrue((shared_reference / ".exam_owner").is_file())
+            self.assertFalse((out / "english_bengali" / "reference").exists())
+
+    def test_flat_migration_rejects_conflicts_without_moving_anything(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "out"
+            PaperBatchRunner(FakePaperGenerator(["first"])).run(spec, out)
+            manifest = out / "sample_exam_english_batch_generation.json"
+            destination = out / "english"
+            destination.mkdir()
+            (destination / manifest.name).write_text("existing", encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "Cannot migrate flat batch artifacts"):
+                PaperBatchRunner(FakePaperGenerator([])).run(
+                    spec, out, resume=True, separate_language_dir=True
+                )
+            self.assertTrue(manifest.is_file())
+            self.assertTrue((out / ".sample_exam_english_batch_generation").is_dir())
+            self.assertTrue((out / "sample_exam_english_test_001_paper.xml").is_file())
+            self.assertEqual((destination / manifest.name).read_text(encoding="utf-8"), "existing")
+
+    def test_legacy_flat_checkpoint_migrates_only_for_its_language(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "out"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(FakePaperGenerator(
+                    ["saved"], fail_after_saving_response=True
+                )).run(spec, out)
+            modern = out / "sample_exam_english_batch_generation.json"
+            legacy = out / "sample_exam_batch_generation.json"
+            manifest = json.loads(modern.read_text(encoding="utf-8"))
+            manifest["items"][0]["output_file"] = "sample_exam_test_001_paper.xml"
+            legacy.write_text(json.dumps(manifest), encoding="utf-8")
+            modern.unlink()
+            (out / ".sample_exam_english_batch_generation").rename(out / ".sample_exam_batch_generation")
+
+            bilingual = FakePaperGenerator(["other"])
+            bilingual.languages = ["english", "bengali"]
+            PaperBatchRunner(bilingual).run(spec, out, separate_language_dir=True)
+            self.assertTrue(legacy.is_file())
+            resumed = FakePaperGenerator([])
+            result = PaperBatchRunner(resumed).run(
+                spec, out, resume=True, separate_language_dir=True
+            )
+            self.assertEqual(result[0], out / "english" / "sample_exam_test_001_paper.xml")
+            self.assertEqual(resumed.calls[0]["raw_response_override"], "saved")
+            self.assertFalse(legacy.exists())
 
     def test_language_runs_have_independent_outputs_and_checkpoints(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

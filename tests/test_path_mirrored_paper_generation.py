@@ -130,6 +130,7 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     [
                         "--spec-root",
                         str(spec_root),
+                        "--top-category", "Question Bank",
                         "--output-root",
                         str(output_root),
                         "--dry-run",
@@ -153,6 +154,7 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = main([
                     "--spec-root", str(root / "specs"), "--output-root", str(root / "out"),
+                    "--top-category", "Question Bank",
                     "--reference-paper", str(root / "reference.md"),
                     "--reference-analysis-mode", "full",
                     "--reference-analysis-model-name", "analysis-model",
@@ -175,6 +177,7 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(main([
                     "--spec", str(spec), "--output-root", str(root / "out"),
+                    "--top-category", "Question Bank",
                     "--reference-paper", "paper1=first.pdf",
                     "--reference-paper", "paper2=second.md", "--dry-run",
                 ]), 0)
@@ -198,6 +201,7 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                 output = StringIO()
                 args = [
                     "--spec", str(spec), "--output-root", str(root / "out"),
+                    "--top-category", "Question Bank",
                     "--reference-analysis-mode", "full", "--dry-run",
                 ]
                 if disabled:
@@ -219,12 +223,13 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             spec.write_text("exam_name: Test\ntest_count: 1\npapers: []\n", encoding="utf-8")
             for prefix, analysis_model in (
                 (prefix, model)
-                for prefix in (["generate-paper"], ["agent", "generate-paper"])
+                for prefix in (["generate-paper"], ["agent", "generate-paper"], ["generate-papers"], ["agent", "generate-papers"])
                 for model in (None, "analysis-model")
             ):
                 with self.subTest(prefix=prefix, analysis_model=analysis_model):
                     argv = [
                         "pipeline", *prefix, "--spec", str(spec), "--output-dir", str(root / "out"),
+                        "--top-category", "Question Bank", "--source-root", str(root),
                         "--no-reference-paper", "--reference-analysis-mode", "full",
                         "--model-name", "generation-model",
                     ]
@@ -245,6 +250,11 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     self.assertIs(generator.call_args.kwargs["analysis_communicator"], analysis.return_value)
                     self.assertEqual(analysis.call_args.kwargs["model_name"], analysis_model or "generation-model")
                     self.assertTrue(runner.return_value.run.call_args.kwargs["no_reference_papers"])
+                    self.assertTrue(runner.return_value.run.call_args.kwargs["separate_language_dir"])
+                    self.assertEqual(
+                        generator.return_value.renderer.category_path,
+                        "$module$/top/Question Bank/batch/english",
+                    )
 
 
 if __name__ == "__main__":

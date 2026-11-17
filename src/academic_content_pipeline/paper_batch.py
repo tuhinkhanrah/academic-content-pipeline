@@ -25,6 +25,8 @@ from .chapter_generation import (
     parse_syllabus_chapters,
 )
 from .content_processors import build_generated_output_stem
+from .moodle_categories import set_moodle_category
+from .pipeline_utils import configuration_differences
 from .reference_paper import (
     REFERENCE_BATCH_SIZE, analysis_communicator_for_comparison, analysis_communicator_identity, prepare_reference,
     prepare_reference_storage, reference_fingerprint,
@@ -34,6 +36,49 @@ logger = logging.getLogger("academic_content_pipeline")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ABSOLUTE_PATH_IN_TEXT = re.compile(r"(?<![\w:])(?:[A-Za-z]:[\\/]|/)[^\s\"'<>]+")
 CHAPTER_PLAN_ATTEMPTS = 3
+
+
+def _move_flat_batch_to_language_dir(
+    output_root: Path, output_dir: Path, exam_token: str, language_stem: str,
+    languages: List[str],
+) -> None:
+    """Move a matching flat checkpoint and its files without overwriting anything."""
+    stems = [language_stem]
+    legacy_manifest = output_root / f"{exam_token}_batch_generation.json"
+    moved_legacy_manifest = output_dir / legacy_manifest.name
+    legacy_checkpoint = legacy_manifest if legacy_manifest.is_file() else moved_legacy_manifest
+    if legacy_checkpoint.is_file():
+        try:
+            legacy_data = json.loads(legacy_checkpoint.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Unable to read legacy batch checkpoint: {legacy_checkpoint}") from exc
+        if not isinstance(legacy_data, dict) or not isinstance(legacy_data.get("configuration"), dict):
+            raise ValueError(f"Invalid legacy batch checkpoint: {legacy_checkpoint}")
+        if legacy_data["configuration"].get("languages") == languages:
+            stems.append(exam_token)
+
+    sources: List[Path] = []
+    manifests: List[Path] = []
+    for stem in stems:
+        state = output_root / f".{stem}_batch_generation"
+        manifest = output_root / f"{stem}_batch_generation.json"
+        if state.exists():
+            sources.append(state)
+        sources.extend(sorted(output_root.glob(f"{stem}_test_*.xml")))
+        if manifest.exists():
+            manifests.append(manifest)
+    sources.extend(manifests)
+    conflicts = [output_dir / source.name for source in sources if (output_dir / source.name).exists()]
+    if conflicts:
+        raise FileExistsError(
+            "Cannot migrate flat batch artifacts because destination files already exist: "
+            + ", ".join(str(path) for path in conflicts)
+        )
+    if sources:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for source in sources:
+            source.rename(output_dir / source.name)
+        logger.info("Moved flat batch artifacts into %s.", output_dir)
 
 
 def _absolute_path_parts(value: str) -> Optional[Tuple[str, ...]]:
@@ -112,7 +157,9 @@ def _portable_configuration_value(value: Any) -> Any:
     if isinstance(value, dict):
         normalized = {}
         for key, item in value.items():
-            if key == "source_fingerprints" and isinstance(item, dict):
+            if key == "category_path":
+                normalized[key] = item
+            elif key == "source_fingerprints" and isinstance(item, dict):
                 normalized[key] = {
                     _portable_path_reference(str(path), content_sha256=str(digest)): digest
                     for path, digest in item.items()
@@ -134,7 +181,9 @@ def _portable_manifest_value(value: Any) -> Any:
     if isinstance(value, dict):
         normalized = {}
         for key, item in value.items():
-            if key == "source_fingerprints" and isinstance(item, dict):
+            if key == "category_path":
+                normalized[key] = item
+            elif key == "source_fingerprints" and isinstance(item, dict):
                 normalized[key] = {
                     _portable_path_reference(str(path), content_sha256=str(digest)): digest
                     for path, digest in item.items()
@@ -230,61 +279,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _configuration_differences(
-    saved: Any,
-    current: Any,
-    path: str = "configuration",
-) -> List[str]:
-    """Describe leaf-level differences between saved and requested settings."""
-    missing = object()
-
-    def format_value(value: Any) -> str:
-        if value is missing:
-            return "<missing>"
-        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-        if len(rendered) > 180:
-            rendered = rendered[:177] + "..."
-        return rendered
-
-    if isinstance(saved, dict) and isinstance(current, dict):
-        differences = []
-        for key in sorted(set(saved) | set(current), key=str):
-            child_path = f"{path}.{key}"
-            if key not in saved or key not in current:
-                differences.append(
-                    f"{child_path}: saved={format_value(saved.get(key, missing))}, "
-                    f"requested={format_value(current.get(key, missing))}"
-                )
-            else:
-                differences.extend(
-                    _configuration_differences(saved[key], current[key], child_path)
-                )
-        return differences
-
-    if isinstance(saved, list) and isinstance(current, list):
-        differences = []
-        for index in range(max(len(saved), len(current))):
-            child_path = f"{path}[{index}]"
-            if index >= len(saved) or index >= len(current):
-                differences.append(
-                    f"{child_path}: saved="
-                    f"{format_value(saved[index] if index < len(saved) else missing)}, "
-                    f"requested="
-                    f"{format_value(current[index] if index < len(current) else missing)}"
-                )
-            else:
-                differences.extend(
-                    _configuration_differences(saved[index], current[index], child_path)
-                )
-        return differences
-
-    if saved != current:
-        return [
-            f"{path}: saved={format_value(saved)}, requested={format_value(current)}"
-        ]
-    return []
 
 
 def _safe_token(value: str) -> str:
@@ -1001,6 +995,9 @@ class PaperBatchRunner:
             ),
             "batch_spec": _portable_configuration_value(batch_spec),
         }
+        category_path = getattr(getattr(self.generator, "renderer", None), "category_path", None)
+        if category_path is not None:
+            configuration["category_path"] = category_path
         if reference_paper is not None or reference_papers or any(
             paper.get("chapter_generation", {}).get("enabled")
             and not isinstance(paper["chapter_generation"].get("chapter_counts"), dict)
@@ -1112,6 +1109,7 @@ class PaperBatchRunner:
         force: bool = False,
         max_attempts: int = 3,
         no_reference_papers: bool = False,
+        separate_language_dir: bool = False,
     ) -> List[Path]:
         if getattr(self.generator, "output_format", "xml") != "xml":
             raise ValueError("Checkpointed batch-paper generation currently requires Moodle XML output.")
@@ -1172,6 +1170,18 @@ class PaperBatchRunner:
         language_stem = build_generated_output_stem(
             exam_token, list(getattr(self.generator, "languages", []))
         )
+        reference_output_dir = output_dir
+        if separate_language_dir:
+            language_dir = build_generated_output_stem(
+                "output", list(getattr(self.generator, "languages", []))
+            )[len("output_"):]
+            if language_dir == "reference":
+                raise ValueError("'reference' is reserved for shared reference artifacts.")
+            output_dir = reference_output_dir / language_dir
+            _move_flat_batch_to_language_dir(
+                reference_output_dir, output_dir, exam_token, language_stem,
+                list(getattr(self.generator, "languages", [])),
+            )
         manifest_path = output_dir / f"{language_stem}_batch_generation.json"
         state_dir = output_dir / f".{language_stem}_batch_generation"
         legacy_resume = False
@@ -1229,6 +1239,11 @@ class PaperBatchRunner:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise ValueError(f"Unable to read batch-generation checkpoint: {manifest_path}") from exc
+            if isinstance(manifest, dict) and manifest.get("status") == "category_backfill_pending":
+                raise ValueError(
+                    "Cannot resume batch generation: category backfill is incomplete. "
+                    "Restore its outputs and checkpoint from the backfill backup."
+                )
             saved_configuration = (
                 manifest.get("configuration")
                 if isinstance(manifest, dict)
@@ -1302,7 +1317,7 @@ class PaperBatchRunner:
                             current_configuration
                         )
                         differences.extend(
-                            _configuration_differences(
+                            configuration_differences(
                                 diagnostic_saved_configuration,
                                 diagnostic_current_configuration,
                             )
@@ -1417,7 +1432,7 @@ class PaperBatchRunner:
             self.generator.reference_profile = prepare_reference(
                 reference_paper, subject_names, analysis_communicator,
                 self.generator.ocr_engine, prepare_reference_storage(
-                    output_dir, exam_name, "shared", configuration["reference_paper"]
+                    reference_output_dir, exam_name, "shared", configuration["reference_paper"]
                 ),
                 profile_path, chapter_titles,
                 analysis_mode=getattr(self.generator, "reference_analysis_mode", "batched"),
@@ -1435,7 +1450,7 @@ class PaperBatchRunner:
                     continue
                 path = reference_papers[paper_id]
                 fingerprint = configuration["reference_papers"][paper_id]
-                reference_dir = prepare_reference_storage(output_dir, exam_name, paper_id, fingerprint)
+                reference_dir = prepare_reference_storage(reference_output_dir, exam_name, paper_id, fingerprint)
                 profile_path = (
                     reference_dir / "reference_style_profile.json"
                     if legacy_resume
@@ -1902,6 +1917,9 @@ class PaperBatchRunner:
                     f"{item['test_index']:03d}_{item['paper_id']}_candidate.xml"
                 )
                 candidate_xml = Path(candidate_path).read_text(encoding="utf-8")
+                category_path = getattr(getattr(self.generator, "renderer", None), "category_path", None)
+                if category_path is not None:
+                    candidate_xml = set_moodle_category(candidate_xml, category_path)
                 candidate_checkpoint = state_dir / candidate_name
                 _write_text_atomically(candidate_checkpoint, candidate_xml)
                 item["candidate_file"] = candidate_name

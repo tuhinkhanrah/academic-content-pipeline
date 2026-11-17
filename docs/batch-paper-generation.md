@@ -1,29 +1,53 @@
 # Batch paper generation
 
-`generate-paper` can run one paper blueprint repeatedly or combine multiple
+`generate-paper` (also available as `generate-papers`) can run one paper blueprint repeatedly or combine multiple
 blueprints into each test set. Each paper is generated, validated, checked for
 exact duplicate questions, and committed separately. A JSON checkpoint and
 saved AI responses are kept in the output directory so interrupted runs can be
 continued.
 
+Moodle XML requires `--top-category` and `--source-root`. Its category is
+`$module$/top/<top-category>/<source-relative-spec-path-without-extension>/<languages>`,
+where languages are lowercase and underscore-separated. The mirrored runner
+uses `--spec-root` (also accepted as `--source-root`) as the source root.
+Use `--subtree` with the mirrored runner to discover batch specs only in an
+existing directory relative to `--spec-root`; categories and mirrored output
+paths still use the full spec root. Omit it to discover across the entire root.
+For a single spec use `--spec` instead; it cannot be combined with `--subtree`.
+Successful Moodle XML paper generation also rebuilds hierarchical combined
+imports; see [combined XML behavior and safety](./ncert-exemplar-extraction.md).
+Every combined paper uses the batch spec's category. Enable **Get category
+from file** in Moodle. Resuming requires the same category; existing outputs
+are not rewritten automatically.
+Older checkpoints without category settings cannot be resumed with a category;
+start a fresh batch instead.
+
+To add categories to existing outputs without changing their checkpoints, see
+[the offline backfill instructions](./ncert-exemplar-extraction.md#add-categories-to-existing-xml).
+For papers, pass `--spec` and select only outputs produced from that spec.
+
 ## Language-specific outputs
 
-Paper batches use the configured language combination in their filenames and
-checkpoint directories. For example, with `--output-dir output/wbjee`:
+Paper batches use the configured language combination in a subdirectory,
+filenames and checkpoint directories. For example, with `--output-dir output/wbjee`:
 
 ```text
-wbjee_english_test_001_mathematics.xml
-wbjee_english_batch_generation.json
-.wbjee_english_batch_generation/
-wbjee_english_bengali_test_001_mathematics.xml
-wbjee_english_bengali_batch_generation.json
-.wbjee_english_bengali_batch_generation/
+reference/
+english/wbjee_english_test_001_mathematics.xml
+english/wbjee_english_batch_generation.json
+english/.wbjee_english_batch_generation/
+english_bengali/wbjee_english_bengali_test_001_mathematics.xml
+english_bengali/wbjee_english_bengali_batch_generation.json
+english_bengali/.wbjee_english_bengali_batch_generation/
 ```
 
 `--languages english,hindi` similarly uses `english_hindi`. Different language
-runs can share an output directory, but each has independent generation and
-reference-profile checkpoints. They generate separate papers, not translations
-of one English paper. `--force` affects the selected language's batch.
+runs can share an output root and reference artifacts, but each has independent
+generation and reference-profile checkpoints. They generate separate papers,
+not translations of one English paper. `--force` affects the selected
+language's batch. Existing flat batch artifacts are moved into the matching
+language folder when that language is run; conflicting destination files stop
+the migration without overwriting them.
 
 On `--resume`, if no language-specific checkpoint exists and an older
 language-independent checkpoint has compatible settings, the runner
@@ -111,6 +135,7 @@ Markdown (`.md` or `.markdown`):
 python scripts/run_path_mirrored_paper_generation.py `
   --mode agent --model-name gemini-3.8-flash `
   --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --top-category "Practice Papers" `
   --spec neet_ug/neet_ug.template.yaml `
   --reference-paper path/to/reference.md `
   --num-tests 1 --output-root output
@@ -128,6 +153,7 @@ batch spec to assign a different reference to each paper:
 python scripts/run_path_mirrored_paper_generation.py `
   --mode agent --model-name gemini-3.8-flash `
   --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --top-category "Practice Papers" `
   --spec jee_advanced/batch.template.yaml `
   --reference-paper "paper1=path/to/previous-paper1.pdf" `
   --reference-paper "paper2=path/to/previous-paper2.md" `
@@ -175,6 +201,7 @@ python scripts/run_path_mirrored_paper_generation.py `
   --mode agent --model-name gemini-3.8-flash `
   --reference-analysis-model-name gemini-2.5-flash `
   --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --top-category "Practice Papers" `
   --num-tests 1 --output-root output --resume
 ```
 
@@ -216,7 +243,7 @@ or AI chapter planning remain resumable when their other settings match.
 Checkpoints created with custom batch sizes require a fresh run.
 
 PDF OCR artifacts and their local OCR cache are isolated under the exam output
-directory at `reference/<paper-id>/<reference-content-hash>/` (or `shared` for
+root at `reference/<paper-id>/<reference-content-hash>/` (or `shared` for
 a shared reference). Use a separate output directory for each exam; the
 path-mirrored script does this automatically. A marker prevents different exams
 from sharing the same reference directory. New paper-specific profiles are
@@ -248,6 +275,7 @@ Run 100 JEE Advanced test sets (200 paper outputs):
 
 ```powershell
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root src\academic_content_pipeline\resources\spec_templates --top-category "Practice Papers" `
   --spec src/academic_content_pipeline/resources/spec_templates/jee_advanced/batch.template.yaml `
   --output-dir output/jee_advanced
 ```
@@ -256,14 +284,17 @@ Run any of the other exams by substituting the batch spec and output directory:
 
 ```powershell
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root src\academic_content_pipeline\resources\spec_templates --top-category "Practice Papers" `
   --spec src/academic_content_pipeline/resources/spec_templates/neet_ug/batch.template.yaml `
   --output-dir output/neet_ug
 
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root src\academic_content_pipeline\resources\spec_templates --top-category "Practice Papers" `
   --spec src/academic_content_pipeline/resources/spec_templates/jee_main/batch.template.yaml `
   --output-dir output/jee_main
 
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root src\academic_content_pipeline\resources\spec_templates --top-category "Practice Papers" `
   --spec src/academic_content_pipeline/resources/spec_templates/wbjee/batch.template.yaml `
   --output-dir output/wbjee
 ```
@@ -275,6 +306,7 @@ folder beneath `--output-root`; `--num-tests` defaults to 1:
 ```powershell
 python scripts/run_path_mirrored_paper_generation.py `
   --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --top-category "Practice Papers" `
   --output-root output/papers `
   --mode agent `
   --model-name gemini-3.8-flash `
@@ -286,6 +318,7 @@ To run one paper spec (rather than discover batch specs), pass `--spec`:
 ```powershell
 python scripts/run_path_mirrored_paper_generation.py `
   --spec-root src/academic_content_pipeline/resources/spec_templates `
+  --top-category "Practice Papers" `
   --spec wbjee/mathematics.template.yaml `
   --output-root output/wbjee-mathematics `
   --mode agent `
@@ -295,9 +328,9 @@ python scripts/run_path_mirrored_paper_generation.py `
 ```
 
 Prompt snapshot filenames include the requested language set, including when a
-paper uses a custom output stem. This naming does not isolate other files:
-use separate output roots for concurrent language runs that may share OCR,
-reference, cache or output files.
+paper uses a custom output stem. Reference and OCR artifacts are shared between
+language folders; avoid concurrent runs using the same reference unless they
+use separate output roots.
 
 The script defaults to one concurrent spec run. Use `--parallel-workers` to
 raise concurrency, `--dry-run` to preview commands, and `--resume` to reuse
@@ -310,6 +343,7 @@ For a single paper blueprint, `--num-tests 100` repeats that paper spec:
 
 ```powershell
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root path\to --top-category "Practice Papers" `
   --spec path/to/paper.yaml --num-tests 100 --output-dir output/mock_tests
 ```
 
@@ -318,6 +352,7 @@ generation settings:
 
 ```powershell
 python -m academic_content_pipeline.unified_pipeline agent generate-paper `
+  --source-root path\to --top-category "Practice Papers" `
   --spec path/to/batch.yaml --output-dir output/mock_tests --resume
 ```
 

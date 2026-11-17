@@ -31,6 +31,7 @@ from .ai_communicators import (
 )
 from .artifact_translator import translate_assessment_artifact
 from .mistral_ocr import MistralOCREngine
+from .moodle_categories import build_category_path, remove_moodle_categories, set_moodle_category
 from .output_renderers import OutputRenderer
 from .reference_paper import (
     prepare_reference, prepare_reference_storage, reference_fingerprint, reference_guidance,
@@ -39,6 +40,7 @@ from .resource_paths import resource_path
 from .pipeline_utils import (
     assemble_prompt_files,
     build_language_instructions,
+    configuration_differences,
     extract_clean_question_nodes_with_status,
     load_prompt_template,
     load_file_content,
@@ -109,7 +111,7 @@ def build_tutorial_system_instruction(pdf_engine: str = "html") -> str:
     return resolver.resolve(pdf_engine).read_text(encoding="utf-8").strip()
 
 
-def build_tutorial_language_instruction(languages: List[str]) -> str:
+def build_tutorial_language_instruction(languages: List[str], pdf_engine: str = "html") -> str:
     """Build tutorial-specific language guidance from the markdown rules file."""
     clean_langs = [lang.strip().lower() for lang in languages if lang and lang.strip()]
     if not clean_langs:
@@ -117,9 +119,14 @@ def build_tutorial_language_instruction(languages: List[str]) -> str:
 
     if len(clean_langs) == 1 and clean_langs[0] != "english":
         target_lang = clean_langs[0].capitalize()
+        structure_instruction = (
+            "use an independent tutorial structure, preserve mathematical equations, notation, variables, and scientific names, "
+            "and write SVG labels in the requested language"
+            if pdf_engine.lower() == "html"
+            else "preserve the chapter structure, and keep all mathematical equations, notation, variables, scientific names, and SVG labels unchanged"
+        )
         return (
-            f"Write the entire tutorial in {target_lang} only. Use clear academic {target_lang} terminology, preserve the chapter structure, "
-            "and keep all mathematical equations, notation, variables, scientific names, and SVG labels unchanged. "
+            f"Write the entire tutorial in {target_lang} only. Use clear academic {target_lang} terminology, {structure_instruction}. "
             "Include the requested exam-aligned practice questions, answers, and worked solutions in that language. "
             "Do not add English text or English section labels."
         )
@@ -147,7 +154,7 @@ def build_tutorial_language_instruction(languages: List[str]) -> str:
 
 
 class TutorialGenerator:
-    """Generates exam-oriented chapter tutorials from PDFs or Markdown files."""
+    """Generate exam-oriented HTML tutorials, optionally rendering them to PDF."""
 
     def __init__(
         self,
@@ -165,6 +172,7 @@ class TutorialGenerator:
         watermark_text: str = "",
         header_text: str = "",
         footer_text: str = "",
+        generate_pdf: bool = False,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine
@@ -176,6 +184,9 @@ class TutorialGenerator:
         if self.output_format not in {"pdf"}:
             raise ValueError("TutorialGenerator currently supports only PDF output mode.")
         self.pdf_engine = pdf_engine.lower()
+        self.generate_pdf = generate_pdf
+        if not self.generate_pdf and self.pdf_engine != "html":
+            raise ValueError("HTML-only tutorial generation requires --pdf-engine html.")
         self.watermark_text = watermark_text or ""
         self.header_text = header_text or ""
         self.footer_text = footer_text or ""
@@ -197,7 +208,7 @@ class TutorialGenerator:
         return self.tutorial_prompt_resolver.resolve(self.pdf_engine).prompt_path
 
     def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
-        """Generates a tutorial from a chapter file and writes a final PDF artifact."""
+        """Generate a tutorial from a chapter file and write its requested artifact."""
         input_file = Path(input_file)
         if not input_file.exists():
             raise FileNotFoundError(f"Tutorial input file does not exist: {input_file}")
@@ -222,7 +233,8 @@ class TutorialGenerator:
             qualifier=self.standards,
         )
         logger.info(
-            f"\n{'='*60}\n📘 [GENERATE-TUTORIAL] Processing: {input_file.name} ({self.output_format.upper()}) -> {generation_stem}\n{'='*60}"
+            f"\n{'='*60}\n📘 [GENERATE-TUTORIAL] Processing: {input_file.name} "
+            f"({'PDF' if self.generate_pdf else 'HTML'}) -> {generation_stem}\n{'='*60}"
         )
 
         image_map: Dict[str, str] = {}
@@ -246,7 +258,7 @@ class TutorialGenerator:
             output_format=self.output_format,
             pdf_engine=self.pdf_engine,
         )
-        tutorial_lang_instruction = build_tutorial_language_instruction(self.languages)
+        tutorial_lang_instruction = build_tutorial_language_instruction(self.languages, self.pdf_engine)
         language_instruction = "\n\n".join(part for part in [lang_instruction, tutorial_lang_instruction] if part and part.strip())
         all_tags = [t.strip() for t in self.tags.split(",") if t.strip()] + lang_tags
 
@@ -289,16 +301,25 @@ class TutorialGenerator:
             purpose=f"generate tutorial for {input_file.name}",
         )
 
-        final_pdf_path = self.renderer.render(
-            raw_output,
-            paper_dir,
-            generation_stem,
-            image_map,
-        )
-        logger.info(f"✨ Compiled tutorial PDF to: {final_pdf_path}")
+        if self.generate_pdf:
+            output_path = self.renderer.render(
+                raw_output,
+                markdown_dir.parent,
+                generation_stem,
+                image_map,
+            )
+            logger.info("✨ Compiled tutorial PDF to: %s", output_path)
+        else:
+            output_path = self.renderer.render_html(
+                raw_output,
+                markdown_dir.parent,
+                generation_stem,
+                image_map,
+            )
+            logger.info("✨ Wrote tutorial HTML to: %s", output_path)
         elapsed = time.perf_counter() - item_start
         logger.info("⏱️ [GENERATE-TUTORIAL] %s completed in %.2f seconds (%.2f minutes)", input_file.name, elapsed, elapsed / 60.0)
-        return final_pdf_path
+        return output_path
 
     def process_directory(self, input_dir: Path, output_dir: Path) -> List[Path]:
         """Processes all chapter PDFs and MDs in an input directory."""
@@ -319,7 +340,12 @@ class TutorialGenerator:
             out_path = self.process_file(file_path, output_dir, input_root=input_dir)
             results.append(out_path)
         directory_elapsed = time.perf_counter() - directory_start
-        logger.info("⏱️ [GENERATE-TUTORIAL DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)", len(source_files), directory_elapsed, directory_elapsed / 60.0)
+        logger.info(
+            "⏱️ [GENERATE-TUTORIAL DIRECTORY] Processed %d file(s) in %.2f seconds (%.2f minutes)",
+            len(source_files),
+            directory_elapsed,
+            directory_elapsed / 60.0,
+        )
         self.ocr_engine.log_cache_summary()
         return results
 
@@ -1087,6 +1113,8 @@ class QuestionPaperExtractor:
         footer_text: str = "",
         resume: bool = False,
         replace_pages: Optional[List[int]] = None,
+        top_category: Optional[str] = None,
+        source_root: Optional[Path] = None,
     ):
         self.communicator = communicator
         self.page_check_communicator = page_check_communicator or communicator
@@ -1109,6 +1137,9 @@ class QuestionPaperExtractor:
         self.replace_pages = list(replace_pages) if replace_pages else None
         self.header_text = header_text or ""
         self.footer_text = footer_text or ""
+        self.top_category = top_category
+        self.source_root = source_root
+        self.category_path: Optional[str] = None
 
     @staticmethod
     def parse_instruction_page_summary(response: Optional[str]) -> Optional[str]:
@@ -1216,7 +1247,7 @@ class QuestionPaperExtractor:
         return digest.hexdigest()
 
     def _checkpoint_configuration(self) -> Dict[str, Any]:
-        return {
+        configuration = {
             "communicator": type(self.communicator).__name__,
             "model_name": getattr(self.communicator, "model_name", None),
             "agent_name": getattr(self.communicator, "agent_name", None),
@@ -1237,14 +1268,12 @@ class QuestionPaperExtractor:
                 json.dumps(self.rules_dict, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest(),
         }
+        if self.category_path is not None:
+            configuration["category_path"] = self.category_path
+        return configuration
 
     @staticmethod
-    def _checkpoint_configuration_matches(
-        saved_configuration: Any,
-        current_configuration: Dict[str, Any],
-    ) -> bool:
-        if not isinstance(saved_configuration, dict):
-            return False
+    def _comparable_checkpoint_configuration(configuration: Dict[str, Any]) -> Dict[str, Any]:
         ignored_keys = {
             "page_check_model_name",
             "model_name",
@@ -1257,13 +1286,47 @@ class QuestionPaperExtractor:
         }
         return {
             key: value
-            for key, value in saved_configuration.items()
-            if key not in ignored_keys
-        } == {
-            key: value
-            for key, value in current_configuration.items()
+            for key, value in configuration.items()
             if key not in ignored_keys
         }
+
+    @classmethod
+    def _checkpoint_configuration_matches(
+        cls,
+        saved_configuration: Any,
+        current_configuration: Dict[str, Any],
+    ) -> bool:
+        return (
+            isinstance(saved_configuration, dict)
+            and cls._comparable_checkpoint_configuration(saved_configuration)
+            == cls._comparable_checkpoint_configuration(current_configuration)
+        )
+
+    @classmethod
+    def _require_checkpoint_configuration(
+        cls,
+        saved_configuration: Any,
+        current_configuration: Dict[str, Any],
+        pdf_path: Path,
+        operation: str,
+    ) -> None:
+        if cls._checkpoint_configuration_matches(saved_configuration, current_configuration):
+            return
+        if isinstance(saved_configuration, dict):
+            differences = configuration_differences(
+                cls._comparable_checkpoint_configuration(saved_configuration),
+                cls._comparable_checkpoint_configuration(current_configuration),
+                max_length=None,
+            )
+        else:
+            differences = ["configuration: saved checkpoint has no valid configuration mapping"]
+        logger.error(
+            "Cannot %s %s because extraction checkpoint settings differ:\n%s",
+            operation, pdf_path.name, "\n".join(f"- {entry}" for entry in differences),
+        )
+        raise ValueError(
+            f"Cannot {operation} {pdf_path.name}: extraction settings differ from its checkpoint."
+        )
 
     @staticmethod
     def _load_extraction_manifest(path: Path) -> Dict[str, Any]:
@@ -1278,6 +1341,10 @@ class QuestionPaperExtractor:
     def process_file(self, pdf_path: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Extracts questions from a single PDF and writes Moodle XML."""
         pdf_path = Path(pdf_path).resolve()
+        if self.top_category is not None and self.source_root is not None:
+            self.category_path = build_category_path(
+                self.top_category, self.source_root, pdf_path, self.languages
+            )
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
@@ -1346,6 +1413,11 @@ class QuestionPaperExtractor:
                     )
             else:
                 manifest = self._load_extraction_manifest(manifest_path)
+                if manifest.get("status") == "category_backfill_pending":
+                    raise ValueError(
+                        f"Cannot resume {pdf_path.name}: category backfill is incomplete. "
+                        "Restore its XML and checkpoint from the backfill backup."
+                    )
                 if manifest.get("source_sha256") != source_sha256:
                     raise ValueError(
                         f"Cannot resume {pdf_path.name}: the source PDF changed since its checkpoint."
@@ -1356,13 +1428,12 @@ class QuestionPaperExtractor:
                         "repair transaction from an earlier version. Preserve the current XML "
                         "and checkpoint files and recover them manually before continuing."
                     )
-                if not self._checkpoint_configuration_matches(
+                self._require_checkpoint_configuration(
                     manifest.get("configuration"),
                     self._checkpoint_configuration(),
-                ):
-                    raise ValueError(
-                        f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
-                    )
+                    pdf_path,
+                    "resume",
+                )
                 if (
                     manifest.get("status") == "completed"
                     and existing_output is not None
@@ -1386,17 +1457,21 @@ class QuestionPaperExtractor:
                     "and its existing XML are required. Legacy XMLs without checkpoints are left untouched."
                 )
             manifest = self._load_extraction_manifest(manifest_path)
+            if manifest.get("status") == "category_backfill_pending":
+                raise ValueError(
+                    f"Cannot replace pages for {pdf_path.name}: category backfill is incomplete. "
+                    "Restore its XML and checkpoint from the backfill backup."
+                )
             if manifest.get("source_sha256") != source_sha256:
                 raise ValueError(
                     f"Cannot replace pages for {pdf_path.name}: the source PDF changed since extraction."
                 )
-            if not self._checkpoint_configuration_matches(
+            self._require_checkpoint_configuration(
                 manifest.get("configuration"),
                 self._checkpoint_configuration(),
-            ):
-                raise ValueError(
-                    f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
-                )
+                pdf_path,
+                "replace pages for",
+            )
             if manifest.get("status") == "in_progress" and (
                 manifest.get("operation") != "replace_pages"
                 or manifest.get("replace_pages") != self.replace_pages
@@ -1512,13 +1587,12 @@ class QuestionPaperExtractor:
             replacement_batch_ids: set[str] = set()
 
             if self.replace_pages and manifest is not None:
-                if not self._checkpoint_configuration_matches(
+                self._require_checkpoint_configuration(
                     manifest.get("configuration"),
                     configuration,
-                ):
-                    raise ValueError(
-                        f"Cannot replace pages for {pdf_path.name}: extraction settings differ from its checkpoint."
-                    )
+                    pdf_path,
+                    "replace pages for",
+                )
                 if manifest.get("batch_ids") != expected_batch_ids:
                     raise ValueError(
                         f"Cannot replace pages for {pdf_path.name}: the current page batches differ from "
@@ -1561,13 +1635,12 @@ class QuestionPaperExtractor:
                     )
 
             if (self.resume or self.replace_pages) and manifest is not None:
-                if not self._checkpoint_configuration_matches(
+                self._require_checkpoint_configuration(
                     manifest.get("configuration"),
                     configuration,
-                ):
-                    raise ValueError(
-                        f"Cannot resume {pdf_path.name}: extraction settings differ from its checkpoint."
-                    )
+                    pdf_path,
+                    "resume",
+                )
                 if manifest.get("batch_ids") != expected_batch_ids:
                     raise ValueError(
                         f"Cannot resume {pdf_path.name}: the page batches differ from its checkpoint. "
@@ -1640,6 +1713,8 @@ class QuestionPaperExtractor:
                             current_record["error"] = str(exc)
                             write_json_atomically(manifest_path, manifest)
                         raise
+                if self.category_path is not None:
+                    current_xml = set_moodle_category(current_xml, self.category_path)
                 write_text_atomically(output_filepath, current_xml)
 
             for batch_index, (batch_id, filtered_batch) in enumerate(
@@ -1940,10 +2015,14 @@ class QuestionGenerator:
         translate_to: Optional[List[str]] = None,
         force_overwrite: bool = False,
         separate_by_question_type: bool = False,
+        top_category: Optional[str] = None,
+        source_root: Optional[Path] = None,
     ):
         self.communicator = communicator
         self.ocr_engine = ocr_engine or MistralOCREngine()
         self.rules_dict = rules_dict or {}
+        self.top_category = top_category
+        self.source_root = source_root
         self.languages = languages or ["english"]
         unique_targets = {}
         for language in translate_to or []:
@@ -2004,6 +2083,15 @@ class QuestionGenerator:
         input_file = Path(input_file).resolve()
         if not input_file.is_file():
             raise FileNotFoundError(f"Chapter input file not found: {input_file}")
+
+        def category_for(languages: List[str]) -> Optional[str]:
+            if self.top_category is None or self.source_root is None:
+                return None
+            return build_category_path(
+                self.top_category, self.source_root, input_file, languages
+            )
+
+        self.renderer.category_path = category_for(self.languages)
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         item_start = time.perf_counter()
@@ -2657,6 +2745,7 @@ class QuestionGenerator:
                         paper_dir,
                         type_english_stem,
                         image_map,
+                        category_path=category_for(["english"]),
                     )
                     all_output_paths.append(english_master_path)
 
@@ -2738,7 +2827,7 @@ class QuestionGenerator:
 
                     translated = translate_assessment_artifact(
                         self.communicator,
-                        translation_source,
+                        remove_moodle_categories(translation_source),
                         target_language,
                         "xml",
                         output_filename=translated_path.name,
@@ -2753,6 +2842,7 @@ class QuestionGenerator:
                             paper_dir,
                             translated_stem,
                             image_map,
+                            category_path=category_for(["english", target_language]),
                         )
                     )
                     if master_cache_key is not None:
@@ -2820,7 +2910,9 @@ class QuestionGenerator:
             english_master_stem = generation_stem
             english_master = raw_output
 
-        def render_artifact(artifact: str, output_stem: str) -> List[Path]:
+        def render_artifact(
+            artifact: str, output_stem: str, languages: List[str]
+        ) -> List[Path]:
             if self.output_format == "pdf":
                 return [
                     self.renderer.render(
@@ -2840,6 +2932,7 @@ class QuestionGenerator:
                         paper_dir,
                         f"{output_stem}_paper_{index:02d}",
                         image_map,
+                        category_path=category_for(languages),
                     )
                     for index, xml in enumerate(split_artifacts, start=1)
                 ]
@@ -2849,13 +2942,14 @@ class QuestionGenerator:
                     paper_dir,
                     output_stem,
                     image_map,
+                    category_path=category_for(languages),
                 )
             ]
 
-        primary_paths = render_artifact(raw_output, generation_stem)
+        primary_paths = render_artifact(raw_output, generation_stem, self.languages)
         all_output_paths = list(primary_paths)
         if separate_english_master and english_master is not None:
-            english_paths = render_artifact(english_master, english_master_stem)
+            english_paths = render_artifact(english_master, english_master_stem, ["english"])
             all_output_paths.extend(english_paths)
             logger.info("Saved canonical English question artifact(s): %s", english_paths)
 
@@ -2916,7 +3010,11 @@ class QuestionGenerator:
             else:
                 translated = translate_assessment_artifact(
                     self.communicator,
-                    english_master or raw_output,
+                    (
+                        remove_moodle_categories(english_master or raw_output)
+                        if self.output_format == "xml"
+                        else english_master or raw_output
+                    ),
                     target_language,
                     self.output_format,
                     self.pdf_engine,
@@ -2925,7 +3023,9 @@ class QuestionGenerator:
                     / f"{translated_stem}_translation_prompt.md",
                     force=self.force_overwrite,
                 )
-                translated_paths = render_artifact(translated, translated_stem)
+                translated_paths = render_artifact(
+                    translated, translated_stem, ["english", target_language]
+                )
                 if master_cache_key is not None:
                     master_cache_dir.mkdir(parents=True, exist_ok=True)
                     temporary_metadata_path = translation_metadata_path.with_suffix(

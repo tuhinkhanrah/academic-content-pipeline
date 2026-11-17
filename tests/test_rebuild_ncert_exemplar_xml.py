@@ -83,6 +83,16 @@ class RebuildExemplarTests(unittest.TestCase):
         self.assertEqual((self.folder / self.manifest["output_file"]).read_text(), "modified original")
         self.assertFalse(list(self.output.rglob("*.extract.json")))
 
+    def test_rebuild_preserves_checkpoint_category(self):
+        category = "$module$/top/Bank/class11/biology/keep401/english"
+        self.manifest["configuration"]["category_path"] = category
+        self.save_manifest()
+        result, _, errors = self.run_rebuild()
+        self.assertEqual(result, 0, errors)
+        quiz = ET.parse(self.output / "class11" / "biology" / self.manifest["output_file"]).getroot()
+        self.assertEqual(quiz[0].findtext("category/text"), category)
+        self.assertEqual(quiz[1].findtext("name/text"), "original")
+
     def test_invalid_missing_incomplete_and_mismatched_responses_are_reported(self):
         for case in ("missing", "incomplete", "mismatch", "unfinished"):
             with self.subTest(case=case):
