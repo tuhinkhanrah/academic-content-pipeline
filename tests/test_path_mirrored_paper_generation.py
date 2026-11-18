@@ -54,6 +54,38 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                 build_output_dir(spec_root, spec_path, root / "outputs"),
             )
 
+    def test_build_output_dir_uses_canonical_exam_folder_names(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec_root = root / "specs"
+            cases = {
+                "neet_ug": "neet-ug",
+                "jee_main": "jee-main",
+                "jee_advanced": "jee-advanced",
+                "wbjee": "wbjee",
+            }
+
+            for exam_id, output_name in cases.items():
+                with self.subTest(exam_id=exam_id):
+                    spec_path = spec_root / exam_id / "2026" / "batch.yaml"
+                    self.assertEqual(
+                        root / "outputs" / output_name / "2026",
+                        build_output_dir(spec_root, spec_path, root / "outputs"),
+                    )
+
+    def test_build_output_dir_places_year_under_exam(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec_root = root / "specs"
+            spec_path = spec_root / "neet_ug" / "batch.yaml"
+
+            self.assertEqual(
+                root / "outputs" / "neet-ug" / "2027",
+                build_output_dir(
+                    spec_root, spec_path, root / "outputs", year="2027"
+                ),
+            )
+
     def test_infers_standard_from_spec_path(self):
         cases = {
             "jee_main/batch.template.yaml": "jee_main",
@@ -120,6 +152,7 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             exam_duration_minutes=None,
             resume=True,
             force=False,
+            category_year="2027",
         )
 
         self.assertIn("generate-paper", command)
@@ -128,12 +161,15 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
         self.assertEqual("2", command[command.index("--max-paper-attempts") + 1])
         self.assertIn("--resume", command)
         self.assertNotIn("--force", command)
+        self.assertEqual(
+            "2027", command[command.index("--category-year") + 1]
+        )
 
     def test_dry_run_previews_batch_without_creating_output_root(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             spec_root = root / "specs"
-            exam_dir = spec_root / "neet"
+            exam_dir = spec_root / "neet_ug"
             exam_dir.mkdir(parents=True)
             (exam_dir / "batch.yaml").write_text(
                 "exam_name: NEET UG\ntest_count: 100\npapers: []\n",
@@ -150,12 +186,16 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                         "--top-category", "Question Bank",
                         "--output-root",
                         str(output_root),
+                        "--year",
+                        "2027",
                         "--dry-run",
                     ]
                 )
 
             self.assertEqual(result, 0)
             self.assertIn("Prepared 1 spec(s)", output.getvalue())
+            self.assertIn(str(output_root / "neet-ug" / "2027"), output.getvalue())
+            self.assertIn("--category-year 2027", output.getvalue())
             self.assertFalse(output_root.exists())
 
     def test_reference_paper_is_forwarded_in_dry_run(self):

@@ -57,7 +57,10 @@ from academic_content_pipeline.artifact_translator import (
     translate_assessment_artifact,
 )
 from academic_content_pipeline.mistral_ocr import MistralOCREngine
-from academic_content_pipeline.moodle_categories import build_category_path
+from academic_content_pipeline.moodle_categories import (
+    build_category_path,
+    build_exam_practice_paper_category_path,
+)
 from academic_content_pipeline.moodle_combiner import rebuild_combined_xml
 from academic_content_pipeline.pipeline_utils import compile_html_to_pdf, setup_logger
 from academic_content_pipeline.resource_paths import resource_path
@@ -71,6 +74,25 @@ from academic_content_pipeline.template_tools import (
 )
 
 logger = logging.getLogger("academic_content_pipeline")
+EXAM_CATEGORY_LABELS = {
+    "jee_advanced": "JEE Advanced",
+    "jee_main": "JEE Main",
+    "neet": "NEET UG",
+    "neet_ug": "NEET UG",
+    "wbjee": "WBJEE",
+}
+
+
+def _exam_category_label(standard: str, spec_path: Path) -> str:
+    value = (
+        standard
+        if standard and standard.casefold() != "general"
+        else spec_path.parent.name
+    )
+    key = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    return EXAM_CATEGORY_LABELS.get(
+        key, value.replace("_", " ").replace("-", " ").title()
+    )
 
 
 class GeneratorPromptResolver:
@@ -320,6 +342,10 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     add_common_options(p_syl)
     add_category_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
+    p_syl.add_argument(
+        "--category-year",
+        help="Year segment for a full-paper Moodle category, e.g. 2027.",
+    )
     reference_options = p_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
@@ -555,6 +581,10 @@ def main():
     add_common_options(p_direct_syl)
     add_category_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
+    p_direct_syl.add_argument(
+        "--category-year",
+        help="Year segment for a full-paper Moodle category, e.g. 2027.",
+    )
     reference_options = p_direct_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
@@ -617,6 +647,13 @@ def main():
         if source is not None:
             try:
                 build_category_path(args.top_category, args.source_root, source, args.languages.split(","))
+                if task == "generate-paper" and args.category_year is not None:
+                    build_exam_practice_paper_category_path(
+                        args.top_category,
+                        _exam_category_label(args.standards, source),
+                        args.category_year,
+                        args.languages.split(","),
+                    )
             except ValueError as exc:
                 parser.error(str(exc))
 
@@ -656,6 +693,8 @@ def main():
                 "--separate-by-question-type cannot be combined with --num-papers."
             )
     if task == "generate-paper":
+        if args.category_year is not None and args.output_format != "xml":
+            parser.error("--category-year requires --output-format xml.")
         if args.num_tests is not None and args.num_tests < 1:
             parser.error("--num-tests must be at least 1.")
         if args.max_paper_attempts < 1:
@@ -1059,9 +1098,19 @@ def main():
                 footer_text=getattr(args, "footer_text", ""),
             )
             if args.output_format == "xml":
-                mock_generator.renderer.category_path = build_category_path(
-                    args.top_category, args.source_root, args.spec, languages_list
-                )
+                if args.category_year is not None:
+                    mock_generator.renderer.category_path = (
+                        build_exam_practice_paper_category_path(
+                            args.top_category,
+                            _exam_category_label(args.standards, args.spec),
+                            args.category_year,
+                            languages_list,
+                        )
+                    )
+                else:
+                    mock_generator.renderer.category_path = build_category_path(
+                        args.top_category, args.source_root, args.spec, languages_list
+                    )
             if is_batch:
                 PaperBatchRunner(mock_generator).run(
                     args.spec,

@@ -13,7 +13,7 @@ Examples:
         --spec-root src/academic_content_pipeline/resources/spec_templates \
         --top-category "Practice Papers" \
         --spec wbjee/mathematics.template.yaml \
-        --output-root output/papers/wbjee-mathematics \
+        --output-root output/papers \
         --mode agent \
         --resume
 
@@ -38,6 +38,11 @@ from mirrored_path_utils import rebuild_mirrored_combined_xml, resolve_subtree
 
 
 SPEC_SUFFIXES = {".yaml", ".yml", ".json"}
+EXAM_OUTPUT_DIRECTORY_NAMES = {
+    "jee_advanced": "jee-advanced",
+    "jee_main": "jee-main",
+    "neet_ug": "neet-ug",
+}
 
 
 def normalize_standard(value: str) -> str:
@@ -129,14 +134,34 @@ def discover_batch_specs(spec_root: Path) -> List[Path]:
     return specs
 
 
-def build_output_dir(spec_root: Path, spec_path: Path, output_root: Path) -> Path:
-    """Mirror the spec's parent folder below the output root."""
+def build_output_dir(
+    spec_root: Path,
+    spec_path: Path,
+    output_root: Path,
+    year: str | None = None,
+) -> Path:
+    """Mirror the spec path, using canonical slugs for top-level exam folders."""
     try:
         relative_parent = spec_path.resolve().parent.relative_to(spec_root.resolve())
     except ValueError as exc:
         raise ValueError(
             f"Spec must be located under --spec-root to mirror its output path: {spec_path}"
         ) from exc
+    if relative_parent.parts:
+        exam_directory = EXAM_OUTPUT_DIRECTORY_NAMES.get(
+            relative_parent.parts[0],
+            relative_parent.parts[0],
+        )
+        relative_parent = Path(exam_directory, *relative_parent.parts[1:])
+    if year is not None:
+        if relative_parent.parts:
+            relative_parent = Path(
+                relative_parent.parts[0],
+                year,
+                *relative_parent.parts[1:],
+            )
+        else:
+            relative_parent = Path(year)
     return output_root / relative_parent
 
 
@@ -162,6 +187,7 @@ def command_for_spec(
     reference_analysis_model_name: str | None = None,
     top_category: str | None = None,
     source_root: Path | None = None,
+    category_year: str | None = None,
 ) -> List[str]:
     """Build the CLI command for one paper spec."""
     command = [
@@ -189,6 +215,8 @@ def command_for_spec(
     ]
     if top_category is not None and source_root is not None:
         command.extend(["--top-category", top_category, "--source-root", str(source_root)])
+    if category_year is not None:
+        command.extend(["--category-year", category_year])
     if model_name:
         command.extend(["--model-name", model_name])
     if reference_analysis_model_name:
@@ -254,7 +282,10 @@ def main(argv: List[str] | None = None) -> int:
         "--output-root",
         type=Path,
         required=True,
-        help="Root for outputs; each spec's relative parent folder is mirrored beneath it.",
+        help=(
+            "Root for outputs; each spec's relative parent folder is mirrored beneath it, "
+            "with known exam folders normalized to kebab-case."
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -265,6 +296,10 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--model-name", default=None, help="Optional Gemini model override.")
     parser.add_argument("--languages", default="english", help="Comma-separated target languages.")
     parser.add_argument("--top-category", required=True, help="Top-level Moodle question bank category.")
+    parser.add_argument(
+        "--year",
+        help="Place outputs under an exam/year directory and add the year to Moodle categories.",
+    )
     parser.add_argument("--standards", default=None, help="Optional exam-standard override.")
     parser.add_argument("--tags", default="", help="Comma-separated global tags.")
     parser.add_argument(
@@ -324,6 +359,8 @@ def main(argv: List[str] | None = None) -> int:
         parser.error("--max-paper-attempts must be at least 1.")
     if args.parallel_workers < 1:
         parser.error("--parallel-workers must be at least 1.")
+    if args.year is not None and not re.fullmatch(r"\d{4}", args.year):
+        parser.error("--year must be a four-digit year.")
 
     output_root = args.output_root.expanduser().resolve()
     if args.spec_root is not None:
@@ -359,7 +396,9 @@ def main(argv: List[str] | None = None) -> int:
     jobs = []
     output_dirs = set()
     for spec_path in spec_paths:
-        output_dir = build_output_dir(spec_root, spec_path, output_root)
+        output_dir = build_output_dir(
+            spec_root, spec_path, output_root, year=args.year
+        )
         if output_dir in output_dirs:
             raise ValueError(
                 f"Multiple specs resolve to the same output directory: {output_dir}"
@@ -386,6 +425,7 @@ def main(argv: List[str] | None = None) -> int:
             no_reference_papers=args.no_reference_paper,
             top_category=args.top_category,
             source_root=spec_root,
+            category_year=args.year,
         )
         if args.dry_run:
             print(subprocess.list2cmdline(command))

@@ -44,7 +44,7 @@ def _source_questions(path: Path, data: bytes) -> list[str] | None:
     if len(categories) != 1 or not elements or elements[0] is not categories[0]:
         raise ValueError(
             f"Expected one leading category in Moodle XML: {path}. "
-            "Backfill or repair this file before rebuilding combined XML."
+            "Add a category to this file before rebuilding combined XML."
         )
     texts = categories[0].getElementsByTagName("text")
     if not texts or not any(

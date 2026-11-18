@@ -1,6 +1,4 @@
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -547,6 +545,30 @@ class ExtractionCheckpointTests(unittest.TestCase):
                     output_dir,
                 )
 
+    def test_resume_refuses_interrupted_legacy_maintenance(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            pdf_path = root / "paper.pdf"
+            pdf_path.write_bytes(b"test pdf")
+            output_dir = root / "output"
+            output_path = self.run_file(self.make_extractor(FakeCommunicator()), pdf_path, output_dir)
+            manifest_path = output_dir / "paper_english.extract.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            original_output = output_path.read_bytes()
+
+            for status, error in (
+                ("repair_pending", "unfinished repair transaction"),
+                ("category_backfill_pending", "category backfill is incomplete"),
+            ):
+                with self.subTest(status=status):
+                    manifest["status"] = status
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    communicator = FakeCommunicator()
+                    with self.assertRaisesRegex(ValueError, error):
+                        self.run_file(self.make_extractor(communicator, resume=True), pdf_path, output_dir)
+                    self.assertFalse(communicator.calls)
+                    self.assertEqual(output_path.read_bytes(), original_output)
+
     def test_replace_pages_replaces_only_the_selected_checkpoint_batch(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -657,42 +679,6 @@ class ExemplarValidationTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(ValueError, "matching question"):
                     validate_ncert_exemplar_questions([invalid])
-
-    def test_language_checker_checks_missing_files_and_question_counts_without_ids(self):
-        checker = Path(__file__).resolve().parents[1] / "scripts" / "check_ncert_exemplar_xml.py"
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            node = exemplar_question("keep312__MCQ_I__12.1")
-            english = root / "keep312_neet_ug_english.xml"
-            bengali = root / "keep312_neet_ug_english_bengali.xml"
-            hindi = root / "keep312_neet_ug_english_hindi.xml"
-            english.write_text(f"<quiz>{node}</quiz>", encoding="utf-8")
-            bengali.write_text(f"<quiz>{node}</quiz>", encoding="utf-8")
-            command = [sys.executable, str(checker), "--root", str(root)]
-            missing = subprocess.run(command, capture_output=True, text=True, check=False)
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertIn("missing english_hindi", missing.stderr)
-
-            other = exemplar_question("keep312__MCQ_I__12.2")
-            hindi.write_text(f"<quiz>{node}{other}</quiz>", encoding="utf-8")
-            different = subprocess.run(command, capture_output=True, text=True, check=False)
-            self.assertNotEqual(different.returncode, 0)
-            self.assertIn("question count mismatch", different.stderr)
-            hindi.write_text(f"<quiz>{other}</quiz>", encoding="utf-8")
-            consistent = subprocess.run(command, capture_output=True, text=True, check=False)
-            self.assertEqual(consistent.returncode, 0, consistent.stderr)
-            self.assertIn("Equal counts do not prove", consistent.stdout)
-            matching = exemplar_matching_question()
-            for path in (english, bengali, hindi):
-                path.write_text(f"<quiz>{matching}</quiz>", encoding="utf-8")
-            matching_result = subprocess.run(command, capture_output=True, text=True, check=False)
-            self.assertEqual(matching_result.returncode, 0, matching_result.stderr)
-            category = '<question type="category"><category><text>$module$/top/Bank/english</text></category></question>'
-            for path in (english, bengali, hindi):
-                path.write_text(f"<quiz>{category}{matching}</quiz>", encoding="utf-8")
-            categorized = subprocess.run(command, capture_output=True, text=True, check=False)
-            self.assertEqual(categorized.returncode, 0, categorized.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

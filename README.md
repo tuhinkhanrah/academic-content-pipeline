@@ -126,14 +126,16 @@ Generate one paper blueprint repeatedly or generate complete test sets from a ba
 ```bash
 python -m academic_content_pipeline.unified_pipeline agent generate-paper \
   --source-root src/academic_content_pipeline/resources/spec_templates \
-  --top-category "Practice Papers" \
+  --top-category "Full Length Practice Papers" \
+  --category-year 2027 \
   --spec src/academic_content_pipeline/resources/spec_templates/neet_ug/batch.template.yaml \
-  --output-dir output/neet_ug
+  --output-dir output/neet-ug/2027
 ```
 
 | Option | Purpose | Default |
 |---|---|---|
 | `--spec PATH` | YAML/JSON paper or batch spec. | None |
+| `--category-year YYYY` | Add a year category between the exam and language categories; included in the resume checkpoint configuration. | None |
 | `--num-tests COUNT` | Desired total number of test sets. | Spec default or None |
 | `--resume` | Resume a compatible batch checkpoint; creates a new run when no checkpoint exists. | False |
 | `--max-paper-attempts COUNT` | Maximum new generation attempts for each unfinished paper per invocation. | `3` |
@@ -148,6 +150,31 @@ python -m academic_content_pipeline.unified_pipeline agent generate-paper \
 `--reference-paper` may be unkeyed for every paper or keyed as `paper1=path/to/file.pdf`. Keyed references cannot be combined with unkeyed references. `--num-tests` is the desired total test-set count; increasing it while resuming appends test sets. `--force` cannot be combined with `--resume`.
 
 Checkpointed batch-paper generation requires `--output-format xml`. Supported `uniqueness_scope` values are `all_papers`, `paper_type`, `test_set`, and `none`.
+When using the path-mirrored paper-generation runner, template IDs such as `neet_ug`, `jee_main`, and `jee_advanced` are written under the canonical output folders `neet-ug`, `jee-main`, and `jee-advanced`. Nested spec folders remain unchanged.
+Pass `--year YYYY` to that runner to place outputs under `<exam>/<year>/<language>` and add the same year to the Moodle category. For example, `--year 2027` creates outputs under `neet-ug/2027/english` and categories under `$module$/top/Full Length Practice Papers/neet-ug/2027/english`.
+
+To move an existing exam output into a year folder and add the matching category without regenerating papers, preview and then apply the migration:
+
+```bash
+python scripts/migrate_exam_practice_outputs.py \
+  --output-root ../exam-practice-papers \
+  --exam neet-ug \
+  --exam-name "NEET UG" \
+  --year 2027 \
+  --top-category "Full Length Practice Papers"
+
+python scripts/migrate_exam_practice_outputs.py \
+  --output-root ../exam-practice-papers \
+  --exam neet-ug \
+  --exam-name "NEET UG" \
+  --year 2027 \
+  --top-category "Full Length Practice Papers" \
+  --apply
+```
+
+The migration verifies existing output hashes, updates XML categories and checkpoint hashes, and preserves the batch-generation state so compatible `--resume` runs can continue.
+
+To update an existing year folder's category from an older display name to its exam slug, use the same command with `--previous-exam-name "NEET UG"`; preview before adding `--apply`. The migration refuses existing combined XML files rather than leaving them stale.
 
 ### `generate-tutorial`
 
@@ -293,7 +320,7 @@ checkpoints, and subsequent runs resume those checkpoints.
 | Option | Purpose | Default |
 |---|---|---|
 | `--source-root PATH` | Required root containing source PDFs. | None |
-| `--subtree PATH` | Existing directory inside `--source-root`; limits discovery and repair but not category/output-root mirroring. | Whole source root |
+| `--subtree PATH` | Existing directory inside `--source-root`; limits discovery but not category/output-root mirroring. | Whole source root |
 | `--top-category TEXT` | Top-level Moodle category. | None |
 | `--output-root PATH` | Required output root. | None |
 | `--mode context\|agent\|remote\|batch\|sequential` | AI or OCR communication mode. | `context` |
@@ -308,13 +335,11 @@ checkpoints, and subsequent runs resume those checkpoints.
 | `--dry-run` | Print commands without executing extraction. | False |
 | `--force` | Re-run extraction when target XML exists. | False |
 | `--resume` | Resume per-PDF batch checkpoints. | False |
-| `--repair` | Rebuild completed XML and checkpoints offline from saved responses. | False |
-| `--repair-backup-root PATH` | Required new separate directory for pre-repair backups. | None |
 | `--replace-pages START END` | Re-extract and replace saved batches for an inclusive page range. | None |
 | `--disable-ocr-cache` | Disable local OCR cache. | False |
 | `--verbose` | Print per-file metadata. | False |
 
-`--repair` cannot be combined with `--resume`, `--force`, or `--replace-pages`. The extraction script does not rebuild combined Moodle XML; this is done after a successful run by the shared combiner.
+After a successful extraction run, the shared combiner rebuilds combined Moodle XML.
 
 ### OCR-only extraction
 
@@ -470,70 +495,6 @@ python scripts/run_path_mirrored_tutorial.py \
 | `--disable-ocr-cache` | Force fresh Mistral OCR. | False |
 | `--verbose` | Print inferred per-file metadata. | False |
 
-## Offline category backfill
-
-Write categorized copies or update existing Moodle XML in place.
-
-```bash
-python scripts/backfill_moodle_categories.py \
-  --source-root ../question-papers-vault \
-  --input-root ../question-papers-vault-moodle \
-  --subtree neet_ug/ncert_exemplar/class11/biology \
-  --output-root ../question-papers-vault-categorized \
-  --top-category "Chapterwise Question Bank" \
-  --languages english \
-  --languages english,bengali \
-  --languages english,hindi \
-  --dry-run
-```
-
-Remove `--dry-run` after reviewing the preview.
-
-| Option | Purpose | Default |
-|---|---|---|
-| `--source-root PATH` | Required root containing original PDFs or chapter files. | None |
-| `--input-root PATH` | Required root containing existing Moodle XML. | None |
-| `--output-root PATH` | New copy directory, or the input root for in-place updates. | None |
-| `--backup-root PATH` | Required new separate backup directory for in-place updates. | None |
-| `--top-category TEXT` | Required top-level Moodle category. | None |
-| `--subtree PATH` | Process only this directory relative to `--input-root`. | Whole input root |
-| `--languages LANGUAGES` | Repeat for every language combination to match. | Required |
-| `--legacy-languages LANGUAGES` | Language combination for XML named exactly like its source. | None |
-| `--spec PATH` | Original paper/batch spec for an existing paper-output tree. | None |
-| `--dry-run` | Preview mappings without writing files. | False |
-
-In-place updates require a new separate backup root and a stopped set of pipeline writers. The script validates checkpoint output hashes before writing and protects resume integrity.
-
-## NCERT Exemplar validation
-
-```bash
-python scripts/check_ncert_exemplar_xml.py \
-  --root ../ncert-exemplar-staging
-```
-
-| Option | Purpose | Default |
-|---|---|---|
-| `--root PATH` | Required root containing extracted language XML files. | None |
-
-The checker reports missing language files, unsupported question types, malformed matching items, invalid grading, missing referenced images, and unequal question counts.
-
-## Offline NCERT recovery
-
-Rebuild XML from saved checkpoint responses without AI or OCR requests:
-
-```bash
-python scripts/rebuild_ncert_exemplar_xml.py \
-  --source-root ../question-papers-vault-moodle/neet_ug/ncert_exemplar \
-  --output-root ../ncert-exemplar-recovered
-```
-
-| Option | Purpose | Default |
-|---|---|---|
-| `--source-root PATH` | Existing bank or backup containing checkpoints and saved responses. | None |
-| `--output-root PATH` | Required new, separate staging directory. | None |
-
-The output directory must not already exist. Rebuilt files contain no checkpoints and cannot be resumed.
-
 ## Remote cleanup
 
 Delete Google AI Studio batch jobs, managed environments, or both:
@@ -566,6 +527,5 @@ python scripts/cleanup.py all
 - Keep specs and syllabuses inside the repository using relative paths for portable checkpoints.
 - Resume settings must match category, source, spec, format, backend, and checkpoint-related configuration.
 - `--force` replaces existing batch outputs for the selected language and should be used only when replacement is intentional.
-- Stop all extraction, generation, repair, backfill, and other writers before category backfill or repair operations.
-- Back up hidden checkpoint folders and OCR assets before recovery or repair.
+- Back up hidden checkpoint folders and OCR assets before modifying existing outputs.
 - PDF OCR artifacts, saved prompts, profiles, and reference excerpts may contain sensitive or licensed source material; protect output directories accordingly.

@@ -32,6 +32,47 @@ def build_category_path(
     return "/".join(("$module$", "top", top_category, *parts))
 
 
+def build_exam_practice_paper_category_path(
+    top_category: str,
+    exam_name: str,
+    year: str,
+    languages: list[str],
+) -> str:
+    """Build the stable exam/year/language category for generated full papers."""
+    category_parts = {
+        "top category": top_category.strip(),
+        "exam name": exam_name.strip(),
+    }
+    for label, value in category_parts.items():
+        if not value or "/" in value or "\\" in value:
+            raise ValueError(f"{label} must be a non-empty single category name.")
+    exam_slug = re.sub(r"[^a-z0-9]+", "-", category_parts["exam name"].lower()).strip("-")
+    if not exam_slug:
+        raise ValueError("exam name must contain letters or digits.")
+    if exam_slug == "neet":
+        exam_slug = "neet-ug"
+    if not re.fullmatch(r"\d{4}", year):
+        raise ValueError("The paper category year must be a four-digit year.")
+    language_tokens = []
+    for language in languages:
+        token = re.sub(r"[^a-z0-9]+", "_", language.strip().lower()).strip("_")
+        if not token:
+            raise ValueError(f"Invalid language name: {language!r}")
+        language_tokens.append(token)
+    if not language_tokens:
+        raise ValueError("At least one language is required for a Moodle category.")
+    return "/".join(
+        (
+            "$module$",
+            "top",
+            category_parts["top category"],
+            exam_slug,
+            year,
+            "_".join(language_tokens),
+        )
+    )
+
+
 def _parse_quiz(xml: str) -> minidom.Document:
     try:
         document = minidom.parseString(xml)

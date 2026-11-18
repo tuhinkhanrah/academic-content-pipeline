@@ -1448,7 +1448,7 @@ class QuestionPaperExtractor:
                 ):
                     raise ValueError(
                         f"Cannot resume {pdf_path.name}: the completed XML changed after extraction. "
-                        "Use --force for a full re-extraction or an explicit repair option."
+                        "Use --force for a full re-extraction."
                     )
         elif self.replace_pages:
             if not manifest_path.is_file() or existing_output is None:
