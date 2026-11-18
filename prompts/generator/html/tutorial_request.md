@@ -77,6 +77,13 @@ Create a complete tutorial from the supplied chapter or syllabus content. Explai
 8. Common pitfalls and revision checklist
 9. Concise final recap
 
+# Visible HTML Headings
+- Use topic-specific, natural headings for the tutorial.
+- Use exactly "Worked Examples" as the heading for the worked-examples section.
+- Do not emit "Original Worked Examples" anywhere in the HTML.
+- Name individual worked examples according to the concept being demonstrated (for example, "Applying Coulomb's Law" or "Calculating the Resultant Force").
+- Do not repeat the same heading label for every tutorial. The "Originality and Source Use" requirement is an instruction for creating independent content, not text that belongs in the HTML.
+
 # Source Content
 {{chapter_content}}
 

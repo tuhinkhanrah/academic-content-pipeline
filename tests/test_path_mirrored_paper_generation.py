@@ -87,6 +87,23 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                 with self.subTest(path=path, infer=infer):
                     self.assertEqual(infer(path), (standard, years))
 
+    def test_infers_neet_standard_from_reorganized_ncert_exemplar_path(self):
+        self.assertEqual(
+            infer_extraction_metadata(
+                Path("ncert-exemplar-question-bank/class11/biology/keep401.pdf"),
+                Path("."),
+            ),
+            ("neet_ug", []),
+        )
+
+    def test_metadata_inference_ignores_years_above_source_root(self):
+        source_root = Path("7418") / "source"
+        pdf_path = source_root / "ncert-exemplar-question-bank" / "class11" / "biology" / "keep401.pdf"
+        self.assertEqual(
+            infer_extraction_metadata(pdf_path, source_root),
+            ("neet_ug", []),
+        )
+
     def test_command_includes_batch_options(self):
         command = command_for_spec(
             Path("paper.yaml"),

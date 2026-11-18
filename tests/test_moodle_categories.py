@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from academic_content_pipeline.moodle_categories import build_category_path, set_moodle_category
+from academic_content_pipeline.moodle_combiner import combined_name_for_directory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import run_path_mirrored_extraction
@@ -215,7 +216,9 @@ class MoodleCategoryTests(unittest.TestCase):
             mock_execute.assert_called_once()
             self.assertFalse(resumed.communicator.calls)
             self.assertEqual(xml.read_bytes(), before)
-            combined = ET.parse(output_root / "combined_moodle.xml").getroot()
+            combined = ET.parse(
+                output_root / combined_name_for_directory(output_root)
+            ).getroot()
             self.assertEqual(
                 combined[0].findtext("category/text"),
                 "$module$/top/Bank/neet_ug/ncert_exemplar/class11/biology/keep401/english",

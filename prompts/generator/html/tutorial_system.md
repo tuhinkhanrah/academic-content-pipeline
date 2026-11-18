@@ -65,6 +65,13 @@ Teach the chapter or syllabus content, then assess understanding with original p
 - Where practical, keep each question with its answer and solution when printing.
 - Use high-contrast print-friendly colors, and robust system font fallbacks that support the requested script.
 
+[VISIBLE HTML HEADINGS]
+- Use topic-specific, natural headings for the tutorial.
+- Use exactly "Worked Examples" as the heading for the worked-examples section.
+- Never emit "Original Worked Examples" in the HTML.
+- Name individual worked examples for the concept they demonstrate (for example, "Applying Coulomb's Law" or "Calculating the Resultant Force").
+- Keep "original" as an instruction for independent content and examples, not as visible HTML text.
+
 [LANGUAGES]
 - Follow the requested target languages and supplied language instruction.
 - Preserve mathematical notation, variables, scientific names, and formula meaning across translations.

@@ -50,15 +50,26 @@ def normalize_standard(value: str) -> str:
 
 
 def infer_metadata_from_path(pdf_path: Path, source_root: Path) -> tuple[str, List[str]]:
-    """Infer standard and year tags from the full PDF path, not just the first folder segment."""
-    path_parts = [part for part in pdf_path.parts if part not in (".", "")]
-    path_text = pdf_path.as_posix().lower()
+    """Infer standard and year tags from the PDF's path relative to the source root."""
+    try:
+        relative_path = pdf_path.relative_to(source_root)
+    except ValueError:
+        relative_path = pdf_path
+    path_parts = [part for part in relative_path.parts if part not in (".", "")]
+    path_text = relative_path.as_posix().lower()
 
     standard = "general"
     standard_aliases = {
         "jee_main": ["jee main", "jee-main", "jee_main"],
         "jee_advanced": ["jee advanced", "jee_advanced"],
-        "neet_ug": ["neet", "neet ug", "neet_ug", "neet-ug"],
+        "neet_ug": [
+            "neet",
+            "neet ug",
+            "neet_ug",
+            "neet-ug",
+            "ncert-exemplar",
+            "ncert_exemplar",
+        ],
         "wbjee": ["wbjee", "wb-jee", "wb_jee"],
     }
     for canonical, aliases in standard_aliases.items():
@@ -74,7 +85,7 @@ def infer_metadata_from_path(pdf_path: Path, source_root: Path) -> tuple[str, Li
                 break
 
     years = []
-    for match in re.finditer(r"(?<!\d)(\d{4})(?!\d)", pdf_path.as_posix()):
+    for match in re.finditer(r"(?<!\d)(\d{4})(?!\d)", relative_path.as_posix()):
         year = match.group(1)
         if year not in years:
             years.append(year)
