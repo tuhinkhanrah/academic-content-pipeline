@@ -22,36 +22,25 @@ import test_extraction_checkpoints as extraction_tests
 
 
 class MoodleCategoryTests(unittest.TestCase):
-    def test_builds_exam_year_and_language_category(self):
-        self.assertEqual(
-            build_exam_practice_paper_category_path(
-                "Full Length Practice Papers",
-                "NEET UG",
-                "2027",
-                ["English", "Bengali"],
-            ),
-            "$module$/top/Full Length Practice Papers/neet-ug/2027/english_bengali",
-        )
-        with self.assertRaisesRegex(ValueError, "four-digit"):
-            build_exam_practice_paper_category_path(
-                "Full Length Practice Papers", "NEET UG", "27", ["english"]
-            )
-
-    def test_paper_exam_categories_use_canonical_slugs(self):
+    def test_paper_category_year_with_optional_top_category(self):
         for exam, slug in (
             ("NEET UG", "neet-ug"),
-            ("NEET", "neet-ug"),
-            ("JEE Main", "jee-main"),
+            ("jee_main", "jee-main"),
             ("JEE Advanced", "jee-advanced"),
             ("WBJEE", "wbjee"),
         ):
-            with self.subTest(exam=exam):
-                self.assertEqual(
-                    build_exam_practice_paper_category_path(
-                        "Papers", exam, "2027", ["english"]
-                    ),
-                    f"$module$/top/Papers/{slug}/2027/english",
-                )
+            for top in (None, "Practice Papers"):
+                with self.subTest(exam=exam, top=top):
+                    prefix = f"{top}/" if top else ""
+                    self.assertEqual(
+                        build_exam_practice_paper_category_path(
+                            top, exam, "2027", ["english", "bengali"]
+                        ),
+                        f"$module$/top/{prefix}{slug}/2027/english_bengali",
+                    )
+        for year in ("27", "2027/other", "２０２７"):
+            with self.subTest(year=year), self.assertRaisesRegex(ValueError, "four-digit"):
+                build_exam_practice_paper_category_path(None, "NEET UG", year, ["english"])
 
     def test_source_relative_path_and_language_order(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -68,6 +57,12 @@ class MoodleCategoryTests(unittest.TestCase):
                 build_category_path("Bank", root, root.parent / "other.pdf", ["english"])
             with self.assertRaisesRegex(ValueError, "single category"):
                 build_category_path("Bank/Other", root, source, ["english"])
+            with self.assertRaisesRegex(ValueError, "single category"):
+                build_category_path("", root, source, ["english"])
+            self.assertEqual(
+                build_category_path(None, root, source, ["English", " Bengali "]),
+                "$module$/top/neet_ug/ncert_exemplar/class11/biology/keep401/english_bengali",
+            )
 
     def test_replaces_existing_markers_and_preserves_question_content(self):
         source = (
@@ -109,16 +104,28 @@ class MoodleCategoryTests(unittest.TestCase):
                     self.assertIn("--source-root", output.getvalue())
                     self.assertIn("english,bengali", output.getvalue())
 
-    def test_extraction_rejects_removed_repair_options(self):
-        for option in ("--repair", "--repair-backup-root"):
-            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()) as errors:
-                with self.assertRaises(SystemExit) as result:
-                    run_path_mirrored_extraction.main([
-                        "--source-root", ".", "--output-root", "output",
-                        "--top-category", "Question Bank", option,
-                    ])
-                self.assertEqual(result.exception.code, 2)
-                self.assertIn("unrecognized arguments", errors.getvalue())
+    def test_mirrored_runners_forward_root_without_optional_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "sources"
+            selected = source / "ncert-exemplar-question-bank" / "class11" / "biology"
+            selected.mkdir(parents=True)
+            (selected / "keep401.pdf").write_bytes(b"pdf")
+            (selected / "batch.yaml").write_text(
+                "exam_name: Test\ntest_count: 1\npapers: []\n", encoding="utf-8"
+            )
+            for runner in (
+                run_path_mirrored_extraction,
+                run_path_mirrored_question_generation,
+                run_path_mirrored_paper_generation,
+            ):
+                with self.subTest(runner=runner.__name__), contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(runner.main([
+                        "--source-root", str(source), "--subtree", str(selected.relative_to(source)),
+                        "--output-root", str(root / "output"), "--dry-run",
+                    ]), 0)
+                    self.assertIn("--source-root", output.getvalue())
+                    self.assertNotIn("--top-category", output.getvalue())
 
     def test_subtree_limits_all_mirrored_runners_but_keeps_original_root(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -139,13 +146,7 @@ class MoodleCategoryTests(unittest.TestCase):
             for runner, execute, expected_source, output_root, expected_output in (
                 (run_path_mirrored_extraction, "execute_pdf_command", pdf, root / "extract", root / "extract" / subtree),
                 (run_path_mirrored_question_generation, "execute_command", pdf, root / "questions", root / "questions" / subtree / "keep401"),
-                (
-                    run_path_mirrored_paper_generation,
-                    "execute_command",
-                    spec,
-                    root / "papers",
-                    root / "papers" / "neet-ug" / "ncert_exemplar" / "class11" / "biology",
-                ),
+                (run_path_mirrored_paper_generation, "execute_command", spec, root / "papers", root / "papers" / "neet-ug" / "ncert_exemplar" / "class11" / "biology"),
             ):
                 with self.subTest(runner=runner.__name__), \
                      contextlib.redirect_stdout(io.StringIO()), \

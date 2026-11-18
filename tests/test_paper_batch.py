@@ -142,6 +142,31 @@ class PaperBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "settings differ"):
                 PaperBatchRunner(generator).run(spec, root / "out", resume=True)
 
+    def test_batch_resume_with_source_relative_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            generator = FakePaperGenerator(["first"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/batch/english")
+            output = PaperBatchRunner(generator).run(spec, root / "out")[0]
+            self.assertEqual(
+                ET.parse(output).getroot()[0].findtext("category/text"),
+                "$module$/top/batch/english",
+            )
+            self.assertEqual(PaperBatchRunner(generator).run(spec, root / "out", resume=True), [output])
+
+    def test_batch_resume_checks_year_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            generator = FakePaperGenerator(["first"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/neet-ug/2027/english")
+            output = PaperBatchRunner(generator).run(spec, root / "out")[0]
+            self.assertEqual(PaperBatchRunner(generator).run(spec, root / "out", resume=True), [output])
+            generator.renderer.category_path = "$module$/top/neet-ug/2028/english"
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(generator).run(spec, root / "out", resume=True)
+
     def make_inputs(self, root, *, test_count=1, papers=None):
         spec_path = root / "batch.yaml"
         paper_paths = papers or [("paper", "paper.yaml")]

@@ -135,10 +135,7 @@ def discover_batch_specs(spec_root: Path) -> List[Path]:
 
 
 def build_output_dir(
-    spec_root: Path,
-    spec_path: Path,
-    output_root: Path,
-    year: str | None = None,
+    spec_root: Path, spec_path: Path, output_root: Path, year: str | None = None,
 ) -> Path:
     """Mirror the spec path, using canonical slugs for top-level exam folders."""
     try:
@@ -155,11 +152,7 @@ def build_output_dir(
         relative_parent = Path(exam_directory, *relative_parent.parts[1:])
     if year is not None:
         if relative_parent.parts:
-            relative_parent = Path(
-                relative_parent.parts[0],
-                year,
-                *relative_parent.parts[1:],
-            )
+            relative_parent = Path(relative_parent.parts[0], year, *relative_parent.parts[1:])
         else:
             relative_parent = Path(year)
     return output_root / relative_parent
@@ -213,8 +206,10 @@ def command_for_spec(
         "--max-paper-attempts",
         str(max_paper_attempts),
     ]
-    if top_category is not None and source_root is not None:
-        command.extend(["--top-category", top_category, "--source-root", str(source_root)])
+    if source_root is not None:
+        command.extend(["--source-root", str(source_root)])
+    if top_category is not None:
+        command.extend(["--top-category", top_category])
     if category_year is not None:
         command.extend(["--category-year", category_year])
     if model_name:
@@ -295,7 +290,7 @@ def main(argv: List[str] | None = None) -> int:
     )
     parser.add_argument("--model-name", default=None, help="Optional Gemini model override.")
     parser.add_argument("--languages", default="english", help="Comma-separated target languages.")
-    parser.add_argument("--top-category", required=True, help="Top-level Moodle question bank category.")
+    parser.add_argument("--top-category", help="Optional top-level Moodle question bank category.")
     parser.add_argument(
         "--year",
         help="Place outputs under an exam/year directory and add the year to Moodle categories.",
@@ -359,7 +354,7 @@ def main(argv: List[str] | None = None) -> int:
         parser.error("--max-paper-attempts must be at least 1.")
     if args.parallel_workers < 1:
         parser.error("--parallel-workers must be at least 1.")
-    if args.year is not None and not re.fullmatch(r"\d{4}", args.year):
+    if args.year is not None and not re.fullmatch(r"[0-9]{4}", args.year):
         parser.error("--year must be a four-digit year.")
 
     output_root = args.output_root.expanduser().resolve()
@@ -396,9 +391,7 @@ def main(argv: List[str] | None = None) -> int:
     jobs = []
     output_dirs = set()
     for spec_path in spec_paths:
-        output_dir = build_output_dir(
-            spec_root, spec_path, output_root, year=args.year
-        )
+        output_dir = build_output_dir(spec_root, spec_path, output_root, year=args.year)
         if output_dir in output_dirs:
             raise ValueError(
                 f"Multiple specs resolve to the same output directory: {output_dir}"

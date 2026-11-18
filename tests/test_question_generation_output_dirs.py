@@ -19,6 +19,28 @@ from academic_content_pipeline.unified_pipeline import main as pipeline_main
 
 
 class QuestionGenerationOutputDirTests(unittest.TestCase):
+    def test_question_generation_without_top_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "exam" / "chapter.md"
+            source.parent.mkdir()
+            source.write_text("# Chapter", encoding="utf-8")
+            generator = QuestionGenerator(
+                communicator=SimpleNamespace(generate=lambda **kwargs: (
+                    '<quiz><question type="multichoice"><name><text>One</text></name>'
+                    '</question></quiz>'
+                )),
+                ocr_engine=object(),
+                languages=["english"],
+                source_root=root,
+            )
+            result = generator.process_file(source, root / "out")
+            path = result[0] if isinstance(result, list) else result
+            self.assertEqual(
+                ET.parse(path).getroot()[0].findtext("category/text"),
+                "$module$/top/exam/chapter/english",
+            )
+
     def test_separate_type_translation_uses_cached_master_without_category(self):
         xml = '<quiz><question type="multichoice"><name><text>One</text></name></question></quiz>'
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -485,8 +485,10 @@ def command_for_input(
         "--difficulty-mix",
         difficulty_mix,
     ]
-    if top_category is not None and source_root is not None:
-        command.extend(["--top-category", top_category, "--source-root", str(source_root)])
+    if source_root is not None and output_format == "xml":
+        command.extend(["--source-root", str(source_root)])
+    if top_category is not None:
+        command.extend(["--top-category", top_category])
     if model_name:
         command.extend(["--model-name", model_name])
     if ocr_model and input_path.suffix.lower() == ".pdf":
@@ -593,8 +595,6 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Force fresh Mistral OCR for PDF inputs.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file inferred metadata.")
     args = parser.parse_args(argv)
-    if args.output_format == "xml" and not args.top_category:
-        parser.error("--top-category is required for Moodle XML generation.")
 
     if args.mode == "sequential":
         args.mode = "context"

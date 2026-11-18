@@ -73,19 +73,6 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                         build_output_dir(spec_root, spec_path, root / "outputs"),
                     )
 
-    def test_build_output_dir_places_year_under_exam(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            spec_root = root / "specs"
-            spec_path = spec_root / "neet_ug" / "batch.yaml"
-
-            self.assertEqual(
-                root / "outputs" / "neet-ug" / "2027",
-                build_output_dir(
-                    spec_root, spec_path, root / "outputs", year="2027"
-                ),
-            )
-
     def test_infers_standard_from_spec_path(self):
         cases = {
             "jee_main/batch.template.yaml": "jee_main",
@@ -103,6 +90,33 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     expected_standard,
                     infer_standard_from_path(Path(relative_path)),
                 )
+
+    def test_year_selects_exam_year_output_and_forwards_category_year(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec_root = root / "specs"
+            spec = spec_root / "neet_ug" / "batch.yaml"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("exam_name: NEET UG\ntest_count: 1\npapers: []\n", encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main([
+                    "--spec-root", str(spec_root), "--output-root", str(root / "out"),
+                    "--subtree", "neet_ug", "--year", "2027", "--resume", "--dry-run",
+                ]), 0)
+            self.assertIn(str(root / "out" / "neet-ug" / "2027"), output.getvalue())
+            self.assertIn("--category-year 2027", output.getvalue())
+            self.assertIn("--resume", output.getvalue())
+            self.assertNotIn("--top-category", output.getvalue())
+            self.assertFalse((root / "out").exists())
+
+            for bad_year in ("27", "2027/other", "２０２７"):
+                with self.subTest(year=bad_year), redirect_stderr(StringIO()):
+                    with self.assertRaises(SystemExit):
+                        main([
+                            "--spec-root", str(spec_root), "--output-root", str(root / "out"),
+                            "--year", bad_year, "--dry-run",
+                        ])
 
     def test_metadata_inference_retains_year_tags_and_ignores_date_components(self):
         cases = [
@@ -152,7 +166,6 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
             exam_duration_minutes=None,
             resume=True,
             force=False,
-            category_year="2027",
         )
 
         self.assertIn("generate-paper", command)
@@ -161,15 +174,12 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
         self.assertEqual("2", command[command.index("--max-paper-attempts") + 1])
         self.assertIn("--resume", command)
         self.assertNotIn("--force", command)
-        self.assertEqual(
-            "2027", command[command.index("--category-year") + 1]
-        )
 
     def test_dry_run_previews_batch_without_creating_output_root(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             spec_root = root / "specs"
-            exam_dir = spec_root / "neet_ug"
+            exam_dir = spec_root / "neet"
             exam_dir.mkdir(parents=True)
             (exam_dir / "batch.yaml").write_text(
                 "exam_name: NEET UG\ntest_count: 100\npapers: []\n",
@@ -186,16 +196,12 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                         "--top-category", "Question Bank",
                         "--output-root",
                         str(output_root),
-                        "--year",
-                        "2027",
                         "--dry-run",
                     ]
                 )
 
             self.assertEqual(result, 0)
             self.assertIn("Prepared 1 spec(s)", output.getvalue())
-            self.assertIn(str(output_root / "neet-ug" / "2027"), output.getvalue())
-            self.assertIn("--category-year 2027", output.getvalue())
             self.assertFalse(output_root.exists())
 
     def test_reference_paper_is_forwarded_in_dry_run(self):
@@ -311,6 +317,63 @@ class PathMirroredPaperGenerationTests(unittest.TestCase):
                     self.assertEqual(
                         generator.return_value.renderer.category_path,
                         "$module$/top/Question Bank/batch/english",
+                    )
+
+    def test_pipeline_paper_category_without_top_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = root / "neet_ug" / "batch.yaml"
+            spec.parent.mkdir()
+            spec.write_text("exam_name: Test\ntest_count: 1\npapers: []\n", encoding="utf-8")
+            argv = [
+                "pipeline", "agent", "generate-papers", "--spec", str(spec),
+                "--output-dir", str(root / "out"), "--source-root", str(root),
+            ]
+            with patch("sys.argv", argv), \
+                 patch.dict("os.environ", {"GEMINI_API_KEY": "test", "MISTRAL_API_KEY": "test"}), \
+                 patch("academic_content_pipeline.unified_pipeline.logger"), \
+                 patch("academic_content_pipeline.unified_pipeline.setup_logger"), \
+                 patch("academic_content_pipeline.unified_pipeline.build_communicator"), \
+                 patch("academic_content_pipeline.unified_pipeline.SingleShotBackend"), \
+                 patch("academic_content_pipeline.unified_pipeline.MistralOCREngine"), \
+                 patch("academic_content_pipeline.unified_pipeline.PaperGenerator") as generator, \
+                 patch("academic_content_pipeline.unified_pipeline.PaperBatchRunner"):
+                pipeline_main()
+            self.assertEqual(
+                generator.return_value.renderer.category_path,
+                "$module$/top/neet_ug/batch/english",
+            )
+
+    def test_pipeline_paper_year_category_for_both_cli_forms(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = root / "neet_ug" / "batch.yaml"
+            spec.parent.mkdir()
+            spec.write_text("exam_name: NEET UG\ntest_count: 1\npapers: []\n", encoding="utf-8")
+            for prefix in (["generate-paper"], ["agent", "generate-papers"]):
+                for top in (None, "Practice Papers"):
+                    argv = [
+                        "pipeline", *prefix, "--spec", str(spec), "--source-root", str(root),
+                        "--output-dir", str(root / "out"), "--category-year", "2027",
+                        "--languages", "english,bengali",
+                    ]
+                    if top is not None:
+                        argv.extend(["--top-category", top])
+                    with self.subTest(prefix=prefix, top=top), \
+                         patch("sys.argv", argv), \
+                         patch.dict("os.environ", {"GEMINI_API_KEY": "test", "MISTRAL_API_KEY": "test"}), \
+                         patch("academic_content_pipeline.unified_pipeline.logger"), \
+                         patch("academic_content_pipeline.unified_pipeline.setup_logger"), \
+                         patch("academic_content_pipeline.unified_pipeline.build_communicator"), \
+                         patch("academic_content_pipeline.unified_pipeline.SingleShotBackend"), \
+                         patch("academic_content_pipeline.unified_pipeline.MistralOCREngine"), \
+                         patch("academic_content_pipeline.unified_pipeline.PaperGenerator") as generator, \
+                         patch("academic_content_pipeline.unified_pipeline.PaperBatchRunner"):
+                        pipeline_main()
+                    expected_prefix = f"{top}/" if top else ""
+                    self.assertEqual(
+                        generator.return_value.renderer.category_path,
+                        f"$module$/top/{expected_prefix}neet-ug/2027/english_bengali",
                     )
 
 

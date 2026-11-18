@@ -7,11 +7,12 @@ from xml.parsers.expat import ExpatError
 
 
 def build_category_path(
-    top_category: str, source_root: Path, source_file: Path, languages: list[str]
+    top_category: str | None, source_root: Path, source_file: Path, languages: list[str]
 ) -> str:
-    top_category = top_category.strip()
-    if not top_category or "/" in top_category or "\\" in top_category:
-        raise ValueError("--top-category must be a non-empty single category name.")
+    if top_category is not None:
+        top_category = top_category.strip()
+        if not top_category or "/" in top_category or "\\" in top_category:
+            raise ValueError("--top-category must be a non-empty single category name.")
     root = Path(source_root).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Source root is not a directory: {root}")
@@ -29,30 +30,31 @@ def build_category_path(
     if not tokens:
         raise ValueError("At least one language is required for a Moodle category.")
     parts = (*relative.parent.parts, relative.stem, "_".join(tokens))
-    return "/".join(("$module$", "top", top_category, *parts))
+    prefix = ("$module$", "top", top_category) if top_category is not None else ("$module$", "top")
+    return "/".join((*prefix, *parts))
 
 
 def build_exam_practice_paper_category_path(
-    top_category: str,
+    top_category: str | None,
     exam_name: str,
     year: str,
     languages: list[str],
 ) -> str:
-    """Build the stable exam/year/language category for generated full papers."""
-    category_parts = {
-        "top category": top_category.strip(),
-        "exam name": exam_name.strip(),
-    }
-    for label, value in category_parts.items():
-        if not value or "/" in value or "\\" in value:
-            raise ValueError(f"{label} must be a non-empty single category name.")
-    exam_slug = re.sub(r"[^a-z0-9]+", "-", category_parts["exam name"].lower()).strip("-")
+    """Build the exam/year/language category for generated full papers."""
+    exam_name = exam_name.strip()
+    if not exam_name or "/" in exam_name or "\\" in exam_name:
+        raise ValueError("exam name must be a non-empty single category name.")
+    exam_slug = re.sub(r"[^a-z0-9]+", "-", exam_name.lower()).strip("-")
     if not exam_slug:
         raise ValueError("exam name must contain letters or digits.")
     if exam_slug == "neet":
         exam_slug = "neet-ug"
-    if not re.fullmatch(r"\d{4}", year):
+    if not re.fullmatch(r"[0-9]{4}", year):
         raise ValueError("The paper category year must be a four-digit year.")
+    if top_category is not None:
+        top_category = top_category.strip()
+        if not top_category or "/" in top_category or "\\" in top_category:
+            raise ValueError("--top-category must be a non-empty single category name.")
     language_tokens = []
     for language in languages:
         token = re.sub(r"[^a-z0-9]+", "_", language.strip().lower()).strip("_")
@@ -61,16 +63,8 @@ def build_exam_practice_paper_category_path(
         language_tokens.append(token)
     if not language_tokens:
         raise ValueError("At least one language is required for a Moodle category.")
-    return "/".join(
-        (
-            "$module$",
-            "top",
-            category_parts["top category"],
-            exam_slug,
-            year,
-            "_".join(language_tokens),
-        )
-    )
+    prefix = ("$module$", "top", top_category) if top_category is not None else ("$module$", "top")
+    return "/".join((*prefix, exam_slug, year, "_".join(language_tokens)))
 
 
 def _parse_quiz(xml: str) -> minidom.Document:

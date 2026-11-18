@@ -197,8 +197,9 @@ def command_for_pdf(
         "--languages",
         languages,
     ]
+    cmd.extend(["--source-root", str(source_root)])
     if top_category is not None:
-        cmd.extend(["--top-category", top_category, "--source-root", str(source_root)])
+        cmd.extend(["--top-category", top_category])
     if model_name:
         cmd.extend(["--model-name", model_name])
     if instruction_page_model_name:
@@ -266,8 +267,6 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the extraction run.")
     parser.add_argument("--verbose", action="store_true", help="Print per-file metadata details.")
     args = parser.parse_args(argv)
-    if not args.top_category:
-        parser.error("--top-category is required for Moodle XML extraction.")
     if args.force and (args.resume or args.replace_pages):
         parser.error(
             "--force cannot be combined with --resume or a replacement option."

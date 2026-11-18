@@ -130,6 +130,33 @@ class ExtractionCheckpointTests(unittest.TestCase):
             resumed.top_category = "Other"
             with self.assertRaisesRegex(ValueError, "settings differ"):
                 self.run_file(resumed, source, output)
+            resumed.top_category = None
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                self.run_file(resumed, source, output)
+
+    def test_resume_without_top_category_preserves_source_relative_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "ncert-exemplar-question-bank" / "class11" / "biology" / "chapter.pdf"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"test pdf")
+            output = root / "output"
+            extractor = self.make_extractor(FakeCommunicator(fail_on_call=2))
+            extractor.source_root = root
+            with self.assertRaisesRegex(RuntimeError, "simulated network failure"):
+                self.run_file(extractor, source, output)
+            resumed = self.make_extractor(FakeCommunicator(), resume=True)
+            resumed.source_root = root
+            path = self.run_file(resumed, source, output)
+            self.assertEqual(
+                ET.parse(path).getroot()[0].findtext("category/text"),
+                "$module$/top/ncert-exemplar-question-bank/class11/biology/chapter/english",
+            )
+            self.assertEqual(len(load_question_checkpoint(path)), 3)
+            completed = self.make_extractor(FakeCommunicator(), resume=True)
+            completed.source_root = root
+            self.assertEqual(self.run_file(completed, source, output), path)
+            self.assertFalse(completed.communicator.calls)
 
     def test_checkpoint_mismatch_logs_compared_fields_for_resume_and_replace(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

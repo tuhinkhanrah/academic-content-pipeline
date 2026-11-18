@@ -84,15 +84,9 @@ EXAM_CATEGORY_LABELS = {
 
 
 def _exam_category_label(standard: str, spec_path: Path) -> str:
-    value = (
-        standard
-        if standard and standard.casefold() != "general"
-        else spec_path.parent.name
-    )
+    value = standard if standard and standard.casefold() != "general" else spec_path.parent.name
     key = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-    return EXAM_CATEGORY_LABELS.get(
-        key, value.replace("_", " ").replace("-", " ").title()
-    )
+    return EXAM_CATEGORY_LABELS.get(key, value.replace("_", " ").replace("-", " ").title())
 
 
 class GeneratorPromptResolver:
@@ -342,10 +336,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     add_common_options(p_syl)
     add_category_options(p_syl)
     p_syl.add_argument("--spec", type=Path, default=None, help="Path to YAML spec or syllabus markdown/pdf.")
-    p_syl.add_argument(
-        "--category-year",
-        help="Year segment for a full-paper Moodle category, e.g. 2027.",
-    )
+    p_syl.add_argument("--category-year", help="Year segment for a full-paper Moodle category, e.g. 2027.")
     reference_options = p_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
@@ -581,10 +572,7 @@ def main():
     add_common_options(p_direct_syl)
     add_category_options(p_direct_syl)
     p_direct_syl.add_argument("--spec", type=Path, default=None)
-    p_direct_syl.add_argument(
-        "--category-year",
-        help="Year segment for a full-paper Moodle category, e.g. 2027.",
-    )
+    p_direct_syl.add_argument("--category-year", help="Year segment for a full-paper Moodle category, e.g. 2027.")
     reference_options = p_direct_syl.add_mutually_exclusive_group()
     reference_options.add_argument("--reference-paper", action="append", default=None, metavar="[PAPER_ID=]PATH", help="Reference PDF or OCR Markdown; repeat with paper IDs for batch-specific references.")
     reference_options.add_argument("--sample-pdf", type=Path, default=None, help="Deprecated alias for --reference-paper.")
@@ -641,8 +629,8 @@ def main():
     if task == "generate-papers":
         task = "generate-paper"
     if task in {"extract", "generate-questions", "generate-paper"} and args.output_format == "xml":
-        if not args.top_category or args.source_root is None:
-            parser.error("Moodle XML output requires --top-category and --source-root.")
+        if args.source_root is None:
+            parser.error("Moodle XML output requires --source-root.")
         source = args.spec if task == "generate-paper" else args.input_file or args.input_dir
         if source is not None:
             try:
@@ -986,7 +974,7 @@ def main():
                 resume=getattr(args, "resume", False),
                 replace_pages=getattr(args, "replace_pages", None),
                 top_category=args.top_category if args.output_format == "xml" else None,
-                source_root=args.source_root,
+                source_root=args.source_root if args.output_format == "xml" else None,
             )
             if args.input_file:
                 extractor.process_file(args.input_file, args.output_dir)
@@ -1024,7 +1012,7 @@ def main():
                     False,
                 ),
                 top_category=args.top_category if args.output_format == "xml" else None,
-                source_root=args.source_root,
+                source_root=args.source_root if args.output_format == "xml" else None,
             )
             if args.input_file:
                 generator.process_file(args.input_file, args.output_dir)
@@ -1099,13 +1087,9 @@ def main():
             )
             if args.output_format == "xml":
                 if args.category_year is not None:
-                    mock_generator.renderer.category_path = (
-                        build_exam_practice_paper_category_path(
-                            args.top_category,
-                            _exam_category_label(args.standards, args.spec),
-                            args.category_year,
-                            languages_list,
-                        )
+                    mock_generator.renderer.category_path = build_exam_practice_paper_category_path(
+                        args.top_category, _exam_category_label(args.standards, args.spec),
+                        args.category_year, languages_list,
                     )
                 else:
                     mock_generator.renderer.category_path = build_category_path(

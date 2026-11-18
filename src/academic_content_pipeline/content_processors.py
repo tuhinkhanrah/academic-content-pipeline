@@ -1341,7 +1341,7 @@ class QuestionPaperExtractor:
     def process_file(self, pdf_path: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path:
         """Extracts questions from a single PDF and writes Moodle XML."""
         pdf_path = Path(pdf_path).resolve()
-        if self.top_category is not None and self.source_root is not None:
+        if self.source_root is not None:
             self.category_path = build_category_path(
                 self.top_category, self.source_root, pdf_path, self.languages
             )
@@ -2085,7 +2085,7 @@ class QuestionGenerator:
             raise FileNotFoundError(f"Chapter input file not found: {input_file}")
 
         def category_for(languages: List[str]) -> Optional[str]:
-            if self.top_category is None or self.source_root is None:
+            if self.source_root is None:
                 return None
             return build_category_path(
                 self.top_category, self.source_root, input_file, languages
