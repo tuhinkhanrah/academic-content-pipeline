@@ -4,7 +4,7 @@ uniqueness_scope: all_papers
 papers:
 - id: paper1
   spec: paper1.template.yaml
-  reference_paper: '../../../../../../question-papers-vault/jee_advanced/2026/2026_1_English.pdf'
+  reference_paper: '../../../../../../question-papers-vault/previous-year-question-bank/jee-advanced/2026/2026-1-english.pdf'
 - id: paper2
   spec: paper2.template.yaml
-  reference_paper: '../../../../../../question-papers-vault/jee_advanced/2026/2026_2_English.pdf'
+  reference_paper: '../../../../../../question-papers-vault/previous-year-question-bank/jee-advanced/2026/2026-2-english.pdf'
