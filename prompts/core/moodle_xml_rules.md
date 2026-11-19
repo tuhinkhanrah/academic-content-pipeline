@@ -16,7 +16,12 @@
 # Formatting & Math Rules
 - Math delimiters MUST use LaTeX inline \(...\) or display \[...\].
 - NEVER use single $ or double $$ delimiters.
-- Keep XML well-formed.
+- Before sending the response, strictly check every XML node for well-formedness,
+  including matching and properly nested tags, valid attributes, escaped XML
+  characters, and complete CDATA sections. Correct all errors before responding.
+- Exception for native matching questions: their dropdown
+  `<subquestion><answer><text>` must use plain text without HTML or math
+  delimiters, as specified in the matching template.
 
 # Math Option Sanitization (Critical)
 - Never emit bilingual mirrored options in one line (for example `x / x` or `3/2 / 3/2`).
@@ -26,6 +31,8 @@
 - Do not output raw LaTeX outside math delimiters.
 - Prefer `\frac{a}{b}` over plain `a/b` for symbolic fractions.
 - Final self-check: no option has duplicated expressions, no raw TeX command appears outside math delimiters, and every math option renders as one expression.
+- For native matching dropdown answers, use the plain-text matching template
+  instead of the math-formatting instructions above.
 
 # Option Rules & Numbering Enums (`<answernumbering>`)
 - Allowed values are only: `123`, `abc`, `ABCD`, `iii`, `IIII`, `none`.

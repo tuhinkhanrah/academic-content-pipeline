@@ -16,6 +16,7 @@ from xml.parsers.expat import ExpatError
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Set, Tuple
+from uuid import uuid4
 
 import yaml
 
@@ -652,6 +653,12 @@ def _has_saved_generation_response(
     )
 
 
+def _archive_malformed_response(response_path: Path, unit_dir: Path) -> Path:
+    destination = unit_dir / f"{response_path.name}.invalid-{uuid4().hex}"
+    response_path.rename(destination)
+    return destination
+
+
 def _decode_chapter_plan(raw_response: str, chapters: List[Dict[str, str]], total: int) -> Dict[str, int]:
     cleaned = raw_response.strip()
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
@@ -998,6 +1005,7 @@ class PaperBatchRunner:
         category_path = getattr(getattr(self.generator, "renderer", None), "category_path", None)
         if category_path is not None:
             configuration["category_path"] = category_path
+            configuration["category_scheme"] = "test_set_paper_v1"
         if reference_paper is not None or reference_papers or any(
             paper.get("chapter_generation", {}).get("enabled")
             and not isinstance(paper["chapter_generation"].get("chapter_counts"), dict)
@@ -1759,6 +1767,15 @@ class PaperBatchRunner:
                         f"- Generate exactly {unit['question_count']} questions for "
                         f"{unit['name']} only; do not generate questions for other subjects.\n"
                     )
+                    if raw_response is None and len(attempt_list) > 1:
+                        previous_attempt = attempt_list[-2]
+                        if previous_attempt.get("invalid_unit") == unit["token"]:
+                            subject_prompt += (
+                                "\nThe previous response for this group contained malformed "
+                                f"XML: {previous_attempt['error']}. Produce a complete "
+                                "replacement and strictly validate and correct its XML "
+                                "before sending it.\n"
+                            )
                     if unit.get("chapters"):
                         subject_prompt += (
                             "- Assign questions to chapters exactly as listed below. "
@@ -1792,6 +1809,33 @@ class PaperBatchRunner:
                             raw_response_override=raw_response,
                         )
                     except Exception as exc:
+                        if (
+                            isinstance(exc, ValueError)
+                            and isinstance(exc.__cause__, ExpatError)
+                            and response_path.is_file()
+                        ):
+                            invalid_response = _archive_malformed_response(response_path, unit_dir)
+                            logger.warning(
+                                "Test set %d paper '%s' group %d/%d (%s): "
+                                "malformed Moodle XML (%s); saved the response to %s "
+                                "and will retry this group.",
+                                item["test_index"],
+                                item["paper_id"],
+                                unit_index,
+                                len(paper["generation_units"]),
+                                unit["name"],
+                                exc.__cause__,
+                                invalid_response,
+                            )
+                            attempt_record["status"] = "invalid"
+                            attempt_record["error"] = (
+                                f"Malformed {unit['name']} group XML: {exc.__cause__}"
+                            )
+                            attempt_record["invalid_unit"] = unit["token"]
+                            item["status"] = "pending"
+                            self._write_manifest(manifest_path, manifest)
+                            invalid_unit_output = True
+                            break
                         attempt_record["status"] = "failed"
                         attempt_record["error"] = f"{type(exc).__name__}: {exc}"
                         item["status"] = "failed"
@@ -1828,7 +1872,19 @@ class PaperBatchRunner:
                             f"Invalid {unit['name']} group output: {exc}"
                         )
                         if response_path.is_file():
-                            response_path.unlink()
+                            if isinstance(exc.__cause__, ET.ParseError):
+                                invalid_response = _archive_malformed_response(
+                                    response_path, unit_dir
+                                )
+                                attempt_record["invalid_unit"] = unit["token"]
+                                attempt_record["error"] = (
+                                    f"Malformed {unit['name']} group XML: {exc.__cause__}"
+                                )
+                                logger.warning(
+                                    "Saved malformed response to %s.", invalid_response
+                                )
+                            else:
+                                response_path.unlink()
                         item["status"] = "pending"
                         self._write_manifest(manifest_path, manifest)
                         invalid_unit_output = True
@@ -1919,7 +1975,10 @@ class PaperBatchRunner:
                 candidate_xml = Path(candidate_path).read_text(encoding="utf-8")
                 category_path = getattr(getattr(self.generator, "renderer", None), "category_path", None)
                 if category_path is not None:
-                    candidate_xml = set_moodle_category(candidate_xml, category_path)
+                    candidate_xml = set_moodle_category(
+                        candidate_xml,
+                        f"{category_path}/test_{item['test_index']:03d}/{item['paper_id']}",
+                    )
                 candidate_checkpoint = state_dir / candidate_name
                 _write_text_atomically(candidate_checkpoint, candidate_xml)
                 item["candidate_file"] = candidate_name

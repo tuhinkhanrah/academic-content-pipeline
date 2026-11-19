@@ -33,6 +33,10 @@ import yaml
 
 from mirrored_path_utils import rebuild_mirrored_combined_xml, resolve_subtree
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from academic_content_pipeline.chapter_output_integrity import chapter_output_record, check_chapter_records
+from academic_content_pipeline.moodle_categories import build_category_path
+
 
 def normalize_standard(value: str) -> str:
     value = value.strip().lower()
@@ -288,6 +292,7 @@ def has_valid_adaptive_output_manifest(
     spec_path: Path,
     languages: str,
     translate_to: List[str],
+    categories: dict[str, str] | None = None,
 ) -> bool:
     """Check that an adaptive manifest matches this request and all XML outputs."""
     manifest_path = output_dir / f"{manifest_prefix}_question_types.json"
@@ -295,7 +300,7 @@ def has_valid_adaptive_output_manifest(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    if not isinstance(manifest, dict) or manifest.get("status") != "completed":
+    if not isinstance(manifest, dict) or manifest.get("status") not in {"completed", "in_progress"}:
         return False
 
     expected_languages = [
@@ -310,6 +315,11 @@ def has_valid_adaptive_output_manifest(
         or manifest.get("languages") != expected_languages
         or manifest.get("translate_to") != expected_translations
     ):
+        if "output_integrity" in manifest:
+            raise ValueError(
+                f"Chapter checkpoint settings differ: {manifest_path}. "
+                "Use the original spec and language settings, or --force to regenerate."
+            )
         return False
 
     allocations = manifest.get("question_types")
@@ -338,10 +348,23 @@ def has_valid_adaptive_output_manifest(
         for prefix in required_prefixes
         for suffix, count in counts_by_suffix.items()
     }
+    if categories is not None or "output_integrity" in manifest:
+        check_chapter_records(
+            output_dir,
+            manifest,
+            {
+                f"{prefix}_{suffix}.xml": (
+                    categories[prefix] if categories is not None else None, count
+                )
+                for prefix in required_prefixes
+                for suffix, count in counts_by_suffix.items()
+            },
+        )
     files = manifest.get("files")
     completed_files = manifest.get("completed_files")
     if (
         not isinstance(files, list)
+        or manifest["status"] != "completed"
         or any(not isinstance(name, str) or Path(name).name != name for name in files)
         or len(files) != len(expected_counts)
         or set(files) != set(expected_counts)
@@ -703,6 +726,7 @@ def main(argv: List[str] | None = None) -> int:
             selected_spec_exam_name,
         )
         required_prefixes = [prefix]
+        prefix_languages = [language_tokens(args.languages)]
         if translate_targets:
             if [language.strip().lower() for language in args.languages.split(",") if language.strip()] != ["english"]:
                 required_prefixes.append(
@@ -713,6 +737,7 @@ def main(argv: List[str] | None = None) -> int:
                         selected_spec_exam_name,
                     )
                 )
+                prefix_languages.append(["english"])
             required_prefixes.extend(
                 build_output_prefix(
                     input_path,
@@ -722,7 +747,17 @@ def main(argv: List[str] | None = None) -> int:
                 )
                 for target_language in translate_targets
             )
+            prefix_languages.extend(["english", target] for target in translate_targets)
+        categories = {
+            prefix: build_category_path(args.top_category, source_root, input_path, languages)
+            for prefix, languages in zip(required_prefixes, prefix_languages)
+        } if args.output_format == "xml" else {}
         if args.separate_by_question_type and not adaptive_question_types:
+            categories = {
+                f"{prefix}_{suffix}": category
+                for prefix, category in categories.items()
+                for suffix in question_type_suffixes
+            }
             required_prefixes = [
                 f"{required_prefix}_{type_suffix}"
                 for required_prefix in required_prefixes
@@ -730,7 +765,8 @@ def main(argv: List[str] | None = None) -> int:
             ]
         if adaptive_question_types:
             has_adaptive_outputs = (
-                output_dir.exists()
+                not args.force
+                and output_dir.exists()
                 and selected_spec_path is not None
                 and has_valid_adaptive_output_manifest(
                     output_dir,
@@ -739,10 +775,23 @@ def main(argv: List[str] | None = None) -> int:
                     selected_spec_path,
                     args.languages,
                     translate_targets,
+                    categories,
                 )
             )
             existing_outputs = [has_adaptive_outputs]
         else:
+            if not args.force:
+                for expected_prefix, category in categories.items():
+                    stable = output_dir / f"{expected_prefix}.xml"
+                    split = (
+                        [output_dir / f"{expected_prefix}_paper_{index:02d}.xml"
+                         for index in range(1, args.num_papers + 1)]
+                        if args.num_papers > 1
+                        else sorted(output_dir.glob(f"{expected_prefix}_paper_*.xml"))
+                    )
+                    for existing in (split if args.num_papers > 1 else [stable, *split]):
+                        if existing.is_file():
+                            chapter_output_record(existing, category)
             existing_outputs = (
                 [
                     has_output_set(

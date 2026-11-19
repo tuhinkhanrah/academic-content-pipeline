@@ -6,11 +6,14 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
 from academic_content_pipeline.content_processors import PaperGenerator
 from academic_content_pipeline.reference_paper import reference_fingerprint, reference_storage_dir
+from academic_content_pipeline.moodle_combiner import combined_name_for_directory, rebuild_combined_xml
+from academic_content_pipeline.output_renderers import OutputRenderer
 from academic_content_pipeline.paper_batch import (
     REPOSITORY_ROOT,
     PaperBatchRunner,
@@ -134,7 +137,7 @@ class PaperBatchTests(unittest.TestCase):
             quiz = ET.parse(output).getroot()
             self.assertEqual(
                 quiz[0].findtext("category/text"),
-                "$module$/top/Papers/batch/english_bengali",
+                "$module$/top/Papers/batch/english_bengali/test_001/paper",
             )
             self.assertEqual(sum(q.get("type") == "category" for q in quiz), 1)
             self.assertEqual(PaperBatchRunner(generator).run(spec, root / "out", resume=True), [output])
@@ -151,7 +154,7 @@ class PaperBatchTests(unittest.TestCase):
             output = PaperBatchRunner(generator).run(spec, root / "out")[0]
             self.assertEqual(
                 ET.parse(output).getroot()[0].findtext("category/text"),
-                "$module$/top/batch/english",
+                "$module$/top/batch/english/test_001/paper",
             )
             self.assertEqual(PaperBatchRunner(generator).run(spec, root / "out", resume=True), [output])
 
@@ -166,6 +169,89 @@ class PaperBatchTests(unittest.TestCase):
             generator.renderer.category_path = "$module$/top/neet-ug/2028/english"
             with self.assertRaisesRegex(ValueError, "settings differ"):
                 PaperBatchRunner(generator).run(spec, root / "out", resume=True)
+
+    def test_batch_categories_distinguish_test_sets_and_papers_in_combined_xml(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(
+                root, test_count=2, papers=[("paper1", "paper.yaml"), ("paper2", "paper.yaml")]
+            )
+            generator = FakePaperGenerator(["first", "second", "third", "fourth"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/jee-advanced/2027/english")
+            output = root / "out"
+            paths = PaperBatchRunner(generator).run(spec, output)
+            expected = [
+                f"$module$/top/jee-advanced/2027/english/test_{test:03d}/paper{paper}"
+                for test in (1, 2) for paper in (1, 2)
+            ]
+            self.assertEqual(
+                [ET.parse(path).getroot()[0].findtext("category/text") for path in paths],
+                expected,
+            )
+            rebuild_combined_xml(output)
+            combined = ET.parse(output / combined_name_for_directory(output)).getroot()
+            self.assertEqual(
+                [q.findtext("category/text") for q in combined if q.get("type") == "category"],
+                expected,
+            )
+            generator.responses = []
+            self.assertEqual(PaperBatchRunner(generator).run(spec, output, resume=True), paths)
+
+    def test_resume_ready_candidate_preserves_paper_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            generator = FakePaperGenerator(["first"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/neet-ug/2027/english")
+            output = root / "out"
+            with patch.object(PaperBatchRunner, "_commit_ready_item", side_effect=RuntimeError("interrupted")):
+                with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                    PaperBatchRunner(generator).run(spec, output)
+            paths = PaperBatchRunner(generator).run(spec, output, resume=True)
+            self.assertEqual(
+                ET.parse(paths[0]).getroot()[0].findtext("category/text"),
+                "$module$/top/neet-ug/2027/english/test_001/paper",
+            )
+            self.assertEqual(len(generator.calls), 1)
+
+    def test_append_neet_test_set_uses_distinct_category(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root, papers=[("full_paper", "paper.yaml")])
+            generator = FakePaperGenerator(["first", "second"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/neet-ug/2027/english")
+            output = root / "out"
+            first = PaperBatchRunner(generator).run(spec, output)
+            original = first[0].read_bytes()
+            paths = PaperBatchRunner(generator).run(spec, output, num_tests=2, resume=True)
+            self.assertEqual(paths[0].read_bytes(), original)
+            self.assertEqual(
+                [ET.parse(path).getroot()[0].findtext("category/text") for path in paths],
+                [
+                    "$module$/top/neet-ug/2027/english/test_001/full_paper",
+                    "$module$/top/neet-ug/2027/english/test_002/full_paper",
+                ],
+            )
+
+    def test_resume_rejects_checkpoint_with_legacy_category_scheme(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            generator = FakePaperGenerator(["first"])
+            generator.renderer = SimpleNamespace(category_path="$module$/top/neet-ug/2027/english")
+            output = root / "out"
+            paths = PaperBatchRunner(generator).run(spec, output)
+            checkpoint = output / "sample_exam_english_batch_generation.json"
+            manifest = json.loads(checkpoint.read_text(encoding="utf-8"))
+            del manifest["configuration"]["category_scheme"]
+            manifest["configuration_sha256"] = hashlib.sha256(
+                json.dumps(manifest["configuration"], sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            checkpoint.write_text(json.dumps(manifest), encoding="utf-8")
+            before = paths[0].read_bytes()
+            with self.assertRaisesRegex(ValueError, "settings differ"):
+                PaperBatchRunner(generator).run(spec, output, resume=True)
+            self.assertEqual(paths[0].read_bytes(), before)
 
     def make_inputs(self, root, *, test_count=1, papers=None):
         spec_path = root / "batch.yaml"
@@ -1104,6 +1190,10 @@ class PaperBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "after 3 attempt"):
                 PaperBatchRunner(generator).run(spec_path, output_dir)
 
+            self.assertIn(
+                "previous response for this group contained malformed XML",
+                generator.calls[1]["additional_prompt"],
+            )
             manifest = json.loads(
                 (output_dir / "sample_exam_english_batch_generation.json").read_text(
                     encoding="utf-8"
@@ -1114,6 +1204,91 @@ class PaperBatchTests(unittest.TestCase):
             checkpoint_text = json.dumps(manifest)
             self.assertNotIn(str(root), checkpoint_text)
             self.assertIn("external/", checkpoint_text)
+
+    def test_malformed_saved_response_is_retried_without_regenerating_other_groups(self):
+        class RenderingGenerator(FakePaperGenerator):
+            def __init__(self, responses, *, interrupt=False):
+                super().__init__(responses)
+                self.interrupt = interrupt
+                self.renderer = OutputRenderer("xml")
+                self.renderer.category_path = "$module$/top/test"
+
+            def process_spec(self, *args, **kwargs):
+                path = super().process_spec(*args, **kwargs)
+                response = kwargs["raw_response_path"].read_text(encoding="utf-8")
+                if response == "malformed":
+                    if self.interrupt:
+                        raise RuntimeError("interrupted after AI response")
+                    self.renderer.render(
+                        "<quiz><question></quiz>", path.parent, path.stem
+                    )
+                return path
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            (root / "paper.yaml").write_text(
+                "exam_name: Sample Exam\nsubjects:\n"
+                "  - name: Biology\n    total_questions: 1\n    syllabus_file: syllabus.md\n"
+                "  - name: Physics\n    total_questions: 1\n    syllabus_file: syllabus.md\n",
+                encoding="utf-8",
+            )
+            out = root / "output"
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                PaperBatchRunner(RenderingGenerator(["good", "malformed"], interrupt=True)).run(spec, out)
+
+            resumed = RenderingGenerator(["corrected"])
+            result = PaperBatchRunner(resumed).run(spec, out, resume=True, max_attempts=1)
+            self.assertEqual(
+                [call["raw_response_override"] for call in resumed.calls],
+                ["good", "malformed", "good", None],
+            )
+            self.assertIn("previous response for this group contained malformed XML", resumed.calls[-1]["additional_prompt"])
+            self.assertNotIn("previous response for this group contained malformed XML", resumed.calls[-2]["additional_prompt"])
+            self.assertEqual(len(ET.parse(result[0]).getroot().findall("question")), 3)
+            archived = list(out.rglob("*.response.txt.invalid-*"))
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(archived[0].read_text(encoding="utf-8"), "malformed")
+
+    def test_malformed_rendering_retry_limit_and_resume(self):
+        class RenderingGenerator(FakePaperGenerator):
+            def process_spec(self, *args, **kwargs):
+                path = super().process_spec(*args, **kwargs)
+                if kwargs["raw_response_path"].read_text(encoding="utf-8") == "malformed":
+                    renderer = OutputRenderer("xml")
+                    renderer.category_path = "$module$/top/test"
+                    renderer.render("<quiz><question></quiz>", path.parent, path.stem)
+                return path
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "output"
+            generator = RenderingGenerator(["malformed", "malformed"])
+            with self.assertRaisesRegex(ValueError, "after 2 attempt"):
+                PaperBatchRunner(generator).run(spec, out, max_attempts=2)
+            self.assertEqual(len(generator.calls), 2)
+            self.assertEqual(len(list(out.rglob("*.response.txt.invalid-*"))), 2)
+            resumed = RenderingGenerator(["corrected"])
+            result = PaperBatchRunner(resumed).run(spec, out, resume=True, max_attempts=1)
+            self.assertEqual(len(result), 1)
+            self.assertIsNone(resumed.calls[0]["raw_response_override"])
+
+    def test_unrelated_value_error_is_not_retried(self):
+        class FailingGenerator(FakePaperGenerator):
+            def process_spec(self, *args, **kwargs):
+                super().process_spec(*args, **kwargs)
+                raise ValueError("unrelated rendering error")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            spec = self.make_inputs(root)
+            out = root / "output"
+            generator = FailingGenerator(["saved"])
+            with self.assertRaisesRegex(ValueError, "unrelated rendering error"):
+                PaperBatchRunner(generator).run(spec, out)
+            self.assertEqual(len(generator.calls), 1)
+            self.assertEqual(len(list(out.rglob("*.response.txt"))), 1)
 
     def test_generates_and_combines_subject_question_counts(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -347,6 +347,29 @@ python scripts/run_path_mirrored_question_generation.py \
   --num-questions 20
 ```
 
+For the competitive-exam chapter bank, keep `--source-root ../competitive-exams-chapters`
+fixed, even with `--subtree`, and use `--top-category chapterwise-question-bank`.
+There is no `--resume` flag: matching outputs are reused by default. Adaptive
+checkpoints record each completed XML's category and SHA-256. A category or
+checksum mismatch must be resolved before reuse; `--force` regenerates instead.
+Reuse also requires the original spec and language settings. The migration
+does not replace the saved spec fingerprint with that of a newer template.
+
+To migrate legacy adaptive outputs without generating questions, stop all
+writers and first run a read-only check:
+
+```bash
+python scripts/migrate_chapter_question_categories.py \
+  --source-root ../competitive-exams-chapters \
+  --output-root ../competitive-exams-chapters-moodle
+```
+
+Add `--backup-root ../chapterwise-category-migration-backup` to apply. Use a
+new directory outside both repositories. The migrator stages individual and
+combined XMLs, backs up originals, and journals the changes before publishing.
+If publishing is interrupted, rerun with the same backup directory. OCR XML
+and other non-Moodle assets are not changed.
+
 | Option | Purpose | Default |
 |---|---|---|
 | `--source-root PATH` | Required root containing PDF/Markdown sources. | None |
@@ -432,7 +455,10 @@ exam-practice-papers/
 Language combinations such as `english,bengali` use their own
 `english_bengali` folder and checkpoint. With `--year 2027`, the year is
 inserted after the exam folder and the category is
-`$module$/top/neet-ug/2027/english` (or includes `--top-category` if supplied).
+`$module$/top/neet-ug/2027/english/test_001/full_paper` for the first NEET
+paper (or includes `--top-category` if supplied). Each batch output has its own
+`test_NNN/<paper_id>` category; for example, JEE Advanced uses separate
+`test_001/paper1` and `test_001/paper2` categories.
 The runner preserves nested spec folders and does not add a year automatically
 when `--year` is omitted. Multiple discovered
 specs cannot target the same output directory. Successful jobs rebuild
@@ -446,12 +472,19 @@ consistent with the existing run. `--num-tests` is the desired total: increase
 it to append test sets, not to repeat the existing count. `--force` starts a
 fresh run and cannot be combined with `--resume`. Changing or omitting a
 previously used `--top-category` does not migrate an existing checkpoint.
+If a generated group contains malformed XML, the batch retains that response
+for diagnosis and automatically retries the group within the
+`--max-paper-attempts` limit. Other saved groups are reused; if the limit is
+reached, resume the checkpoint to retry without starting over.
 Without `--year`, Moodle categories follow the spec-relative path, not the
 output folder slug: the NEET batch example uses
-`$module$/top/neet_ug/batch.template/english` when `--top-category` is omitted.
+`$module$/top/neet_ug/batch.template/english/test_001/full_paper` when
+`--top-category` is omitted.
 Checkpoints created or migrated without a year category will not resume with
 `--year` unless their categories and hashes are migrated; use a separate output
 directory or migrate them safely before resuming.
+Checkpoints using the older shared category scheme cannot resume with the new
+per-paper scheme; use a new output directory or `--force` for a fresh run.
 
 | Option | Purpose | Default |
 |---|---|---|

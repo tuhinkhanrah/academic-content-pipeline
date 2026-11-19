@@ -4,7 +4,7 @@ Skeleton structures for each question type. Reuse these tag shapes; fill content
 
 The generated XML MUST NOT contain `<correctfeedback>`, `<partiallycorrectfeedback>`, or `<incorrectfeedback>`. Use only `<generalfeedback format="html">` for the complete solution explanation.
 
-The skeletons in Sections 2-7 are text-only for brevity. Whenever a question, option, or explanation carries a diagram, photo, graph, or chemical structure, you MUST additionally apply Section 8 — omitting it silently drops the visual from the imported question.
+The skeletons in Sections 2-7 are text-only for brevity. Whenever a question, option, or explanation carries a diagram, photo, graph, or chemical structure, apply Section 8, except that native matching dropdown answers must remain plain text as specified in Section 6.1.
 
 ## 1. File Wrapper
 
@@ -74,6 +74,16 @@ Translate language-dependent item and match text according to the requested
 languages; keep language-independent symbols and units canonical. If the source
 includes an extra unmatched choice, add it as a subquestion with an empty
 `<text>` and its distractor inside `<answer><text>`.
+
+For `type="matching"` only, every dropdown `<answer><text>` must be concise,
+self-contained plain text. Never put HTML tags (such as `<sub>`, `<sup>`, `<p>`,
+or `<span>`) or LaTeX/MathJax delimiters (`\(...\)`, `\[...\]`, `$...$`,
+or `$$...$$`) there, including in distractors: Moodle dropdowns do not render
+them. Use Unicode notation (e.g. ⁰ ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁺ ⁻, ₀ ₁ ₂ ₃ ₄,
+α β γ Δ θ λ μ ν π σ ω, → ⇌ × ÷ ± ≤ ≥ ∞) or clean plain text such as
+`sp3d2`, `sp³d²`, `SF4`, or `NO2+`. XML-special characters must still be
+escaped. Normal HTML and MathJax remain allowed in `<questiontext>`,
+`<generalfeedback>`, and the left-hand `<subquestion><text>`.
 
 <question type="matching">
   <name><text>NAME</text></name>

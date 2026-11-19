@@ -31,6 +31,7 @@ from .ai_communicators import (
 )
 from .artifact_translator import translate_assessment_artifact
 from .mistral_ocr import MistralOCREngine
+from .chapter_output_integrity import check_chapter_records
 from .moodle_categories import build_category_path, remove_moodle_categories, set_moodle_category
 from .output_renderers import OutputRenderer
 from .reference_paper import (
@@ -2381,6 +2382,7 @@ class QuestionGenerator:
                 else None
             )
             reused_adaptive_manifest = False
+            previous_adaptive_manifest: Dict[str, Any] = {}
             if (
                 adaptive_type_profile
                 and adaptive_manifest_path is not None
@@ -2432,6 +2434,12 @@ class QuestionGenerator:
                             or saved_source_digest == source_digest
                         )
                     )
+                    if "output_integrity" in saved_manifest and not manifest_matches:
+                        raise ValueError(
+                            f"Chapter checkpoint settings differ: {adaptive_manifest_path}. "
+                            "Use the original source, spec, and language settings, "
+                            "or --force to regenerate."
+                        )
                     if manifest_matches:
                         try:
                             separate_type_allocations = (
@@ -2448,6 +2456,10 @@ class QuestionGenerator:
                                 )
                             )
                         except ValueError as exc:
+                            if "output_integrity" in saved_manifest:
+                                raise ValueError(
+                                    f"Invalid chapter checkpoint allocation: {adaptive_manifest_path}"
+                                ) from exc
                             logger.warning(
                                 "Ignoring invalid adaptive allocation in %s: %s",
                                 adaptive_manifest_path,
@@ -2455,6 +2467,7 @@ class QuestionGenerator:
                             )
                         else:
                             reused_adaptive_manifest = True
+                            previous_adaptive_manifest = saved_manifest
                             logger.info(
                                 "Reusing saved adaptive question-type allocation "
                                 "from %s.",
@@ -2534,6 +2547,7 @@ class QuestionGenerator:
                 assert adaptive_manifest_path is not None
                 planned_output_names: List[str] = []
                 planned_output_counts: Dict[str, int] = {}
+                planned_categories: Dict[str, Optional[str]] = {}
                 for entry, _ in separate_type_allocations:
                     suffix = re.sub(
                         r"[^a-z0-9]+", "_", entry["name"].casefold()
@@ -2551,10 +2565,12 @@ class QuestionGenerator:
                     primary_name = f"{generation_stem}_{suffix}.xml"
                     planned_output_names.append(primary_name)
                     planned_output_counts[primary_name] = expected_type_count
+                    planned_categories[primary_name] = category_for(self.languages)
                     if separate_english_master:
                         english_name = f"{english_master_stem}_{suffix}.xml"
                         planned_output_names.append(english_name)
                         planned_output_counts[english_name] = expected_type_count
+                        planned_categories[english_name] = category_for(["english"])
                     for target_language in self.translate_to:
                         target_suffix = re.sub(
                             r"[^a-z0-9]+",
@@ -2566,14 +2582,16 @@ class QuestionGenerator:
                         )
                         planned_output_names.append(translated_name)
                         planned_output_counts[translated_name] = expected_type_count
-                existing_completed_names = [
-                    name
+                        planned_categories[translated_name] = category_for(
+                            ["english", target_language]
+                        )
+                expected_outputs = {
+                    name: (planned_categories[name], count)
                     for name, count in planned_output_counts.items()
-                    if is_valid_moodle_xml_question_file(
-                        paper_dir / name,
-                        count,
-                    )
-                ]
+                }
+                existing_records = {} if self.force_overwrite else check_chapter_records(
+                    paper_dir, previous_adaptive_manifest, expected_outputs,
+                )
                 adaptive_manifest = {
                     "status": "in_progress",
                     "target_questions": generation_question_count,
@@ -2585,7 +2603,8 @@ class QuestionGenerator:
                         for entry, count in separate_type_allocations
                     ],
                     "files": planned_output_names,
-                    "completed_files": existing_completed_names,
+                    "completed_files": list(existing_records),
+                    "output_integrity": existing_records,
                     "languages": [
                         language.strip().casefold()
                         for language in self.languages
@@ -2612,19 +2631,20 @@ class QuestionGenerator:
             def persist_adaptive_progress() -> None:
                 if adaptive_manifest is None or adaptive_manifest_path is None:
                     return
-                adaptive_manifest["completed_files"] = [
-                    name
-                    for name, count in planned_output_counts.items()
-                    if is_valid_moodle_xml_question_file(
-                        paper_dir / name,
-                        count,
-                    )
-                ]
+                records = check_chapter_records(
+                    paper_dir, adaptive_manifest, {
+                        name: expected for name, expected in expected_outputs.items()
+                        if not self.force_overwrite or name in rendered_names
+                    },
+                )
+                adaptive_manifest["completed_files"] = list(records)
+                adaptive_manifest["output_integrity"] = records
                 write_json_atomically(
                     adaptive_manifest_path,
                     adaptive_manifest,
                 )
 
+            rendered_names: set[str] = set()
             for type_entry, type_question_count in separate_type_allocations:
                 type_name = type_entry["name"]
                 type_suffix = re.sub(
@@ -2862,6 +2882,7 @@ class QuestionGenerator:
                         )
                         temporary_metadata_path.replace(metadata_path)
 
+                rendered_names.update(path.name for path in all_output_paths)
                 persist_adaptive_progress()
 
                 logger.info(
