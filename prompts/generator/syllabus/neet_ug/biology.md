@@ -8,7 +8,7 @@ Salient features and classification of animals-nonchordate up to phyla level and
 
 ## UNIT 2: STRUCTURAL ORGANISATION IN ANIMALS AND PLANTS
 Morphology and modifications; Tissues; Anatomy and functions of different parts of flowering plants: Root, stem, leaf, inflorescence- cymose and racemose, flower, fruit and seed (To be dealt along with the relevant practical of the Practical Syllabus) Family (Malvaceae, Cruciferae, Leguminosae, Compositae, Gramineae).
-Animal tissues; Morphology, anatomy and functions of different systems (digestive, circulatory, respiratory, nervous and reproductive) of an insect (Frog). (Brief account only)
+Animal tissues; Morphology, anatomy and functions of different systems (digestive, circulatory, respiratory, nervous and reproductive) of an insect (Cockroach) and a frog. (Brief account only)
 
 ## UNIT 3: CELL STRUCTURE AND FUNCTION
 Cell theory and cell as the basic unit of life; Structure of prokaryotic and eukaryotic cell; Plant cell and animal cell; Cell envelope, cell membrane, cell wall; Cell organelles-structure and function; Endomembrane system-endoplasmic reticulum, Golgi bodies, lysosomes, vacuoles; mitochondria, ribosomes, plastids, micro bodies; Cytoskeleton, cilia, flagella, centrioles (ultra structure and function); Nucleus-nuclear membrane, chromatin, nucleolus.

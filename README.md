@@ -325,6 +325,11 @@ python scripts/run_ocr_only_path_mirrored_extraction.py \
   --output-root ../ocr-output
 ```
 
+The runner prints and flushes progress by default, including skipped PDFs and saved results.
+Sequential mode identifies the PDF being processed. Batch mode reports uploads and aggregate
+remote request counts; the batch API does not identify which PDF is currently running.
+Redirect stdout and stderr to a file if a persistent log is needed.
+
 | Option | Purpose | Default |
 |---|---|---|
 | `--source-root PATH` | Required root containing source PDFs. | None |
@@ -334,7 +339,7 @@ python scripts/run_ocr_only_path_mirrored_extraction.py \
 | `--force` | Overwrite an existing OCR XML output. | False |
 | `--disable-ocr-cache` | Disable the OCR cache. | False |
 | `--dry-run` | Print planned OCR work. | False |
-| `--verbose` | Print processing progress. | False |
+| `--verbose` | Print additional output details. | False |
 
 ### Chapter question generation
 

@@ -99,8 +99,7 @@ def run_single_pdf(
     img_dir.mkdir(parents=True, exist_ok=True)
 
     if should_skip(final_xml, force):
-        if verbose:
-            print(f"Skipping {pdf_path}: output already exists at {final_xml}")
+        print(f"Skipping {pdf_path}: output already exists at {final_xml}", flush=True)
         return 0
 
     api_key = os.environ.get("MISTRAL_API_KEY")
@@ -114,6 +113,7 @@ def run_single_pdf(
     )
     engine.model_name = model
 
+    print(f"Processing {pdf_path}", flush=True)
     start = time.perf_counter()
     result = engine.process_pdf(
         pdf_path=pdf_path,
@@ -130,8 +130,9 @@ def run_single_pdf(
     write_xml_summary(pdf_path, final_xml, engine.model_name, page_count)
 
     elapsed = time.perf_counter() - start
+    print(f"Processed {pdf_path} in {elapsed:.2f}s -> {final_xml}", flush=True)
     if verbose:
-        print(f"Processed {pdf_path} in {elapsed:.2f}s -> {final_xml}")
+        print(f"  Pages: {page_count}; markdown: {markdown_path}", flush=True)
     return 0
 
 
@@ -220,16 +221,17 @@ def run_mistral_batch(
     pdf_lookup = {pdf_path.relative_to(source_root).as_posix(): pdf_path for pdf_path in pdf_jobs}
     tasks: list[dict[str, Any]] = []
 
-    for pdf_path in pdf_jobs:
+    for index, pdf_path in enumerate(pdf_jobs, start=1):
         _, _, _, img_dir, _, final_xml = build_output_layout(source_root, pdf_path, output_root)
         cache_dir = img_dir / "cache"
+        print(f"Preparing [{index}/{len(pdf_jobs)}] {pdf_path}", flush=True)
         cached_result = cache_engine.load_cached_result(pdf_path, page_range=None, cache_dir=cache_dir)
         if cached_result is not None:
             write_cached_result_to_output(pdf_path, source_root, output_root, cached_result, model)
-            if verbose:
-                print(f"Using cached OCR result for {pdf_path} -> {final_xml}")
+            print(f"Processed {pdf_path} from OCR cache -> {final_xml}", flush=True)
             continue
 
+        print(f"Uploading {pdf_path} for batch OCR", flush=True)
         with open(pdf_path, "rb") as handle:
             pdf_bytes = handle.read()
 
@@ -250,13 +252,20 @@ def run_mistral_batch(
             }
         )
 
+    if not tasks:
+        print("All pending PDFs were restored from the OCR cache; no batch submitted.", flush=True)
+        return 0
+
     batch_dir = output_root / ".mistral_batch"
     batch_dir.mkdir(parents=True, exist_ok=True)
     batch_tasks_file = batch_dir / "batch_ocr_tasks.jsonl"
     with open(batch_tasks_file, "w", encoding="utf-8") as handle:
         for task in tasks:
             handle.write(json.dumps(task, ensure_ascii=False) + "\n")
+    if verbose:
+        print(f"Batch task list: {batch_tasks_file}", flush=True)
 
+    print(f"Submitting {len(tasks)} PDF(s) for batch OCR", flush=True)
     batch_input_file = client.files.upload(
         file={"file_name": batch_tasks_file.name, "content": batch_tasks_file.read_bytes()},
         purpose="batch",
@@ -267,13 +276,11 @@ def run_mistral_batch(
         endpoint="/v1/ocr",
     )
 
-    if verbose:
-        print(f"Started Mistral OCR batch job: {batch_job.id}")
+    print(f"Started Mistral OCR batch job: {batch_job.id}", flush=True)
 
     while True:
         status = client.batch.jobs.get(job_id=batch_job.id)
-        if verbose:
-            print(f"Status: {status.status} ({status.completed_requests}/{status.total_requests})")
+        print(f"Batch status: {status.status} ({status.completed_requests}/{status.total_requests} requests completed)", flush=True)
         if status.status in {"SUCCESS", "FAILED", "TIMEOUT_EXCEEDED", "CANCELLED"}:
             break
         time.sleep(30)
@@ -303,8 +310,15 @@ def run_mistral_batch(
         if pdf_path is None:
             continue
         if should_skip(build_output_layout(source_root, pdf_path, output_root)[5], force):
+            print(f"Skipping {pdf_path}: output already exists", flush=True)
             continue
+        response = payload.get("response") or {}
+        status_code = response.get("status_code")
+        if payload.get("error") or (status_code is not None and status_code >= 400):
+            raise RuntimeError(f"Batch OCR failed for {pdf_path}: {payload.get('error') or response}")
+        print(f"Saving batch result for {pdf_path}", flush=True)
         persist_batch_result(pdf_path, source_root, output_root, payload, model_name=model, cache_engine=cache_engine)
+        print(f"Processed {pdf_path} -> {build_output_layout(source_root, pdf_path, output_root)[5]}", flush=True)
 
     return 0
 
@@ -320,7 +334,7 @@ def parse_args(argv):
     parser.add_argument("--force", action="store_true", help="Overwrite an existing XML output file.")
     parser.add_argument("--disable-ocr-cache", action="store_true", help="Disable the local OCR cache for the run.")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned work without executing OCR.")
-    parser.add_argument("--verbose", action="store_true", help="Print progress logs while processing.")
+    parser.add_argument("--verbose", action="store_true", help="Print additional output details.")
     return parser.parse_args(argv)
 
 
@@ -341,6 +355,8 @@ def main(argv=None) -> int:
     for pdf_path in pdf_jobs:
         _, _, _, _, _, final_xml = build_output_layout(source_root, pdf_path, output_root)
         if should_skip(final_xml, args.force):
+            if not args.dry_run:
+                print(f"Skipping {pdf_path}: output already exists at {final_xml}", flush=True)
             continue
         pending_jobs.append(pdf_path)
 
@@ -357,6 +373,7 @@ def main(argv=None) -> int:
         print(f"No pending OCR work for {source_root}. Use --force to overwrite existing outputs.")
         return 0
 
+    print(f"Found {len(pending_jobs)} pending PDF(s) for {args.mode} OCR.", flush=True)
     if args.mode == "batch":
         return run_mistral_batch(
             source_root,
