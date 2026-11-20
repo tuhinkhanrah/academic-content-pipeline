@@ -8,13 +8,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from run_path_mirrored_question_generation import build_output_dir
+from run_path_mirrored_question_generation import build_output_dir, main as question_batch_main
 from run_path_mirrored_tutorial import main as tutorial_batch_main
 from academic_content_pipeline.content_processors import (
     QuestionGenerator,
     TutorialGenerator,
     build_tutorial_language_instruction,
 )
+from academic_content_pipeline.mistral_ocr import MistralOCREngine, OCRResult
 from academic_content_pipeline.unified_pipeline import main as pipeline_main
 
 
@@ -139,6 +140,47 @@ class QuestionGenerationOutputDirTests(unittest.TestCase):
             Path("output") / "neet_ug" / "papers",
             build_output_dir(source_root, input_path, Path("output")),
         )
+
+    def test_mirrored_question_generation_reuses_existing_ocr_cache(self):
+        xml = '<quiz><question type="multichoice"><name><text>One</text></name></question></quiz>'
+        for stem, dedicated_output in (("kebo101", True), ("chapter_notes", False)):
+            with self.subTest(stem=stem), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                source_root = root / "source"
+                source = source_root / "books" / f"{stem}.pdf"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"PDF fixture; live OCR must not run")
+                output_root = root / "output"
+                output = output_root / "books"
+                if dedicated_output:
+                    output /= stem
+                work_dir = output if dedicated_output else output / stem
+                cache_dir = work_dir / "ocr" / "cache"
+                with patch("academic_content_pipeline.mistral_ocr.Mistral"):
+                    ocr = MistralOCREngine(api_key="test")
+                ocr.client.files.list.side_effect = AssertionError("Unexpected live OCR")
+                ocr.save_cached_result(source, None, OCRResult("Chapter concepts", {}, []), cache_dir)
+
+                with patch("run_path_mirrored_question_generation.execute_command", return_value=0) as execute:
+                    self.assertEqual(question_batch_main([
+                        "--source-root", str(source_root),
+                        "--output-root", str(output_root),
+                        "--mode", "agent",
+                    ]), 0)
+                command = execute.call_args.args[0]
+                with patch("sys.argv", command[2:]), \
+                     patch.dict("os.environ", {"GEMINI_API_KEY": "test", "MISTRAL_API_KEY": "test"}), \
+                     patch("academic_content_pipeline.unified_pipeline.setup_logger"), \
+                     patch("academic_content_pipeline.unified_pipeline.build_communicator") as communicator, \
+                     patch("academic_content_pipeline.unified_pipeline.MistralOCREngine", return_value=ocr):
+                    communicator.return_value.generate.return_value = xml
+                    pipeline_main()
+
+                self.assertEqual(ocr.cache_stats["hit"], 1)
+                ocr.client.files.list.assert_not_called()
+                self.assertEqual(len(list(output.glob(f"{stem}_*.xml"))), 1)
+                self.assertTrue((work_dir / ".tmp" / "prompts").is_dir())
+                self.assertFalse((work_dir / stem).exists())
 
     def test_question_and_tutorial_prompt_names_include_languages(self):
         class Communicator:

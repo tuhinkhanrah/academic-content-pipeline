@@ -273,6 +273,7 @@ def add_task_subparsers(subparser_dest: Any) -> None:
     add_category_options(p_chap)
     p_chap.add_argument("--input-dir", type=Path, default=None, help="Directory containing chapter PDFs or MDs.")
     p_chap.add_argument("--input-file", type=Path, default=None, help="Single chapter PDF or MD file.")
+    p_chap.add_argument("--output-dir-is-work-dir", action="store_true", help=argparse.SUPPRESS)
     p_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_chap.add_argument("--exam-duration-minutes", type=int, default=None, help="Exam duration in minutes for PDF output only.")
     p_chap.add_argument("--num-questions", type=int, default=5, help="Number of questions to synthesize.")
@@ -507,6 +508,7 @@ def main():
     add_category_options(p_direct_chap)
     p_direct_chap.add_argument("--input-dir", type=Path, default=None)
     p_direct_chap.add_argument("--input-file", type=Path, default=None)
+    p_direct_chap.add_argument("--output-dir-is-work-dir", action="store_true", help=argparse.SUPPRESS)
     p_direct_chap.add_argument("--spec", type=Path, default=None, help="Optional YAML paper spec for a formal PDF header.")
     p_direct_chap.add_argument("--exam-duration-minutes", type=int, default=None)
     p_direct_chap.add_argument("--num-questions", type=int, default=5)
@@ -628,6 +630,10 @@ def main():
 
     if task == "generate-papers":
         task = "generate-paper"
+    if task == "generate-questions" and args.output_dir_is_work_dir and (
+        args.input_file is None or args.input_dir is not None
+    ):
+        parser.error("--output-dir-is-work-dir requires --input-file and cannot be used with --input-dir.")
     if task in {"extract", "generate-questions", "generate-paper"} and args.output_format == "xml":
         if args.source_root is None:
             parser.error("Moodle XML output requires --source-root.")
@@ -1015,7 +1021,11 @@ def main():
                 source_root=args.source_root if args.output_format == "xml" else None,
             )
             if args.input_file:
-                generator.process_file(args.input_file, args.output_dir)
+                generator.process_file(
+                    args.input_file,
+                    args.output_dir,
+                    output_dir_is_work_dir=args.output_dir_is_work_dir,
+                )
             elif args.input_dir:
                 generator.process_directory(args.input_dir, args.output_dir)
             else:

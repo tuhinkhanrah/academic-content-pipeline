@@ -357,6 +357,8 @@ def resolve_output_layout(
     input_root: Optional[Path],
     file_path: Path,
     output_dir: Path,
+    *,
+    output_dir_is_work_dir: bool = False,
 ) -> tuple[Path, Path, Path, Path, Path]:
     """Resolve the mirrored final-output directory and the per-paper work folders.
 
@@ -374,7 +376,7 @@ def resolve_output_layout(
     else:
         paper_dir = output_root
 
-    work_dir = paper_dir / file_path.stem
+    work_dir = paper_dir if output_dir_is_work_dir else paper_dir / file_path.stem
     markdown_dir = work_dir / "markdown"
     img_output_dir = work_dir / "ocr"
     temp_dir = img_output_dir / "temp_sliced"
@@ -2079,7 +2081,14 @@ class QuestionGenerator:
         self.spec_path = Path(spec_path).resolve() if spec_path else None
         self.mcq_types_path = Path(mcq_types_path)
 
-    def process_file(self, input_file: Path, output_dir: Path, input_root: Optional[Path] = None) -> Path | List[Path]:
+    def process_file(
+        self,
+        input_file: Path,
+        output_dir: Path,
+        input_root: Optional[Path] = None,
+        *,
+        output_dir_is_work_dir: bool = False,
+    ) -> Path | List[Path]:
         """Synthesizes questions from a chapter file (.pdf or .md)."""
         input_file = Path(input_file).resolve()
         if not input_file.is_file():
@@ -2101,6 +2110,7 @@ class QuestionGenerator:
             input_root=input_root,
             file_path=input_file,
             output_dir=output_dir,
+            output_dir_is_work_dir=output_dir_is_work_dir,
         )
         paper_dir.mkdir(parents=True, exist_ok=True)
         markdown_dir.mkdir(parents=True, exist_ok=True)

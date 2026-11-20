@@ -354,6 +354,9 @@ python scripts/run_path_mirrored_question_generation.py \
 
 For the competitive-exam chapter bank, keep `--source-root ../competitive-exams-chapters`
 fixed, even with `--subtree`, and use `--top-category chapterwise-question-bank`.
+For chapter-code inputs such as `kebo101.pdf`, the wrapper keeps XML in the
+dedicated chapter directory and reuses a matching OCR cache in that directory's
+`ocr/cache/`.
 There is no `--resume` flag: matching outputs are reused by default. Adaptive
 checkpoints record each completed XML's category and SHA-256. A category or
 checksum mismatch must be resolved before reuse; `--force` regenerates instead.

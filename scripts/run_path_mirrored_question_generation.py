@@ -106,10 +106,14 @@ def iter_source_files(source_root: Path) -> Iterable[Path]:
             yield path
 
 
+def has_dedicated_chapter_output(input_path: Path) -> bool:
+    return re.fullmatch(r"[a-z]{4}\d{3}", input_path.stem, flags=re.IGNORECASE) is not None
+
+
 def build_output_dir(source_root: Path, input_path: Path, output_root: Path) -> Path:
     relative_input_path = input_path.relative_to(source_root)
     output_dir = output_root / relative_input_path.parent
-    if re.fullmatch(r"[a-z]{4}\d{3}", input_path.stem, flags=re.IGNORECASE):
+    if has_dedicated_chapter_output(input_path):
         return output_dir / input_path.stem
     return output_dir
 
@@ -855,6 +859,8 @@ def main(argv: List[str] | None = None) -> int:
             top_category=args.top_category if args.output_format == "xml" else None,
             source_root=source_root,
         )
+        if has_dedicated_chapter_output(input_path):
+            command.append("--output-dir-is-work-dir")
         if args.dry_run:
             print(subprocess.list2cmdline(command))
         else:
