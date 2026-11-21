@@ -531,12 +531,8 @@ class AgentSessionBackend(BaseAICommunicator):
                     "agent_config": agent_config_payload,
                     "environment": env_param,
                     "input": multimodal_input,
+                    "system_instruction": system_instruction,
                 }
-
-                # The system prompt establishes the session-wide contract once.
-                # Later page turns inherit it through previous_interaction_id.
-                if not self.last_interaction_id:
-                    interaction_params["system_instruction"] = system_instruction
 
                 if self.last_interaction_id:
                     interaction_params["previous_interaction_id"] = self.last_interaction_id
@@ -564,6 +560,10 @@ class AgentSessionBackend(BaseAICommunicator):
 
             except Exception as e:
                 logger.warning("AI token usage after request: %s (attempt %s): unavailable (request failed).", purpose, attempt)
+                if getattr(e, "status_code", None) == 400 or (
+                    isinstance(e, errors.APIError) and e.code == 400
+                ):
+                    raise
                 err_str = str(e)
                 if "429" in err_str or "503" in err_str or "Quota exceeded" in err_str:
                     match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)

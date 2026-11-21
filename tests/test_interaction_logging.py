@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 import httpx
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 from academic_content_pipeline.ai_communicators import (
     AgentSessionBackend, BatchAPIBackend, ContextChatBackend, ImageAttachment,
@@ -107,13 +107,75 @@ class InteractionLoggingTests(unittest.TestCase):
             backend.generate("rules", batch, purpose="reference")
             backend.generate("rules", batch, purpose="next")
         self.assertEqual(counts[0]["contents"][0], ["rules"])
-        self.assertEqual(len(counts[1]["contents"]), 1)
+        self.assertEqual(counts[1]["contents"][0], ["rules"])
+        self.assertEqual(requests[0]["system_instruction"], "rules")
+        self.assertEqual(requests[1]["system_instruction"], "rules")
         self.assertEqual(requests[1]["previous_interaction_id"], "turn")
         self.assertIsNotNone(counts[0]["contents"][1][0].inline_data.data)
         self.assertEqual(counts[0]["contents"][1][1], "prompt")
         messages = "\n".join(logs.output)
         self.assertIn("agent history, tools and internal instructions excluded", messages)
         self.assertIn("input=20, output=3, total=29, thinking=4, cached=2, tool_input=2", messages)
+
+    def test_agent_resets_history_when_system_instruction_changes(self):
+        requests = []
+        client = SimpleNamespace(interactions=SimpleNamespace(
+            create=lambda **kwargs: requests.append(kwargs) or SimpleNamespace(
+                output_text="result", id="turn"
+            )
+        ))
+        backend = AgentSessionBackend(client=client, attempt_limit=1)
+        backend.generate("first rules", "first")
+        backend.generate("new rules", "second")
+        self.assertNotIn("previous_interaction_id", requests[1])
+        self.assertEqual(requests[1]["system_instruction"], "new rules")
+
+    def test_agent_does_not_retry_bad_request(self):
+        class InteractionBadRequest(Exception):
+            status_code = 400
+
+        for error in (
+            InteractionBadRequest("invalid request"),
+            errors.ClientError(400, {"error": {"message": "invalid request"}}),
+        ):
+            with self.subTest(error=type(error).__name__):
+                requests = []
+
+                def create(**kwargs):
+                    requests.append(kwargs)
+                    raise error
+
+                backend = AgentSessionBackend(
+                    client=SimpleNamespace(interactions=SimpleNamespace(create=create)),
+                    attempt_limit=3,
+                    retry_delay=0,
+                )
+                with self.assertRaises(type(error)):
+                    backend.generate("rules", "prompt")
+                self.assertEqual(len(requests), 1)
+
+    def test_agent_serializes_instruction_on_continuation_with_real_sdk(self):
+        requests = []
+
+        def transport(request):
+            requests.append(json.loads(request.content))
+            return httpx.Response(400, json={
+                "error": {"message": "invalid request", "code": "invalid_request"}
+            })
+
+        client = genai.Client(
+            api_key="test",
+            http_options=types.HttpOptions(client_args={"transport": httpx.MockTransport(transport)}),
+        )
+        backend = AgentSessionBackend(client=client, model_name="model", attempt_limit=3, retry_delay=0)
+        backend.last_interaction_id = "previous-turn"
+        backend.active_system_instruction = "rules"
+        with patch("academic_content_pipeline.ai_communicators._log_token_count"), \
+             self.assertRaisesRegex(Exception, "invalid request"):
+            backend.generate("rules", "prompt")
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["previous_interaction_id"], "previous-turn")
+        self.assertEqual(requests[0]["system_instruction"], "rules")
 
     def test_count_failure_is_explicit_and_does_not_prevent_generation(self):
         def count(**kwargs):
