@@ -12,11 +12,17 @@ from google.genai import errors, types
 
 from academic_content_pipeline.ai_communicators import (
     AgentSessionBackend, BatchAPIBackend, ContextChatBackend, ImageAttachment,
-    MultimodalBatch, RemoteSandboxBackend, SingleShotBackend,
+    MultimodalBatch, RemoteSandboxBackend, SingleShotBackend, create_genai_client,
 )
 
 
 class InteractionLoggingTests(unittest.TestCase):
+    @patch("academic_content_pipeline.ai_communicators.genai.Client")
+    def test_genai_client_uses_v1beta_api(self, client_factory):
+        create_genai_client("test")
+        http_options = client_factory.call_args.kwargs["http_options"]
+        self.assertEqual(http_options.api_version, "v1beta")
+
     def test_precount_serializes_through_real_sdk_developer_api(self):
         requests = []
 

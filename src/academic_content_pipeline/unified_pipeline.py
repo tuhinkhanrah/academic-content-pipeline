@@ -34,8 +34,6 @@ if __package__ in (None, ""):
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-from google import genai
-
 from academic_content_pipeline.ai_communicators import (
     AgentSessionBackend,
     BaseAICommunicator,
@@ -43,6 +41,7 @@ from academic_content_pipeline.ai_communicators import (
     ContextChatBackend,
     RemoteSandboxBackend,
     SingleShotBackend,
+    create_genai_client,
 )
 from academic_content_pipeline.content_processors import (
     PaperGenerator,
@@ -359,7 +358,7 @@ def build_communicator(mode: str, args: argparse.Namespace) -> BaseAICommunicato
     """Builds the AI communication backend matching the selected mode."""
     genai_client = None
     if os.environ.get("GEMINI_API_KEY"):
-        genai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        genai_client = create_genai_client()
     else:
         logger.warning(
             "GEMINI_API_KEY is not set. The communicator object is created without a client; "
@@ -951,7 +950,7 @@ def main():
                     logger.info("Saved reviewed bilingual artifact: %s", output_path)
 
         elif task == "extract":
-            page_check_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            page_check_client = getattr(communicator, "client", None) or create_genai_client()
             page_check_communicator = SingleShotBackend(
                 client=page_check_client,
                 model_name=args.instruction_page_model_name or args.model_name,
@@ -1067,7 +1066,7 @@ def main():
             is_batch = is_batch_paper_spec(args.spec, args.num_tests)
             if reference_papers and not is_batch:
                 raise ValueError("Paper-specific references require a batch run; use an unkeyed reference for a single paper.")
-            analysis_client = getattr(communicator, "client", None) or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            analysis_client = getattr(communicator, "client", None) or create_genai_client()
             analysis_communicator = SingleShotBackend(
                 client=analysis_client,
                 model_name=args.reference_analysis_model_name or args.model_name,

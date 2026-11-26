@@ -108,7 +108,10 @@ def create_genai_client(api_key: Optional[str] = None) -> Optional[genai.Client]
     resolved_api_key = api_key or os.environ.get("GEMINI_API_KEY")
     if not resolved_api_key:
         return None
-    return genai.Client(api_key=resolved_api_key)
+    return genai.Client(
+        api_key=resolved_api_key,
+        http_options=types.HttpOptions(api_version="v1beta"),
+    )
 
 
 @dataclass
